@@ -1,70 +1,150 @@
 # BrainDance
 
-ARIS 연구 계획을 탐색하고 기록하는 로컬 연구 워크스페이스입니다. 프로젝트별 가설 트리와 Council 평가, 실제 요청·응답 기록을 함께 확인할 수 있습니다.
+A local research workspace for exploring ARIS research plans, organizing hypothesis trees, and keeping evidence, Council reviews, and research records together.
 
-## 기능
+The interface and generated research content are currently Korean-first. Installation and setup instructions below are in English.
 
-- 프로젝트 생성·접기·펼치기, 삭제·휴지통 복원
-- 한국어 연구 문제·질문·가설과 논문 근거, 아이디어·실험 설계·결과 기록
-- Claude 전문가 3명과 독립 Codex 참여자의 제안·익명 교차 평가, Claude Chairman 종합
-- 로컬·SSH 장치 조회와 프로젝트별 CPU/GPU 선택, 동시 실행·시간 예산 저장
-- GPT(Codex)·Claude 인증 및 계정 한도 사용률 표시. 조회할 수 없는 값은 명시적으로 표시
-- 어두운 바탕과 절제된 노랑·청록 포인트
+## Install the Mac app
 
-**현재 범위는 연구 계획·기록과 실행 환경 설정입니다. 실험 자동 실행기, GPU 독점 예약, autoresearch는 포함하지 않습니다.**
+### Requirements
 
-## Mac 앱
+- An Apple Silicon Mac (M1 or newer).
+- macOS 13 or later.
+- No separate Python installation is required for the packaged app.
 
-[Releases](https://github.com/Voyager466920/BrainDance/releases)에서 `BrainDance-macOS-arm64.zip`을 받아 압축을 풀고 `BrainDance.app`을 응용 프로그램 폴더로 옮겨 실행합니다. Apple Silicon Mac, macOS 13 이상용입니다. 네이티브 AppKit 창과 WKWebView를 사용하며 Python 서버·인증서 묶음을 앱에 포함하므로 앱 실행에 별도 Python 설치는 필요하지 않습니다. Claude·Codex CLI와 SSH 인증은 필요한 기능을 사용할 때 별도로 준비합니다.
+### Installation
 
-앱의 연구 데이터는 `~/Library/Application Support/BrainDance/`에 저장됩니다. 앱 번들과 GitHub 배포 파일에는 연구 DB, 계정, SSH 설정이 포함되지 않습니다. 기본 주소는 `http://127.0.0.1:8766/`이며, 다른 서비스가 포트를 점유하면 앱 서버는 빈 loopback 포트를 사용합니다. 이미 실행 중인 BrainDance 서버가 있으면 그 워크스페이스에 연결합니다. 앱이 직접 시작한 서버는 앱 종료 시 함께 종료됩니다.
+1. Download [BrainDance for Apple Silicon](https://github.com/Voyager466920/BrainDance/releases/latest/download/BrainDance-macOS-arm64.zip), or select a version from [Releases](https://github.com/Voyager466920/BrainDance/releases).
+2. Extract `BrainDance-macOS-arm64.zip`.
+3. Drag `BrainDance.app` into your **Applications** folder.
+4. Open **BrainDance** from Applications or Spotlight.
 
-현재 배포본은 ad-hoc 서명한 빌드이며 Apple 공증을 받은 배포본은 아닙니다. 소스에서 직접 빌드할 수도 있습니다.
+Release builds are ad-hoc signed and are **not notarized by Apple**. You can also build the app from source using the instructions below.
+
+The app uses a native AppKit window with WKWebView and includes its Python backend and CA certificate bundle. Claude Code, Codex CLI, and SSH authentication are separate prerequisites only for the features that use them.
+
+### Create your first project
+
+1. Click **＋ 새 프로젝트** (New project) in the sidebar.
+2. Enter a project name and research goal.
+3. Choose a local or saved SSH execution environment.
+4. Click **장치 조회** (Discover devices), then select CPU or one or more GPUs.
+5. Set the concurrency and time budget, then click **프로젝트 만들기** (Create project).
+
+Use the gear icon to open settings. The **SSH 추가** (Add SSH) tab lets you save and test a remote connection. You can also open it from the new-project form without losing your draft.
+
+Click a project title to collapse or expand its nodes. The trash icon on the right moves the project to Trash, where it can be restored.
+
+**Creating a project does not start an experiment.** The current app stores research plans and execution-environment settings. It does not include an automatic experiment executor, exclusive GPU reservations, or autoresearch. Concurrency and time budgets are saved settings, not limits enforced by an experiment runner.
+
+### Local data
+
+The Mac app stores its workspace in:
+
+```text
+~/Library/Application Support/BrainDance/
+```
+
+Research databases, credentials, and SSH keys are not included in the app or release archive. Back up this directory to preserve your app workspace.
+
+The default local address is `http://127.0.0.1:8766/`. If another service occupies that port, the backend uses an available loopback port. If a BrainDance server is already running on port 8766, the app connects to that workspace. A backend started by the app exits when the app quits.
+
+## Run the browser version from source
+
+Requires **Python 3.9 or later**, Git, and a modern browser. The Viewer uses only the Python standard library.
 
 ```sh
+git clone https://github.com/Voyager466920/BrainDance.git
+cd BrainDance
+
+python3 .claude/skills/aris-research-council/scripts/viewer.py \
+  --db .aris/council/tree.sqlite3 --port 8766
+```
+
+Open <http://127.0.0.1:8766/>. A fresh checkout starts with an empty workspace.
+
+This command stores data under `.aris/council/` in the checkout. To use the Mac app's existing workspace instead, stop the app and run:
+
+```sh
+python3 .claude/skills/aris-research-council/scripts/viewer.py \
+  --db "$HOME/Library/Application Support/BrainDance/tree.sqlite3" --port 8766
+```
+
+Keep the Viewer on loopback; it is not intended for public network hosting.
+
+## Set up SSH and GPU discovery
+
+- BrainDance uses your existing SSH config, keys, and SSH agent. Passwords and private-key contents are not stored in connection profiles.
+- A remote host needs `python3`. NVIDIA GPU discovery also needs `nvidia-smi` on that host.
+- SSH checks are noninteractive and require a trusted host key. Unknown or changed host keys are not automatically accepted.
+- Local Apple GPU discovery reports Metal hardware. Model and framework compatibility must be checked separately before an experiment.
+- Selecting a GPU saves the intended device for the project; it does not reserve it or prevent other processes from using it.
+
+## Set up the Research Council
+
+Actual Council runs require:
+
+1. The official [ARIS repository](https://github.com/wanshuiyin/Auto-claude-code-research-in-sleep), installed using its own instructions.
+2. Installed and authenticated Claude Code and Codex CLI.
+3. An ARIS literature review and saved paper-evidence records.
+
+BrainDance reuses ARIS's official `codex-exec` MCP bridge. Its project-local Skill is at [.claude/skills/aris-research-council/SKILL.md](.claude/skills/aris-research-council/SKILL.md).
+
+The Council runs three Claude specialists and an independent Codex participant through hypothesis generation and anonymous cross-review, followed by a separate Claude Chairman synthesis. Council runs consume usage from connected accounts. They are invoked separately through the Skill or runner; opening the app or creating a project does not invoke models.
+
+See the [protocol](.claude/skills/aris-research-council/references/protocol.md) for commands, modes, budgets, and recovery behavior; [optimization notes](.claude/skills/aris-research-council/references/optimization.md) for token controls; and [provenance](.claude/skills/aris-research-council/references/provenance.md) for reused components and license notices.
+
+To display a Council run in the Mac app, pass the same database path to the runner with `--db "$HOME/Library/Application Support/BrainDance/tree.sqlite3"`.
+
+## Build the Mac app from source
+
+Requires macOS, Xcode Command Line Tools, Git, and `uv`. Run the following from a new checkout:
+
+```sh
+git clone https://github.com/Voyager466920/BrainDance.git
+cd BrainDance
+
 uv venv --python 3.13 .venv
 uv pip install --python .venv/bin/python -r desktop/requirements-build.txt
 .venv/bin/python desktop/build.py
 ```
 
-Xcode Command Line Tools와 `uv`가 필요합니다. `dist/BrainDance.app`과 현재 Mac 아키텍처용 ZIP을 생성합니다. 빌드에는 개인 데이터를 복사하지 않습니다.
+The build creates:
 
-## 로컬 실행
-
-Python 3.9 이상과 최신 브라우저가 필요합니다. Viewer 자체는 Python 표준 라이브러리만 사용합니다.
-
-```sh
-git clone https://github.com/Voyager466920/BrainDance.git
-cd BrainDance
-python3 .claude/skills/aris-research-council/scripts/viewer.py \
-  --db .aris/council/tree.sqlite3 --port 8766
+```text
+dist/BrainDance.app
+dist/BrainDance-macOS-<architecture>.zip
 ```
 
-브라우저에서 <http://127.0.0.1:8766/>을 엽니다. 첫 실행은 빈 프로젝트 목록으로 시작합니다. `＋ 새 프로젝트`에서 연구 목표와 실행 환경을 선택하세요.
+The architecture follows the build machine. The published `arm64` archive is for Apple Silicon. Builds include the backend runtime and third-party license notices, but do not copy research data into the app bundle.
 
-SSH는 기존 SSH config·키·agent를 사용합니다. 원격 장치 조회에는 서버의 `python3`가 필요하며 NVIDIA GPU 조회에는 `nvidia-smi`가 필요합니다. 호스트 키를 자동 수락하지 않습니다. 선택한 장치는 실행 환경 설정이며 GPU 독점 예약이 아닙니다.
+## Features
 
-## 실제 Research Council 실행
+- Persistent projects and research-problem → question → hypothesis trees.
+- Paper evidence, ideas, proposed experiments, actual-result records, analysis, and notes.
+- Council evaluations and retained participant requests and responses.
+- Local and SSH device discovery with per-project CPU/GPU and budget settings.
+- Project Trash and restore, with active and discarded node styling.
+- GPT (Codex) and Claude authentication and account-quota indicators, where available.
+- A dark interface with restrained yellow and cyan accents.
 
-공식 [ARIS](https://github.com/wanshuiyin/Auto-claude-code-research-in-sleep), 로그인된 Claude Code와 Codex CLI가 별도로 필요합니다. ARIS의 논문 탐색 결과를 입력으로 사용하며 공식 `codex-exec` MCP 브리지를 재사용합니다. 프로젝트 로컬 Skill은 [.claude/skills/aris-research-council/SKILL.md](.claude/skills/aris-research-council/SKILL.md)에 있습니다.
+## Privacy and authentication
 
-자세한 호출 방법과 모드·예산·복구 동작은 [프로토콜](.claude/skills/aris-research-council/references/protocol.md), 토큰 최적화는 [최적화 문서](.claude/skills/aris-research-council/references/optimization.md), 재사용 범위와 라이선스 고지는 [출처](.claude/skills/aris-research-council/references/provenance.md)를 참고하세요. Council 실행에는 연결된 계정의 사용량이 발생합니다.
+Private research inputs, databases, results, logs, credentials, and SSH settings are not distributed with this repository. Runtime directories such as `.aris/` and `council/` are excluded from Git. Do not commit private workspace data to a public repository.
 
-## 데이터와 계정
+The Viewer binds to loopback and checks Host, Origin, and CSRF tokens. Account-quota checks use existing CLI authentication. On macOS, Claude subscription usage is queried using existing OAuth credentials in Keychain. Tokens and account identifiers are not returned to the UI or application logs.
 
-연구 DB·입력·결과·실행 로그·계정 정보·SSH 설정은 저장소에 포함하지 않습니다. `.aris/`와 `council/` 등 런타임 디렉터리는 Git에서 제외됩니다. 기존 개인 데이터를 공개 저장소에 추가하지 마세요.
+An authentication indicator is not proof that an inference request will succeed. Usage that cannot be queried is shown as unavailable or rate-limited, rather than as zero.
 
-Viewer는 loopback에만 바인딩하며 Host·Origin·CSRF를 확인합니다. 공용 서버로 노출하지 마세요. 계정 사용률 조회는 기존 CLI 인증을 사용하고, macOS Claude 구독 사용량은 Keychain의 기존 OAuth 인증으로 조회합니다. 토큰·계정 식별자를 웹 화면이나 로그에 반환하지 않습니다. 인증됨 표시만으로 추론 실행 권한을 보장하지 않습니다.
-
-## 테스트
+## Tests
 
 ```sh
 python3 -m unittest discover \
   -s .claude/skills/aris-research-council/scripts -p 'test_*.py'
 ```
 
-테스트는 임시 DB·loopback HTTP와 합성 입력을 사용합니다. 실제 연구 데이터, 모델 호출이나 GPU 실험은 필요하지 않습니다. JavaScript 렌더링 검증에는 Node.js가 있으면 사용합니다.
+Tests use temporary databases, loopback HTTP, and synthetic inputs. They do not require personal research data, model calls, or GPU experiments. Node.js is used for JavaScript rendering checks when installed.
 
-## 라이선스
+## License
 
-MIT. 재사용한 LLM Council 구성의 고지는 출처 문서에 보존되어 있습니다. 공식 ARIS와 Claude·Codex CLI는 각 프로젝트의 별도 코드·서비스입니다.
+MIT. Notices for the reused LLM Council design are retained in the provenance document. Official ARIS, Claude Code, and Codex CLI remain separate projects and services with their own terms.
