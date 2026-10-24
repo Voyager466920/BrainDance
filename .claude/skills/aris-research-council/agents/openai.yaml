@@ -1,0 +1,4 @@
+interface:
+  display_name: "ARIS Research Council"
+  short_description: "Compare research hypotheses with an auditable council"
+  default_prompt: "Use $aris-research-council to compare evidence-linked research hypotheses and update the local research tree."
