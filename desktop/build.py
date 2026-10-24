@@ -25,6 +25,8 @@ def main():
     run(sys.executable, '-m', 'PyInstaller', '--noconfirm', '--clean', '--onefile',
         '--name', 'BrainDanceServer', '--paths', SCRIPTS,
         '--add-data', str(SCRIPTS.parent/'assets')+':assets', '--collect-data', 'certifi',
+        '--add-data', str(SCRIPTS/'experiment_worker.py')+':worker',
+        '--hidden-import', 'csv', '--hidden-import', 'statistics',
         '--distpath', build/'server', '--workpath', build/'pyinstaller', '--specpath', build,
         '--target-architecture', architecture, ROOT/'desktop/backend.py')
     app = dist/'BrainDance.app'

@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import signal
 
 if not getattr(sys, 'frozen', False):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / '.claude/skills/aris-research-council/scripts'))
@@ -22,6 +23,15 @@ def main():
         # A frozen binary is not a Python interpreter. Run only the fixed hardware probe.
         exec(compile(PROBE, '<hardware-probe>', 'exec'), {'__name__': '__main__'})
         return
+    if sys.argv[1:2]==['--experiment-worker']:
+        from experiment_worker import main as worker_main
+        worker_main()
+        return
+    if sys.argv[1:2]==['--run-experiment']:
+        import runpy
+        sys.argv=sys.argv[2:]
+        runpy.run_path(sys.argv[0],run_name='__main__')
+        return
     paths = [str(Path.home()/'.local/bin'), '/opt/homebrew/bin', '/usr/local/bin',
              *os.environ.get('PATH', '').split(os.pathsep), '/usr/bin', '/bin']
     os.environ['PATH'] = os.pathsep.join(dict.fromkeys(paths))
@@ -32,6 +42,8 @@ def main():
     parser.add_argument('--data-dir', type=Path, default=data_directory())
     parser.add_argument('--port', type=int, default=8766)
     args = parser.parse_args()
+    def terminate(*_):raise KeyboardInterrupt()
+    signal.signal(signal.SIGTERM,terminate)
     directory = args.data_dir.expanduser().resolve()
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
     from viewer import create_server

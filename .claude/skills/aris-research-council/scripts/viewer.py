@@ -4,13 +4,16 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 from pathlib import Path
 import secrets
+import shutil
+import signal
 import sys
 import threading
-from urllib.parse import urlsplit, parse_qs
+from urllib.parse import urlsplit, parse_qs, quote
 
 from tree_store import TreeStore
 from provider_status import ProviderStatus
 from compute import ComputeSettings
+from experiments import ExperimentEngine
 
 ASSET = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parent.parent)) / 'assets' / 'viewer.html'
 
@@ -28,6 +31,14 @@ class ViewerServer(ThreadingHTTPServer):
         super().__init__(('127.0.0.1', port), ViewerHandler)
         actual_port = self.server_address[1]
         self.allowed_hosts = {'127.0.0.1:' + str(actual_port), 'localhost:' + str(actual_port)}
+        try:self.experiments=ExperimentEngine(store,self.compute,self.compute_state)
+        except Exception:
+            super().server_close()
+            raise
+
+    def server_close(self):
+        if hasattr(self,'experiments'):self.experiments.close()
+        super().server_close()
 
     def compute_state(self):
         state=self.compute.state()
@@ -76,13 +87,15 @@ class ViewerHandler(BaseHTTPRequestHandler):
             return
         path = urlsplit(self.path).path
         if path == '/api/health':
-            self._reply(200, {'app': 'BrainDance', 'version': '0.1.0'})
+            self._reply(200, {'app': 'BrainDance', 'version': '0.2.0'})
         elif path == '/api/tree':
             self._reply(200, self.server.store.export_json())
         elif path == '/api/providers':
             self._reply(200, self.server.provider_status.get())
         elif path == '/api/compute':
             self._reply(200, self.server.compute_state())
+        elif path.startswith('/api/experiment') or path.startswith('/api/run'):
+            self._experiment_get(path)
         elif path == '/api/messages':
             node_id = parse_qs(urlsplit(self.path).query).get('node_id', [''])[0]
             tree = self.server.store.export_json()
@@ -112,6 +125,30 @@ class ViewerHandler(BaseHTTPRequestHandler):
         else:
             self._reply(404, {'error': 'Not found'})
 
+    def _experiment_get(self,path):
+        query=parse_qs(urlsplit(self.path).query)
+        try:
+            if path=='/api/experiments':
+                self._reply(200,self.server.experiments.list(query.get('node_id',[''])[0]))
+            elif path=='/api/experiment-template':
+                code=ASSET.with_name('experiment_template.py').read_text(encoding='utf-8')
+                self._reply(200,{'title':'합성 데이터 CPU 분류 파일럿','code':code,'metric':'accuracy','direction':'maximize'})
+            elif path=='/api/run':
+                self._reply(200,self.server.experiments.run_info(query.get('id',[''])[0]))
+            elif path=='/api/run/file':
+                file=self.server.experiments.file(query.get('id',[''])[0],query.get('file',[''])[0])
+                self.send_response(200)
+                self.send_header('Content-Type','application/octet-stream')
+                self.send_header('Content-Length',str(file.stat().st_size))
+                self.send_header('Content-Disposition',"attachment; filename*=UTF-8''"+quote(file.name,safe=''))
+                self.send_header('Cache-Control','no-store')
+                self.send_header('X-Content-Type-Options','nosniff')
+                self.end_headers()
+                with file.open('rb') as stream:shutil.copyfileobj(stream,self.wfile)
+            else:self._reply(404,{'error':'Not found'})
+        except KeyError as error:self._reply(404,{'error':str(error)})
+        except (ValueError,TypeError) as error:self._reply(400,{'error':str(error)})
+
     def do_POST(self):
         if not self._trusted_host():
             return
@@ -140,7 +177,18 @@ class ViewerHandler(BaseHTTPRequestHandler):
             self._reply(400, {'error': str(exc)})
 
     def _mutate(self, path, payload):
-        if path in {'/api/project/delete','/api/project/restore'}:
+        if path=='/api/experiment':
+            result=self.server.experiments.create(payload)
+        elif path=='/api/experiment/approve':
+            if set(payload)!={'id','digest','consent'}:raise ValueError('Expected id, digest, consent')
+            result=self.server.experiments.approve(payload['id'],payload['digest'],payload['consent'])
+        elif path=='/api/experiment/run':
+            if set(payload)!={'id','approval_id'}:raise ValueError('Expected id and approval_id')
+            result=self.server.experiments.enqueue(payload['id'],payload['approval_id'])
+        elif path=='/api/experiment/cancel':
+            if set(payload)!={'run_id'}:raise ValueError('Expected run_id')
+            result=self.server.experiments.cancel(payload['run_id'])
+        elif path in {'/api/project/delete','/api/project/restore'}:
             if set(payload)!={'project_id'}:
                 raise ValueError('Expected project_id')
             result=self.server.store.set_project_deleted(payload['project_id'],path.endswith('/delete'))
@@ -215,6 +263,8 @@ def main():
     parser.add_argument('--port', type=int, default=8766)
     parser.add_argument('--max-depth', type=int, default=3)
     args = parser.parse_args()
+    def terminate(*_):raise KeyboardInterrupt()
+    signal.signal(signal.SIGTERM,terminate)
     with create_server(args.db, args.port, args.max_depth) as server:
         print('BrainDance Viewer: http://127.0.0.1:%d' % server.server_address[1], flush=True)
         try:

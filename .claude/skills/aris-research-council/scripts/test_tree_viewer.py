@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import tempfile
 import threading
+import time
 import unittest
 from unittest.mock import patch
 
@@ -266,7 +267,7 @@ class ViewerTests(unittest.TestCase):
         payload=dict(project_id=self.root['project_id'],profile_id='local',device_ids=['cpu'])
         self.assertEqual(self.request('/api/compute/assignment',payload)[0],403)
         self.assertEqual(self.request('/api/compute/assignment',payload,self.credentials())[0],200)
-        self.assertEqual(self.request('/api/compute/assignment',{**payload,'auto_run':True},self.credentials())[0],400)
+        self.assertEqual(self.request('/api/compute/assignment',{**payload,'auto_run':True},self.credentials())[0],200)
         self.assertEqual(self.request('/api/compute/assignment',{**payload,'project_id':'missing'},self.credentials())[0],400)
         self.assertEqual(self.request('/api/compute/profile',dict(kind='ssh',name='Bad',host='-evil'),self.credentials())[0],400)
 
@@ -294,7 +295,7 @@ class ViewerTests(unittest.TestCase):
         before=self.server.store.export_json()
         for payload in ({**valid,'name':' '},{**valid,'goal':'x'*2001},
                         {**valid,'compute':dict(profile_id='local',device_ids=['GPU-made-up'])},
-                        {**valid,'compute':dict(profile_id='local',device_ids=['cpu'],auto_run=True)}):
+                        {**valid,'compute':dict(profile_id='local',device_ids=['cpu'],auto_run='invalid')}):
             self.assertEqual(self.request('/api/project',payload,self.credentials())[0],400)
         self.assertEqual(self.server.store.export_json()['nodes'],before['nodes'])
         self.assertEqual(self.server.store.export_json()['projects'],before['projects'])
@@ -323,6 +324,33 @@ class ViewerTests(unittest.TestCase):
         self.assertEqual(self.request('/api/project/restore',payload,headers)[0],200)
         self.assertEqual(self.server.compute_state()['assignments'][project_id]['device_ids'],['cpu'])
         self.assertEqual(self.server.store.get_node(self.root['id'])['title'],self.root['title'])
+
+    def test_approved_automatic_experiment_http_flow_and_artifact_download(self):
+        self.server.compute.assign(self.root['project_id'],dict(profile_id='local',device_ids=['cpu'],auto_run=True,time_budget_minutes=1))
+        payload=dict(node_id=self.root['id'],title='HTTP CPU execution',timeout_seconds=5,
+                     code="import os,json\nfrom pathlib import Path\nprint('actual live output',flush=True)\nPath(os.environ['BRAINDANCE_METRICS_PATH']).write_text(json.dumps({'accuracy':.7}))")
+        headers=self.credentials()
+        self.assertEqual(self.request('/api/experiment',payload)[0],403)
+        status,_,body=self.request('/api/experiment',payload,headers)
+        self.assertEqual(status,200);experiment=json.loads(body)
+        self.assertEqual(self.request('/api/experiment/run',dict(id=experiment['id'],approval_id='fake'),headers)[0],400)
+        approval=dict(id=experiment['id'],digest=experiment['digest'],consent=False)
+        self.assertEqual(self.request('/api/experiment/approve',approval,headers)[0],400)
+        self.assertEqual(self.request('/api/experiment/approve',{**approval,'consent':True},headers)[0],200)
+        deadline=time.monotonic()+6;run=None
+        while time.monotonic()<deadline:
+            _,_,body=self.request('/api/experiments?node_id='+self.root['id'])
+            runs=json.loads(body)['experiments'][0]['runs']
+            if runs and runs[0]['state'] not in {'queued','running'}:run=runs[0];break
+            time.sleep(.04)
+        self.assertIsNotNone(run);self.assertEqual(run['state'],'succeeded')
+        _,_,body=self.request('/api/run?id='+run['id'])
+        self.assertIn('actual live output',json.loads(body)['stdout_tail'])
+        status,response_headers,body=self.request('/api/run/file?id='+run['id']+'&file=metrics.json')
+        self.assertEqual(status,200);self.assertEqual(json.loads(body)['accuracy'],.7)
+        self.assertIn('attachment',response_headers['Content-Disposition'])
+        self.assertEqual(self.request('/api/run/file?id='+run['id']+'&file=../compute.json')[0],404)
+        self.assertEqual(self.request('/api/experiment-template')[0],200)
 
 
 class ViewerRenderingTests(unittest.TestCase):
@@ -416,6 +444,10 @@ assert.strictEqual(elements.get('compute-target').value,'local');
 vm.runInContext("computeState.inventories.local={connected:true,checked_at:'2026-10-24',devices:[{id:'cpu',name:'CPU',kind:'cpu'},{id:'metal:0',name:'Apple M4',kind:'metal'}]};document.getElementById('new-project-target').value='local';renderNewProjectDevices(['metal:0']);",context);
 assert(elements.get('new-project-devices').textContent.includes('Apple M4'));
 assert(all(elements.get('new-project-devices')).some(e=>e.value==='metal:0'&&e.checked));
+vm.runInContext("selected='h';fixture.nodes[1].status='active';renderExperimentList({experiments:[{id:'e',digest:'0123456789abcdef',spec:{title:'CPU execution',code:'print(1)',profile:{name:'Mac'},device_ids:['cpu'],timeout_seconds:5,interpreter:'builtin',cwd:'',args:[]},runs:[]}]});",context);
+assert(elements.get('experiment-list').textContent.includes('CPU execution'));
+assert(elements.get('experiment-list').textContent.includes('승인하고 실행'));
+assert(all(elements.get('experiment-list')).find(e=>e.tag==='button'&&e.text==='승인하고 실행').disabled);
 vm.runInContext("fixture.projects=[{id:'root',title:'Trashed Project',deleted_at:'2026-10-24'}];for(const node of fixture.nodes)node.project_id='root';renderTree();renderDetail();renderProjectTrash();",context);
 assert(!elements.get('tree').textContent.includes('Hypothesis'));
 assert(elements.get('detail').hidden);

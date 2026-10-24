@@ -2,7 +2,7 @@ import AppKit
 import Foundation
 import WebKit
 
-final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNavigationDelegate, WKUIDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNavigationDelegate, WKUIDelegate, WKDownloadDelegate {
     var window: NSWindow!
     var webView: WKWebView!
     var backend: Process?
@@ -35,7 +35,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
             let result = data.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
             DispatchQueue.main.async {
                 if result?["app"] as? String == "BrainDance" {
-                    self.showWorkspace(URL(string: "http://127.0.0.1:8766/")!)
+                    if result?["version"] as? String == Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String {
+                        self.showWorkspace(URL(string: "http://127.0.0.1:8766/")!)
+                    } else { self.fail("다른 버전의 BrainDance 서버가 실행 중입니다. 기존 앱 또는 서버를 종료하고 다시 실행하세요.") }
                 } else { self.startBackend() }
             }
         }.resume()
@@ -132,7 +134,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
     func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
         guard let url = action.request.url else { decisionHandler(.cancel); return }
         if url.scheme == "http", url.host == "127.0.0.1", url.port == serverURL?.port {
-            decisionHandler(.allow)
+            decisionHandler(action.shouldPerformDownload ? .download : .allow)
         } else {
             if action.navigationType == .linkActivated, ["https", "http"].contains(url.scheme ?? "") { NSWorkspace.shared.open(url) }
             decisionHandler(.cancel)
@@ -141,6 +143,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
     func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for action: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
         if let url = action.request.url, ["https", "http"].contains(url.scheme ?? "") { NSWorkspace.shared.open(url) }
         return nil
+    }
+    func webView(_ webView: WKWebView, decidePolicyFor response: WKNavigationResponse, decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void) {
+        if let http = response.response as? HTTPURLResponse,
+           http.url?.host == "127.0.0.1", http.url?.port == serverURL?.port,
+           (http.value(forHTTPHeaderField: "Content-Disposition") ?? "").hasPrefix("attachment") {
+            decisionHandler(.download)
+        } else { decisionHandler(.allow) }
+    }
+    func webView(_ webView: WKWebView, navigationAction: WKNavigationAction, didBecome download: WKDownload) { download.delegate = self }
+    func webView(_ webView: WKWebView, navigationResponse: WKNavigationResponse, didBecome download: WKDownload) { download.delegate = self }
+    func download(_ download: WKDownload, decideDestinationUsing response: URLResponse, suggestedFilename: String, completionHandler: @escaping (URL?) -> Void) {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = suggestedFilename
+        panel.directoryURL = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
+        panel.canCreateDirectories = true
+        panel.beginSheetModal(for: window) { result in completionHandler(result == .OK ? panel.url : nil) }
     }
 }
 

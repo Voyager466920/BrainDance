@@ -247,12 +247,20 @@ class TreeStore:
     def export_json(self, path=None):
         with self._connect() as conn:
             conn.execute('BEGIN')
-            snapshot = {'schema_version': 4, 'exported_at': now(),
+            snapshot = {'schema_version': 5, 'exported_at': now(),
                         'projects': [dict(r) for r in conn.execute('SELECT p.*,l.deleted_at FROM projects p LEFT JOIN project_lifecycle l ON p.id=l.project_id ORDER BY p.created_at,p.id')],
                         'nodes': [self._decode(r) for r in conn.execute('SELECT n.*,p.project_id FROM nodes n LEFT JOIN node_projects p ON n.id=p.node_id ORDER BY n.created_at,n.id')],
                         'evaluations': [self._decode(r) for r in conn.execute('SELECT * FROM evaluations ORDER BY created_at,id')],
                         'events': [self._decode(r) for r in conn.execute('SELECT * FROM events ORDER BY seq')],
                         'notes': [dict(r) for r in conn.execute('SELECT * FROM notes ORDER BY created_at,id')]}
+            tables={r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            for table,fields in [('experiments',('spec',)),('experiment_runs',('result',)),('experiment_approvals',())]:
+                snapshot[table]=[]
+                if table in tables:
+                    for row in conn.execute('SELECT * FROM '+table+' ORDER BY rowid'):
+                        record=dict(row)
+                        for field in fields:record[field]=json.loads(record[field])
+                        snapshot[table].append(record)
         if path is not None:
             target = Path(path).expanduser().resolve()
             if target == Path(self.db_path):

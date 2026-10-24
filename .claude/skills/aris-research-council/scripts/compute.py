@@ -1,4 +1,4 @@
-"""Local/SSH resource discovery and project assignments. No experiment launcher."""
+"""Local/SSH resource discovery and approval-required execution policies."""
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -72,7 +72,7 @@ def validate_profile(profile):
     return dict(id=profile.get('id') or str(uuid.uuid4()),name=name.strip(),kind='ssh',host=host,user=user,port=port,identity_file=identity)
 
 
-def ssh_command(profile):
+def ssh_base(profile):
     profile=validate_profile(profile)
     args=['ssh','-T','-o','BatchMode=yes','-o','StrictHostKeyChecking=yes',
           '-o','ConnectTimeout=8','-o','ConnectionAttempts=1','-o','ForwardAgent=no',
@@ -82,7 +82,11 @@ def ssh_command(profile):
     if profile.get('identity_file'):
         args+=['-i',profile['identity_file']]
     dest=(profile['user']+'@' if profile['user'] else '')+profile['host']
-    return args+['--',dest,'python3 -c '+shlex.quote(PROBE)]
+    return args+['--',dest]
+
+
+def ssh_command(profile):
+    return ssh_base(profile)+['python3 -c '+shlex.quote(PROBE)]
 
 
 class ComputeSettings:
@@ -122,7 +126,7 @@ class ComputeSettings:
                     if parts and parts[0].lower()=='host':
                         aliases.extend(h for h in parts[1:] if re.fullmatch(r'[A-Za-z0-9_][A-Za-z0-9_.-]*',h))
             return {**json.loads(json.dumps(self.data)), 'inventories':dict(self.inventories),
-                    'ssh_aliases':list(dict.fromkeys(aliases)),'execution_available':False}
+                    'ssh_aliases':list(dict.fromkeys(aliases)),'execution_available':True}
 
     def save_profile(self,profile):
         clean=validate_profile(profile)
@@ -172,8 +176,8 @@ class ComputeSettings:
     def prepare_assignment(self,payload):
         if set(payload)-{'profile_id','device_ids','max_parallel_runs','time_budget_minutes','auto_run'}:
             raise ValueError('지원하지 않는 실행 설정입니다.')
-        if payload.get('auto_run',False) is not False:
-            raise ValueError('자동 실행은 아직 연결되지 않았습니다.')
+        if type(payload.get('auto_run',False)) is not bool:
+            raise ValueError('자동 실행 설정은 true 또는 false여야 합니다.')
         devices=payload.get('device_ids',[])
         if not isinstance(devices,list) or not devices or not all(isinstance(d,str) for d in devices):
             raise ValueError('사용할 CPU 또는 GPU를 선택하세요.')
@@ -197,7 +201,7 @@ class ComputeSettings:
             if verified: allowed.update(d['id'] for d in inventory['devices'])
             if not set(devices)<=allowed: raise ValueError('먼저 연결을 확인하고 조회된 장치를 선택하세요.')
             assignment=dict(profile_id=profile['id'],device_ids=devices,max_parallel_runs=parallel,
-                time_budget_minutes=minutes,auto_run=False,require_approval=True,
+                time_budget_minutes=minutes,auto_run=payload.get('auto_run',False),require_approval=True,
                 verified=bool(verified),updated_at=timestamp())
             return assignment
 

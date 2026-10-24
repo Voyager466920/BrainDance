@@ -6,7 +6,7 @@ Official [ARIS](https://github.com/wanshuiyin/Auto-claude-code-research-in-sleep
 
 User-requested adaptations are four specialist participants (three Claude agents and Codex), a four-element permutation, mode/budget controls, evidence-linked hypotheses, persistent tree, and local Viewer. Fresh-session Chairman synthesis receives persisted artifacts explicitly rather than inheriting an interactive session. Upstream generic decision triggers, unrelated persona prompts, retry-on-hedging, and HTML templates are not imported. Reviewer anonymity hides author labels and the audit map; it cannot guarantee stylistic unidentifiability.
 
-No GPU executor, experiment scheduler, autoresearch integration, or additional memory service is included. Existing global Claude/Codex settings and official ARIS files are outside the extension's managed files.
+BrainDance additionally provides its own approved Python experiment supervisor and queue for local/SSH execution, with bounded runtime, process-group cancellation, device coordination, raw logs and result receipts. These are BrainDance extensions, not stock ARIS features. No autoresearch integration or additional memory service is included. Existing global Claude/Codex settings and official ARIS files are outside the extension's managed files.
 
 ## Upstream MIT notice
 

@@ -35,7 +35,21 @@ Use the gear icon to open settings. The **SSH 추가** (Add SSH) tab lets you sa
 
 Click a project title to collapse or expand its nodes. The trash icon on the right moves the project to Trash, where it can be restored.
 
-**Creating a project does not start an experiment.** The current app stores research plans and execution-environment settings. It does not include an automatic experiment executor, exclusive GPU reservations, or autoresearch. Concurrency and time budgets are saved settings, not limits enforced by an experiment runner.
+**Creating a project does not start an experiment.** Open a node's **실험 실행** (Run experiments) tab to save Python code, review its exact code/device/time limit, and approve execution. BrainDance now supervises local and SSH runs and enforces project concurrency and time budgets. Device locks coordinate BrainDance's own jobs; they do not reserve a GPU against other software.
+
+### Run an experiment
+
+1. Select an active research node and open **실험 실행**.
+2. Enter Python code or load **CPU 검증 예제** (CPU verification example). Set a timeout, primary metric, and whether a larger or smaller value is better.
+3. For ML libraries, expand the advanced options and select the Python executable of your prepared environment, such as `/path/to/venv/bin/python`. The bundled interpreter includes the standard library, not PyTorch or model dependencies. SSH paths refer to the remote host.
+4. Save the plan, inspect the stored code and resources, check the consent box, then choose **승인하고 실행** (Approve and run).
+5. Open the run to inspect live stdout/stderr, exit status, metrics, and downloadable artifacts. Use **중지** (Stop) to terminate its process group.
+
+To queue approved work automatically, enable **승인된 실험 자동 실행** in project settings and use **승인 후 자동 대기** on each reviewed plan. Each approval permits one run. Unapproved ideas and Council hypotheses do not execute automatically. Failed or interrupted work is not automatically retried.
+
+Python scripts receive `BRAINDANCE_DEVICE` (`cpu`, `mps`, or `cuda`), `BRAINDANCE_METRICS_PATH`, and `BRAINDANCE_ARTIFACT_DIR`. Write a JSON object to the metrics path and output files under the artifact directory. For comparison, use `{"baseline":{"accuracy":0.5},"candidate":{"accuracy":0.7}}`. BrainDance records the observed difference; it does not establish statistical significance. See [execution details](.claude/skills/aris-research-council/references/experiments.md) for the complete contract and limits.
+
+The supplied CPU example trains a small classifier on synthetic data to verify execution. It is not a reproduction of a paper or a validation of a research hypothesis. Automatic LLM code generation and autoresearch are not included.
 
 ### Local data
 
@@ -47,7 +61,7 @@ The Mac app stores its workspace in:
 
 Research databases, credentials, and SSH keys are not included in the app or release archive. Back up this directory to preserve your app workspace.
 
-The default local address is `http://127.0.0.1:8766/`. If another service occupies that port, the backend uses an available loopback port. If a BrainDance server is already running on port 8766, the app connects to that workspace. A backend started by the app exits when the app quits.
+The default local address is `http://127.0.0.1:8766/`. If another service occupies that port, the backend uses an available loopback port. If a matching-version BrainDance server is already running on port 8766, the app connects to that workspace. Close older servers before opening an updated app. Quitting an app-owned backend stops its active experiments and cancels queued work. Automatic queues run while the backend is open; this is not a background service.
 
 ## Run the browser version from source
 
@@ -124,6 +138,7 @@ The architecture follows the build machine. The published `arm64` archive is for
 - Paper evidence, ideas, proposed experiments, actual-result records, analysis, and notes.
 - Council evaluations and retained participant requests and responses.
 - Local and SSH device discovery with per-project CPU/GPU and budget settings.
+- Explicitly approved Python execution, an automatic approved-work queue, timeouts, cancellation, live logs, metrics comparison, and artifact collection.
 - Project Trash and restore, with active and discarded node styling.
 - GPT (Codex) and Claude authentication and account-quota indicators, where available.
 - A dark interface with restrained yellow and cyan accents.
@@ -135,6 +150,8 @@ Private research inputs, databases, results, logs, credentials, and SSH settings
 The Viewer binds to loopback and checks Host, Origin, and CSRF tokens. Account-quota checks use existing CLI authentication. On macOS, Claude subscription usage is queried using existing OAuth credentials in Keychain. Tokens and account identifiers are not returned to the UI or application logs.
 
 An authentication indicator is not proof that an inference request will succeed. Usage that cannot be queried is shown as unavailable or rate-limited, rather than as zero.
+
+Approved experiment code runs with the current local or SSH user's permissions. Process supervision is not an OS security sandbox. Provider API keys are not inherited by child processes, but scripts can access files available to that user. Review code before approving it. Original code, execution receipts, and logs are stored in the private workspace under `experiment-runs/`; SSH runs also retain originals under `~/.local/share/braindance/runs/` on the target.
 
 ## Tests
 

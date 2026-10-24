@@ -35,7 +35,7 @@ class ComputeTests(unittest.TestCase):
         self.assertTrue(assignment['require_approval'])
         reloaded=ComputeSettings(self.store.path).state()
         self.assertEqual(reloaded['assignments']['project']['device_ids'],['GPU-a'])
-        self.assertFalse(reloaded['execution_available'])
+        self.assertTrue(reloaded['execution_available'])
         self.assertEqual(self.store.path.stat().st_mode&0o777,0o600)
         self.store.save_profile({**profile,'host':'other-server'})
         self.assertEqual(self.store.state()['assignments']['project']['device_ids'],[])
@@ -43,10 +43,12 @@ class ComputeTests(unittest.TestCase):
 
     def test_unknown_devices_mixed_cpu_gpu_and_auto_execution_are_rejected(self):
         for payload in [dict(device_ids=['GPU-invented']),dict(device_ids=['cpu','GPU-a']),
-                        dict(device_ids=['cpu'],auto_run=True),dict(device_ids=['cpu'],max_parallel_runs=True),
+                        dict(device_ids=['cpu'],auto_run='yes'),dict(device_ids=['cpu'],max_parallel_runs=True),
                         dict(device_ids=['cpu'],time_budget_minutes=0)]:
             with self.assertRaises(ValueError):self.store.assign('p',dict(profile_id='local',**payload))
         self.assertEqual(self.store.assign('p',dict(profile_id='local',device_ids=['cpu']))['device_ids'],['cpu'])
+        automatic=self.store.assign('p',dict(profile_id='local',device_ids=['cpu'],auto_run=True))
+        self.assertTrue(automatic['auto_run']);self.assertTrue(automatic['require_approval'])
 
     def test_remote_probe_uses_only_fixed_discovery_and_retains_errors(self):
         profile=self.store.save_profile(self.profile)
