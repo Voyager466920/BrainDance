@@ -147,7 +147,8 @@ class ComputeSettings:
             profile=next((dict(p) for p in self.data['profiles'] if p['id']==profile_id),None)
         if not profile:
             raise ValueError('먼저 연결 설정을 저장하세요.')
-        command=[sys.executable,'-c',PROBE] if profile['kind']=='local' else ssh_command(profile)
+        local_command=[sys.executable,'--probe-local'] if getattr(sys,'frozen',False) else [sys.executable,'-c',PROBE]
+        command=local_command if profile['kind']=='local' else ssh_command(profile)
         try:
             process=subprocess.run(command,capture_output=True,text=True,timeout=35)
             if process.returncode:

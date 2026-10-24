@@ -13,6 +13,22 @@ ARIS 연구 계획을 탐색하고 기록하는 로컬 연구 워크스페이스
 
 **현재 범위는 연구 계획·기록과 실행 환경 설정입니다. 실험 자동 실행기, GPU 독점 예약, autoresearch는 포함하지 않습니다.**
 
+## Mac 앱
+
+[Releases](https://github.com/Voyager466920/BrainDance/releases)에서 `BrainDance-macOS-arm64.zip`을 받아 압축을 풀고 `BrainDance.app`을 응용 프로그램 폴더로 옮겨 실행합니다. Apple Silicon Mac, macOS 13 이상용입니다. 네이티브 AppKit 창과 WKWebView를 사용하며 Python 서버·인증서 묶음을 앱에 포함하므로 앱 실행에 별도 Python 설치는 필요하지 않습니다. Claude·Codex CLI와 SSH 인증은 필요한 기능을 사용할 때 별도로 준비합니다.
+
+앱의 연구 데이터는 `~/Library/Application Support/BrainDance/`에 저장됩니다. 앱 번들과 GitHub 배포 파일에는 연구 DB, 계정, SSH 설정이 포함되지 않습니다. 기본 주소는 `http://127.0.0.1:8766/`이며, 다른 서비스가 포트를 점유하면 앱 서버는 빈 loopback 포트를 사용합니다. 이미 실행 중인 BrainDance 서버가 있으면 그 워크스페이스에 연결합니다. 앱이 직접 시작한 서버는 앱 종료 시 함께 종료됩니다.
+
+현재 배포본은 ad-hoc 서명한 빌드이며 Apple 공증을 받은 배포본은 아닙니다. 소스에서 직접 빌드할 수도 있습니다.
+
+```sh
+uv venv --python 3.13 .venv
+uv pip install --python .venv/bin/python -r desktop/requirements-build.txt
+.venv/bin/python desktop/build.py
+```
+
+Xcode Command Line Tools와 `uv`가 필요합니다. `dist/BrainDance.app`과 현재 Mac 아키텍처용 ZIP을 생성합니다. 빌드에는 개인 데이터를 복사하지 않습니다.
+
 ## 로컬 실행
 
 Python 3.9 이상과 최신 브라우저가 필요합니다. Viewer 자체는 Python 표준 라이브러리만 사용합니다.

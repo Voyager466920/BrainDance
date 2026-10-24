@@ -1,0 +1,53 @@
+"""Native app backend entry point; no research data belongs in the app bundle."""
+import argparse
+import errno
+import json
+import os
+from pathlib import Path
+import sys
+
+if not getattr(sys, 'frozen', False):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / '.claude/skills/aris-research-council/scripts'))
+
+from compute import PROBE
+
+
+def data_directory():
+    override = os.environ.get('BRAINDANCE_DATA_DIR')
+    return Path(override).expanduser().resolve() if override else Path.home() / 'Library/Application Support/BrainDance'
+
+
+def main():
+    if sys.argv[1:] == ['--probe-local']:
+        # A frozen binary is not a Python interpreter. Run only the fixed hardware probe.
+        exec(compile(PROBE, '<hardware-probe>', 'exec'), {'__name__': '__main__'})
+        return
+    paths = [str(Path.home()/'.local/bin'), '/opt/homebrew/bin', '/usr/local/bin',
+             *os.environ.get('PATH', '').split(os.pathsep), '/usr/bin', '/bin']
+    os.environ['PATH'] = os.pathsep.join(dict.fromkeys(paths))
+    if getattr(sys, 'frozen', False):
+        import certifi
+        os.environ.setdefault('SSL_CERT_FILE', certifi.where())
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--data-dir', type=Path, default=data_directory())
+    parser.add_argument('--port', type=int, default=8766)
+    args = parser.parse_args()
+    directory = args.data_dir.expanduser().resolve()
+    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    from viewer import create_server
+    try:
+        server = create_server(directory/'tree.sqlite3', args.port, max_depth=3)
+    except OSError as error:
+        if error.errno != errno.EADDRINUSE or args.port == 0:
+            raise
+        server = create_server(directory/'tree.sqlite3', 0, max_depth=3)
+    with server:
+        print(json.dumps({'app': 'BrainDance', 'url': 'http://127.0.0.1:'+str(server.server_address[1])+'/'}), flush=True)
+        try:
+            server.serve_forever()
+        except KeyboardInterrupt:
+            pass
+
+
+if __name__ == '__main__':
+    main()

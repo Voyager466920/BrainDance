@@ -4,6 +4,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 from pathlib import Path
 import secrets
+import sys
 import threading
 from urllib.parse import urlsplit, parse_qs
 
@@ -11,7 +12,7 @@ from tree_store import TreeStore
 from provider_status import ProviderStatus
 from compute import ComputeSettings
 
-ASSET = Path(__file__).resolve().parent.parent / 'assets' / 'viewer.html'
+ASSET = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parent.parent)) / 'assets' / 'viewer.html'
 
 
 class ViewerServer(ThreadingHTTPServer):
@@ -74,7 +75,9 @@ class ViewerHandler(BaseHTTPRequestHandler):
         if not self._trusted_host():
             return
         path = urlsplit(self.path).path
-        if path == '/api/tree':
+        if path == '/api/health':
+            self._reply(200, {'app': 'BrainDance', 'version': '0.1.0'})
+        elif path == '/api/tree':
             self._reply(200, self.server.store.export_json())
         elif path == '/api/providers':
             self._reply(200, self.server.provider_status.get())

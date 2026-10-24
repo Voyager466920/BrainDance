@@ -63,5 +63,11 @@ class ComputeTests(unittest.TestCase):
             self.assertIn('Host key verification failed.',failed['error'])
         self.assertIn('Host key verification failed.',self.store.path.with_name('compute-events.jsonl').read_text())
 
+    def test_bundled_app_runs_fixed_probe_without_python_interpreter_flags(self):
+        result=subprocess.CompletedProcess([],0,json.dumps(dict(platform='Darwin',devices=[dict(id='cpu',name='CPU',kind='cpu')])), '')
+        with patch('compute.sys.frozen',True,create=True), patch('compute.subprocess.run',return_value=result) as run:
+            self.assertTrue(self.store.probe('local')['connected'])
+            self.assertEqual(run.call_args.args[0][1:],['--probe-local'])
+
 
 if __name__=='__main__':unittest.main()
