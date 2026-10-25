@@ -352,6 +352,23 @@ class ViewerTests(unittest.TestCase):
         self.assertEqual(self.request('/api/run/file?id='+run['id']+'&file=../compute.json')[0],404)
         self.assertEqual(self.request('/api/experiment-template')[0],200)
 
+    def test_permanent_project_delete_api_requires_csrf_trash_and_named_confirmation(self):
+        project_id=self.root['project_id'];headers=self.credentials()
+        payload={'project_id':project_id,'confirmation_name':self.root['title']}
+        self.assertEqual(self.request('/api/project/purge',payload)[0],403)
+        self.assertEqual(self.request('/api/project/purge',payload,headers)[0],400)
+        self.assertEqual(self.request('/api/project/delete',{'project_id':project_id},headers)[0],200)
+        status,_,body=self.request('/api/project/purge-preview?project_id='+project_id)
+        self.assertEqual(status,200);self.assertEqual(json.loads(body)['counts']['nodes'],1)
+        self.assertEqual(self.request('/api/project/purge',{'project_id':project_id},headers)[0],400)
+        self.assertEqual(self.request('/api/project/purge',{**payload,'confirmation_name':'wrong'},headers)[0],400)
+        status,_,body=self.request('/api/project/purge',payload,headers)
+        self.assertEqual(status,200);self.assertFalse(json.loads(body)['cleanup_pending'])
+        self.assertEqual(self.request('/api/project/restore',{'project_id':project_id},headers)[0],404)
+        _,_,body=self.request('/api/project/trash')
+        self.assertEqual(json.loads(body)['projects'],[])
+        self.assertEqual(self.request('/api/project/purge-preview?project_id='+project_id)[0],404)
+
 
 class ViewerRenderingTests(unittest.TestCase):
     def test_real_viewer_script_resolves_papers_and_selected_evaluations(self):
@@ -454,6 +471,11 @@ assert(elements.get('detail').hidden);
 assert(!elements.get('open-project-trash').hidden);
 assert(elements.get('project-trash-list').textContent.includes('Trashed Project'));
 assert(elements.get('project-trash-list').textContent.includes('복원'));
+assert(elements.get('project-trash-list').textContent.includes('영구 삭제'));
+vm.runInContext("fixture.projects=[];fixture.cleanup_pending=[{id:'pending',title:'Cleanup fixture',cleanup_pending:true,deleted_at:'2026-10-25'}];renderTree();renderProjectTrash();",context);
+assert(elements.get('project-trash-list').textContent.includes('정리 재시도'));
+assert(!elements.get('project-trash-list').textContent.includes('복원'));
+assert(!elements.get('open-project-trash').hidden);
 console.log('Viewer rendering behavior: PASS');
 """.replace('FIXTURE', json.dumps(fixture)).replace('SCRIPT', json.dumps(script))
         result = subprocess.run([node, '-'], input=harness, text=True, capture_output=True, timeout=10)

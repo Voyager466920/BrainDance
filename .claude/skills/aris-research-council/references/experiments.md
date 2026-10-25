@@ -32,4 +32,6 @@ Metrics JSON is limited to 1 MiB. Artifact transfer is limited to 2 MiB per file
 
 ## Validation scope
 
+Projects moved to Trash retain their records and files until the user confirms **영구 삭제**. Permanent deletion removes project records, exclusive imported conversations and dedicated local run files, drops its compute assignment, then compacts SQLite. Cleanup failures remain retryable across restarts. It never follows artifact symlinks or deletes external working folders, shared datasets/models, backups or remote target files. Local Council output cleanup is confined to exclusive directories immediately under the workspace's `council-runs/` folder. Running, queued and finishing jobs block permanent deletion.
+
 Automated tests run real CPU subprocesses, automatic approved dispatch, HTTP endpoints, live logs, budget/concurrency limits, cancellation, timeouts, restarts and malformed/failing output. The SSH protocol is exercised through a local transport fixture. Tests do not demonstrate connectivity to a real remote host, actual GPU training, or scientific validity of Council hypotheses. Validate those separately with an explicitly approved plan and budget.

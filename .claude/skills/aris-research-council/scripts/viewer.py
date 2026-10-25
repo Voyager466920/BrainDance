@@ -14,6 +14,7 @@ from tree_store import TreeStore
 from provider_status import ProviderStatus
 from compute import ComputeSettings
 from experiments import ExperimentEngine
+from project_cleanup import ProjectCleanup
 
 ASSET = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parent.parent)) / 'assets' / 'viewer.html'
 
@@ -31,8 +32,11 @@ class ViewerServer(ThreadingHTTPServer):
         super().__init__(('127.0.0.1', port), ViewerHandler)
         actual_port = self.server_address[1]
         self.allowed_hosts = {'127.0.0.1:' + str(actual_port), 'localhost:' + str(actual_port)}
-        try:self.experiments=ExperimentEngine(store,self.compute,self.compute_state)
+        try:
+            self.experiments=ExperimentEngine(store,self.compute,self.compute_state)
+            self.cleanup=ProjectCleanup(store,self.experiments,self.compute)
         except Exception:
+            if hasattr(self,'experiments'):self.experiments.close()
             super().server_close()
             raise
 
@@ -87,7 +91,15 @@ class ViewerHandler(BaseHTTPRequestHandler):
             return
         path = urlsplit(self.path).path
         if path == '/api/health':
-            self._reply(200, {'app': 'BrainDance', 'version': '0.2.0'})
+            self._reply(200, {'app': 'BrainDance', 'version': '0.2.1'})
+        elif path == '/api/project/trash':
+            self._reply(200,self.server.cleanup.trash())
+        elif path == '/api/project/purge-preview':
+            try:
+                project_id=parse_qs(urlsplit(self.path).query).get('project_id',[''])[0]
+                self._reply(200,self.server.cleanup.preview(project_id))
+            except KeyError as error:self._reply(404,{'error':str(error)})
+            except (ValueError,OSError) as error:self._reply(400,{'error':str(error)})
         elif path == '/api/tree':
             self._reply(200, self.server.store.export_json())
         elif path == '/api/providers':
@@ -175,6 +187,8 @@ class ViewerHandler(BaseHTTPRequestHandler):
             self._reply(404, {'error': str(exc)})
         except (ValueError, TypeError, OverflowError) as exc:
             self._reply(400, {'error': str(exc)})
+        except OSError as exc:
+            self._reply(500, {'error': '로컬 파일 작업을 완료하지 못했습니다: '+str(exc)})
 
     def _mutate(self, path, payload):
         if path=='/api/experiment':
@@ -188,6 +202,10 @@ class ViewerHandler(BaseHTTPRequestHandler):
         elif path=='/api/experiment/cancel':
             if set(payload)!={'run_id'}:raise ValueError('Expected run_id')
             result=self.server.experiments.cancel(payload['run_id'])
+        elif path=='/api/project/purge':
+            if set(payload)!={'project_id','confirmation_name'}:
+                raise ValueError('삭제할 프로젝트와 확인한 이름이 필요합니다.')
+            result=self.server.cleanup.purge(payload['project_id'],payload['confirmation_name'])
         elif path in {'/api/project/delete','/api/project/restore'}:
             if set(payload)!={'project_id'}:
                 raise ValueError('Expected project_id')

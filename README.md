@@ -35,6 +35,8 @@ Use the gear icon to open settings. The **SSH 추가** (Add SSH) tab lets you sa
 
 Click a project title to collapse or expand its nodes. The trash icon on the right moves the project to Trash, where it can be restored.
 
+Open **휴지통** (Trash) and choose **영구 삭제** (Delete permanently) to remove a project after reviewing its name, record counts and local file size. This removes its database records, unshared imported Council conversations, project resource assignment, and dedicated local experiment logs/artifacts. SQLite is compacted to reclaim free pages. Exclusive Council outputs are removed only when they are under the workspace's managed `council-runs/` directory. Shared runs, arbitrary external folders, model/dataset caches, backups, SSH profiles/keys, and files on remote servers remain intact. Permanent deletion cannot be restored. If file cleanup fails, Trash retains a **정리 재시도** (Retry cleanup) entry, including after restarting the app. Queued, running or finishing experiments must stop before permanent deletion.
+
 **Creating a project does not start an experiment.** Open a node's **실험 실행** (Run experiments) tab to save Python code, review its exact code/device/time limit, and approve execution. BrainDance now supervises local and SSH runs and enforces project concurrency and time budgets. Device locks coordinate BrainDance's own jobs; they do not reserve a GPU against other software.
 
 ### Run an experiment

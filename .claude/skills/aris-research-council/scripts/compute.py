@@ -211,6 +211,15 @@ class ComputeSettings:
             self._save()
         return assignment
 
+    def remove_assignment(self,project_id):
+        with self.lock:
+            if project_id in self.data['assignments']:
+                previous=self.data['assignments'].pop(project_id)
+                try:self._save()
+                except OSError:
+                    self.data['assignments'][project_id]=previous
+                    raise
+
     def assign(self,project_id,payload):
         with self.lock:
             return self.persist_assignment(project_id,self.prepare_assignment(payload))
