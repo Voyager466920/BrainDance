@@ -24,6 +24,27 @@ main{overflow:auto;padding:29px clamp(24px,3.8vw,62px) 70px;min-width:0;backgrou
 .project-auto-tools{display:flex;align-items:center;gap:8px;padding:0 12px 12px}.project-auto-tools button{font-size:10px;padding:6px 8px;white-space:nowrap}.project-auto-tools span{font-size:10px;color:var(--muted);line-height:1.6}.project-auto-tools .automatic-on{color:#a9cfb4;border-color:#85b59a}
 .research-chat{border:1px solid var(--line);background:#141b1e;margin-bottom:24px}.chat-heading{padding:14px 18px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;gap:10px;font-size:13px}.chat-timeline{height:48vh;min-height:280px;max-height:650px;overflow-y:auto;padding:22px;display:flex;flex-direction:column;gap:18px;scroll-behavior:smooth}.chat-message{max-width:92%;padding:14px 16px;background:#1c252a;border:1px solid #323f45;overflow-wrap:anywhere}.chat-message.user{align-self:flex-end;background:#273631;border-color:#4b6257;max-width:82%}.chat-message.assistant{align-self:flex-start}.chat-message.report{border-left:3px solid #9cad8e}.chat-message.status{background:transparent;border:0;border-left:2px solid #62767c;font-size:12px;padding:6px 12px;color:var(--muted)}.chat-label{font-size:11px;color:var(--cyan);margin-bottom:8px}.chat-content{font-size:13px;line-height:1.9;white-space:pre-wrap}.chat-footer{font-size:10px;color:var(--muted);margin-top:8px}.chat-composer{padding:14px;border-top:1px solid var(--line);background:#192125}.chat-composer textarea{min-height:68px;max-height:220px;background:#141b1e}.chat-composer-tools{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px}.chat-composer-tools select{font-size:11px;max-width:220px}.chat-composer-tools button{margin-left:auto}.chat-empty{color:var(--muted);font-size:13px;line-height:1.9}.chat-message pre{white-space:pre-wrap}.execution-plans{margin-top:20px}.execution-plans>summary{color:var(--muted);font-size:12px;margin-bottom:16px}@media(prefers-reduced-motion:reduce){.chat-timeline{scroll-behavior:auto}}
 #detail[data-view="experiments"]:not([hidden]){height:calc(100dvh - 190px);min-height:480px;display:flex;flex-direction:column}#detail[data-view="experiments"] .detail-heading{padding-bottom:7px;flex-shrink:0}#detail[data-view="experiments"] #node-meta{display:none}#detail[data-view="experiments"] .tabs{margin-bottom:12px;flex-shrink:0}#detail[data-view="experiments"] #panel-experiments{display:flex;flex-direction:column;flex:1;min-height:0}#detail[data-view="experiments"] #operator-experiments{padding:10px 14px;margin-bottom:12px;flex-shrink:0}#detail[data-view="experiments"] #operator-experiments p{margin:6px 0 0}#detail[data-view="experiments"] #operator-experiments h3{font-size:13px}#detail[data-view="experiments"] #operator-experiments button{padding:6px 10px;font-size:11px}#detail[data-view="experiments"] .research-chat{display:flex;flex-direction:column;flex:1;min-height:250px;margin-bottom:10px}#detail[data-view="experiments"] .chat-timeline{height:auto;max-height:none;min-height:100px;flex:1}#detail[data-view="experiments"] .chat-heading,#detail[data-view="experiments"] .chat-composer{flex-shrink:0}.chat-message{margin:0;flex-shrink:0;align-self:flex-start}.chat-message.user{align-self:flex-end}#detail[data-view="experiments"] .execution-plans{flex-shrink:0;margin-top:5px}#detail[data-view="experiments"] .execution-plans[open]{max-height:40vh;overflow:auto}
+@media(min-width:651px){
+body:has(#detail[data-view="experiments"]:not([hidden])) header{height:68px;padding:10px 20px}
+body:has(#detail[data-view="experiments"]:not([hidden])) header h1{font-size:26px}
+body:has(#detail[data-view="experiments"]:not([hidden])) .provider-caption{display:none}
+body:has(#detail[data-view="experiments"]:not([hidden])) .layout{height:calc(100dvh - 68px);grid-template-columns:260px minmax(0,1fr)}
+body:has(#detail[data-view="experiments"]:not([hidden])) main{padding:12px 18px 14px}
+#detail[data-view="experiments"]:not([hidden]){height:100%;max-width:none;min-height:480px}
+#detail[data-view="experiments"] .detail-heading{padding-bottom:3px}
+#detail[data-view="experiments"] .detail-heading h2{font-size:20px;margin-bottom:4px}
+#detail[data-view="experiments"] .tabs{margin-bottom:8px}
+#detail[data-view="experiments"] .tab{padding:9px 14px;font-size:12px}
+#detail[data-view="experiments"] #operator-experiments{display:flex;align-items:center;flex-wrap:wrap;gap:5px 14px;padding:7px 12px;margin-bottom:8px}
+#detail[data-view="experiments"] #operator-experiments .operator-head{flex:1;min-width:280px}
+#detail[data-view="experiments"] #operator-experiments>p{margin:0;font-size:11px}
+#detail[data-view="experiments"] #operator-experiments .card{flex:1 1 100%;padding:8px 12px;margin:0;max-height:110px;overflow:auto}
+#detail[data-view="experiments"] .chat-heading{padding:9px 14px}
+#detail[data-view="experiments"] .chat-timeline{padding:18px 22px;min-height:200px}
+#detail[data-view="experiments"] .chat-composer{padding:10px 12px}
+#detail[data-view="experiments"] .chat-composer textarea{min-height:62px}
+#detail[data-view="experiments"] .execution-plans>summary{margin-bottom:0}
+}
 </style>
 </head>
 <body>
