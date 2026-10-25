@@ -81,6 +81,8 @@ When no usable papers can be retrieved, write the actual failure to LITERATURE.m
           '--disallowedTools','Bash,Agent','--max-budget-usd',str(job['claude_budget_usd'])]
     progress.emit('literature','공식 ARIS /research-lit으로 논문을 탐색하고 근거를 수집합니다.')
     env=os.environ.copy();env['CLAUDE_CODE_MAX_OUTPUT_TOKENS']='7000';env['ARIS_REPO']=str(aris)
+    budget=council.Budget({**council.MODES[job['mode']],**({'session_budget':job['session_budget']} if job.get('session_budget') else {})},root/'literature-admission.json')
+    budget.reserve(1,len(prompt.encode())//4+50000)
     rows=council.process(argv,prompt,work,root/'literature',job['phase_timeout_seconds'],env)
     results=[r for r in rows if r.get('type')=='result']
     if not results or results[-1].get('is_error') or results[-1].get('subtype')!='success':
@@ -97,6 +99,7 @@ When no usable papers can be retrieved, write the actual failure to LITERATURE.m
     if not requested.intersection(succeeded):raise RuntimeError('공식 research-lit Skill 성공 영수증이 없습니다. 탐색을 완료로 처리하지 않습니다.')
     result=results[-1]
     usage=dict(source_skill_sha256=source_hash,skill_invoked=True,model_usage=result.get('modelUsage'),usage=result.get('usage'),total_cost_usd=result.get('total_cost_usd'))
+    budget.record(dict(stage_path=str(work),total_tokens=council.claude_tokens(result.get('modelUsage'),result.get('usage',{}))))
     council.dump(root/'literature-usage.json',usage)
     return work
 

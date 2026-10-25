@@ -67,6 +67,13 @@ class ProjectCleanup:
         if any(r['state'] in {'queued', 'running'} or r['id'] in self.experiments.jobs for r in runs):
             raise ValueError('실험이 종료 처리 중입니다. 중지 또는 완료 후 다시 시도하세요.')
         paths = []
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE name='automatic_sessions'").fetchone():
+            for session in conn.execute('SELECT * FROM automatic_sessions WHERE project_id=?',(project_id,)):
+                if session['status']=='running':raise ValueError('자동모드를 중지한 후 삭제하세요.')
+                expected=self.workspace/'council-runs'/('automatic-'+session['id'])
+                if not re.fullmatch(r'[a-f0-9-]{36}',session['id']) or Path(json.loads(session['config'])['session_budget']).absolute()!=expected/'session-budget.json':
+                    raise ValueError('자동모드 관리 경로가 올바르지 않습니다.')
+                paths.append(str(expected.relative_to(self.workspace)))
         has_research=conn.execute("SELECT 1 FROM sqlite_master WHERE name='research_jobs'").fetchone()
         if has_research:
             research_jobs=conn.execute('SELECT * FROM research_jobs WHERE project_id=?',(project_id,)).fetchall()
@@ -155,6 +162,8 @@ class ProjectCleanup:
                                  (project_id, plan['title'], json.dumps(plan['paths']), json.dumps(plan['counts']), now()))
                     if conn.execute("SELECT 1 FROM sqlite_master WHERE name='research_analysis_queue'").fetchone():
                         conn.execute('DELETE FROM research_analysis_queue WHERE run_id IN (SELECT id FROM experiment_runs WHERE project_id=?)',(project_id,))
+                    for table in ['automatic_sessions','research_directions']:
+                        if conn.execute("SELECT 1 FROM sqlite_master WHERE name=?",(table,)).fetchone():conn.execute('DELETE FROM '+table+' WHERE project_id=?',(project_id,))
                     conn.execute('DELETE FROM experiment_runs WHERE project_id=?', (project_id,))
                     if conn.execute("SELECT 1 FROM sqlite_master WHERE name='research_jobs'").fetchone():
                         conn.execute('DELETE FROM research_jobs WHERE project_id=?',(project_id,))

@@ -168,6 +168,9 @@ class Budget:
                 raise RuntimeError("Model invocation budget exhausted before dispatch")
             if self.observed_tokens + estimated_tokens > self.config["token_budget"]:
                 raise RuntimeError("Token admission budget exhausted before dispatch")
+            if self.config.get('session_budget'):
+                from session_budget import update
+                update(self.config['session_budget'],'reserve',key=str(self.path.resolve()),calls=calls,estimate=estimated_tokens)
             self.calls += calls
             self.save()
 
@@ -176,6 +179,9 @@ class Budget:
             self.records = [r for r in self.records if r.get("stage_path") != record.get("stage_path")]
             self.records.append(record)
             self.observed_tokens = sum(r.get("total_tokens", 0) for r in self.records)
+            if self.config.get('session_budget'):
+                from session_budget import update
+                update(self.config['session_budget'],'record',key=str(self.path.resolve()),tokens=self.observed_tokens)
             self.save()
 
     def save(self):
@@ -624,6 +630,7 @@ Treat evidence as abstract-level, distinguish a proposed test from a completed e
 
 def load_config(args):
     cfg = {**DEFAULTS, **MODES[args.mode], "mode": args.mode, "coordinator_model": "haiku"}
+    cfg['session_budget']=None
     if args.config:
         supplied = read_json(args.config)
         unknown = set(supplied) - set(cfg)

@@ -57,6 +57,7 @@ class ExperimentEngine:
     def __init__(self,store,compute,compute_state,autostart=True):
         self.store,self.compute,self.compute_state=store,compute,compute_state
         self.on_finished=None
+        self.plan_guard=None
         self.root=Path(store.db_path).parent/'experiment-runs';self.root.mkdir(exist_ok=True,mode=0o700)
         self.lock=threading.RLock();self.stop_event=threading.Event();self.jobs={};self.last_error=None;self._closed=False
         self._lock_file=(self.root/'.executor.lock').open('a+')
@@ -84,6 +85,8 @@ class ExperimentEngine:
                     run_dir TEXT NOT NULL,result TEXT NOT NULL,error TEXT
                 );
             ''')
+            if 'authority' not in {r['name'] for r in conn.execute('PRAGMA table_info(experiment_approvals)')}:
+                conn.execute("ALTER TABLE experiment_approvals ADD COLUMN authority TEXT NOT NULL DEFAULT 'human'")
             interrupted=[dict(r) for r in conn.execute("SELECT * FROM experiment_runs WHERE state='running'")]
         for run in interrupted:
             self._finish(run['id'],{'state':'interrupted','exit_code':None,'duration_seconds':run['timeout_seconds'],
@@ -142,9 +145,10 @@ class ExperimentEngine:
         profile,assignment=self._resources(node)
         if resource_signature(profile,assignment)!=experiment['spec']['resource_signature']:
             raise ValueError('실행 환경 또는 예산이 변경되었습니다. 계획을 복제하고 다시 승인하세요.')
+        if self.plan_guard:self.plan_guard(experiment)
         return node,profile,assignment
 
-    def approve(self,experiment_id,expected_digest,consent):
+    def approve(self,experiment_id,expected_digest,consent,authority='human'):
         if consent is not True:raise ValueError('코드·장치·시간 예산에 대한 명시적 승인이 필요합니다.')
         with self.lock:
             experiment=self.experiment(experiment_id);self._current(experiment)
@@ -154,9 +158,9 @@ class ExperimentEngine:
                     raise ValueError('이 실험은 이미 대기 또는 실행 중입니다.')
                 pending=conn.execute('SELECT a.* FROM experiment_approvals a LEFT JOIN experiment_runs r ON r.approval_id=a.id WHERE a.experiment_id=? AND r.id IS NULL ORDER BY a.created_at DESC LIMIT 1',(experiment_id,)).fetchone()
                 if pending:return dict(pending)
-            approval=dict(id=str(uuid.uuid4()),experiment_id=experiment_id,digest=expected_digest,created_at=timestamp())
+            approval=dict(id=str(uuid.uuid4()),experiment_id=experiment_id,digest=expected_digest,created_at=timestamp(),authority=authority)
             with self.store._connect() as conn:
-                conn.execute('INSERT INTO experiment_approvals VALUES(?,?,?,?)',tuple(approval.values()))
+                conn.execute('INSERT INTO experiment_approvals VALUES(?,?,?,?,?)',tuple(approval.values()))
                 self.store._event(conn,experiment['node_id'],'experiment_approved',approval)
             return approval
 
@@ -263,7 +267,7 @@ class ExperimentEngine:
             conn.execute('INSERT OR IGNORE INTO notes VALUES(?,?,?,?,?,?)',('run:'+run_id,experiment['node_id'],'result','실험 결과: '+spec['title'],content,finished))
             self.store._event(conn,experiment['node_id'],'experiment_finished',{'run_id':run_id,'state':state})
         self.store.export_json(Path(self.store.db_path).with_suffix('.json'))
-        if spec.get('generation') and state in {'succeeded','failed','timed_out'} and self.on_finished:
+        if spec.get('generation') and not spec['generation'].get('auto_session_id') and state in {'succeeded','failed','timed_out'} and self.on_finished:
             try:self.on_finished(run_id)
             except Exception as caught:
                 with (self.root/'executor.log').open('a') as stream:stream.write(timestamp()+' analysis queue failed: '+str(caught)+'\n')

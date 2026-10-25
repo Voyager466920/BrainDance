@@ -16,6 +16,7 @@ from compute import ComputeSettings
 from experiments import ExperimentEngine
 from project_cleanup import ProjectCleanup
 from research import ResearchEngine
+from autopilot import Autopilot
 
 ASSET = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parent.parent)) / 'assets' / 'viewer.html'
 
@@ -36,14 +37,17 @@ class ViewerServer(ThreadingHTTPServer):
         try:
             self.experiments=ExperimentEngine(store,self.compute,self.compute_state)
             self.research=ResearchEngine(store,self.experiments)
+            self.autopilot=Autopilot(store,self.research,self.experiments)
             self.cleanup=ProjectCleanup(store,self.experiments,self.compute,self.research)
         except Exception:
+            if hasattr(self,'autopilot'):self.autopilot.close()
             if hasattr(self,'research'):self.research.close()
             if hasattr(self,'experiments'):self.experiments.close()
             super().server_close()
             raise
 
     def server_close(self):
+        if hasattr(self,'autopilot'):self.autopilot.close()
         if hasattr(self,'research'):self.research.close()
         if hasattr(self,'experiments'):self.experiments.close()
         super().server_close()
@@ -95,7 +99,11 @@ class ViewerHandler(BaseHTTPRequestHandler):
             return
         path = urlsplit(self.path).path
         if path == '/api/health':
-            self._reply(200, {'app': 'BrainDance', 'version': '0.4.0'})
+            self._reply(200, {'app': 'BrainDance', 'version': '0.5.0'})
+        elif path=='/api/control':
+            try:self._reply(200,self.server.autopilot.state(parse_qs(urlsplit(self.path).query).get('project_id',[''])[0]))
+            except (KeyError,StopIteration):self._reply(404,{'error':'프로젝트를 찾을 수 없습니다.'})
+            except ValueError as error:self._reply(400,{'error':str(error)})
         elif path.startswith('/api/research'):
             self._research_get(path)
         elif path == '/api/project/trash':
@@ -219,6 +227,10 @@ class ViewerHandler(BaseHTTPRequestHandler):
             if payload:raise ValueError('Expected empty object')
             self._reply(200,self.server.provider_status.get(force=True))
             return
+        elif path=='/api/control/automatic':
+            result=self.server.autopilot.control(payload)
+        elif path=='/api/control/direction':
+            result=self.server.autopilot.intervene(payload)
         elif path=='/api/research/start':
             result=self.server.research.start(payload)
         elif path=='/api/research/stop':
@@ -242,6 +254,8 @@ class ViewerHandler(BaseHTTPRequestHandler):
         elif path in {'/api/project/delete','/api/project/restore'}:
             if set(payload)!={'project_id'}:
                 raise ValueError('Expected project_id')
+            if path.endswith('/delete') and self.server.autopilot.sessions(payload['project_id']):
+                self.server.autopilot.control(dict(project_id=payload['project_id'],action='stop'))
             result=self.server.store.set_project_deleted(payload['project_id'],path.endswith('/delete'))
         elif path == '/api/project':
             if set(payload)!={'name','goal','compute'}:

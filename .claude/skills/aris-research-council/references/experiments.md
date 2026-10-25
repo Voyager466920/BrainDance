@@ -2,11 +2,11 @@
 
 Council outputs remain research proposals. Prepare an executable Python plan separately, including its dependencies, dataset, baseline, evaluation split, primary metric, device and maximum duration. Never report an experiment as executed without a completion receipt and actual outputs. The CPU template is synthetic infrastructure verification, not research evidence.
 
-## Workflow and approval
+## Manual workflow and approval
 
 Use the node's **실험 실행** tab. Saving creates an immutable plan containing Python source, interpreter, working directory, argument array, target profile, devices, timeout and metric. Inspect it and explicitly approve its digest. Changing the code requires a new plan; changing resource or budget settings invalidates existing plans. Each approval can launch exactly one run, and duplicate dispatch requests return the same run. A new attempt requires new approval.
 
-**승인하고 실행** queues the plan immediately. **승인 후 자동 대기** leaves it for the automatic queue, which runs only while that project's auto mode and the backend are active. No unapproved plan executes. Auto mode does not generate code, extend budgets, retry failures, or turn Council ideas into jobs. Inactive/discarded nodes and trashed projects cannot start new work. Execution records remain in the research journal.
+**승인하고 실행** queues the plan immediately. **승인 후 자동 대기** leaves it for the automatic queue, which runs only while that project's auto mode and the backend are active. This is the legacy manually approved queue. The separate project **자동모드** authorizes reviewed LLM-generated code for one bounded session and generates/runs/analyzes successive experiments without per-plan human approval. It preserves code digests, session authority, device and runtime limits. Inactive/discarded nodes and trashed projects cannot start new work. Execution records remain in the research journal.
 
 ## Runtime and dependency contract
 
@@ -34,4 +34,4 @@ Metrics JSON is limited to 1 MiB. Artifact transfer is limited to 2 MiB per file
 
 Projects moved to Trash retain their records and files until the user confirms **영구 삭제**. Permanent deletion removes project records, exclusive imported conversations and dedicated local run files, drops its compute assignment, then compacts SQLite. Cleanup failures remain retryable across restarts. It never follows artifact symlinks or deletes external working folders, shared datasets/models, backups or remote target files. Local Council output cleanup is confined to exclusive directories immediately under the workspace's `council-runs/` folder. Running, queued and finishing jobs block permanent deletion.
 
-Automated tests run real CPU subprocesses, automatic approved dispatch, HTTP endpoints, live logs, budget/concurrency limits, cancellation, timeouts, restarts and malformed/failing output. The SSH protocol is exercised through a local transport fixture. Tests do not demonstrate connectivity to a real remote host, actual GPU training, or scientific validity of Council hypotheses. Validate those separately with an explicitly approved plan and budget.
+Automated tests run real CPU subprocesses, automatic approved dispatch, HTTP endpoints, live logs, budget/concurrency limits, cancellation, timeouts, restarts and malformed/failing output. The SSH protocol is exercised through a local transport fixture. Tests do not demonstrate connectivity to a real remote host, actual GPU training, or scientific validity of Council hypotheses. Validate those separately under manual plan approval or an explicitly enabled project automatic session.

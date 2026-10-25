@@ -19,6 +19,8 @@ TERMINAL={'completed','failed','cancelled','interrupted'}
 class ResearchEngine:
     def __init__(self,store,experiments=None):
         self.store=store;self.workspace=Path(store.db_path).parent
+        from steering import initialize
+        initialize(store)
         self.experiments=experiments
         self.root=self.workspace/'council-runs';self.root.mkdir(exist_ok=True,mode=0o700)
         self.lock=threading.RLock();self.closed=threading.Event();self.process=None;self.active_id=None
@@ -40,7 +42,8 @@ class ResearchEngine:
             experiments.on_finished=self.queue_analysis
             with store._connect() as conn:
                 for row in conn.execute("SELECT r.id,e.spec FROM experiment_runs r JOIN experiments e ON e.id=r.experiment_id WHERE r.state IN ('succeeded','failed','timed_out')"):
-                    if json.loads(row['spec']).get('generation'):
+                    generation=json.loads(row['spec']).get('generation',{})
+                    if generation and not generation.get('auto_session_id'):
                         conn.execute("INSERT OR IGNORE INTO research_analysis_queue VALUES(?,'pending',NULL,NULL)",(row['id'],))
             self.analysis_thread=threading.Thread(target=self._analysis_loop,daemon=True);self.analysis_thread.start()
 
@@ -96,7 +99,7 @@ class ResearchEngine:
         if name not in item['files'] or path.is_symlink() or not path.resolve().is_relative_to(root.resolve()):raise KeyError('연구 파일을 찾을 수 없습니다.')
         return path
 
-    def start(self,payload):
+    def start(self,payload,internal=None):
         if set(payload)-{'node_id','mode','confirm','token_budget','phase_timeout_seconds','reuse_literature','task','run_id','context_path'} or payload.get('confirm') is not True:
             raise ValueError('연구 시작과 모델 사용량 발생을 확인하세요.')
         task=payload.get('task','research')
@@ -121,6 +124,10 @@ class ResearchEngine:
         if type(reuse) is not bool:raise ValueError('근거 재사용 설정은 true 또는 false여야 합니다.')
         available=self.availability()
         if not available['available']:raise ValueError('설치가 필요합니다: '+', '.join(available['missing']))
+        if not internal and task!='analyze':
+            with self.store._connect() as conn:
+                if conn.execute("SELECT 1 FROM sqlite_master WHERE name='automatic_sessions'").fetchone() and conn.execute("SELECT 1 FROM automatic_sessions WHERE project_id=? AND status='running'",(node['project_id'],)).fetchone():
+                    raise ValueError('자동모드가 다음 작업을 관리 중입니다. 방향 수정 또는 일시정지를 사용하세요.')
         with self.lock,self.store._connect() as conn:
             if self.closed.is_set():raise ValueError('연구 실행기가 종료 중입니다.')
             old=conn.execute("SELECT * FROM research_jobs WHERE project_id=? AND state IN ('queued','running')",(node['project_id'],)).fetchone()
@@ -144,6 +151,14 @@ class ResearchEngine:
                 claude_budget_usd=3 if mode=='lite' else 8,phase_timeout_seconds=timeout,
                 reuse_literature=reusable,
                 council_overrides=dict(rounds=1,max_councils=1,token_budget=token_budget,timeout_seconds=timeout,output_tokens=6000))
+            from steering import prompt_context
+            config['steering']=prompt_context(self.store,node['project_id'])
+            if internal:
+                config.update(internal)
+                config['council_overrides']['session_budget']=internal['session_budget']
+            if config['steering']['directions']:
+                config['topic']+='\n사용자 방향 지시 (최신 지시가 상충하는 과거 지시보다 우선):\n'+json.dumps(config['steering']['directions'],ensure_ascii=False)
+            conn.execute("UPDATE research_directions SET state='applied',job_id=? WHERE project_id=? AND seq<=?",(job_id,node['project_id'],config['steering']['revision']))
             from council import dump
             dump(root/'job.json',config)
             timestamp=now();record=dict(id=job_id,project_id=node['project_id'],node_id=node['id'],title=topic,
@@ -187,7 +202,12 @@ class ResearchEngine:
                     if progress.exists():
                         try:
                             raw=progress.read_text()
-                            if raw!=last:self._update(record['id'],json.loads(raw));last=raw
+                            if raw!=last:
+                                pending=json.loads(raw)
+                                # Worker completion is provisional until exit and host registration.
+                                if pending.get('state')=='completed':
+                                    pending={**pending,'state':'running','phase':'registering','message':'작업 종료 상태와 결과 등록을 확인합니다.'}
+                                self._update(record['id'],pending);last=raw
                         except (OSError,ValueError):pass
                     time.sleep(.4)
                 if progress.exists():
@@ -225,10 +245,14 @@ class ResearchEngine:
         if data['target_signature']!=resource_signature(profile,assignment):raise ValueError('생성 중 실행 환경이 바뀌었습니다. 새 환경에서 다시 준비하세요.')
         if data['review'].get('verdict')!='pass':raise ValueError('코드 검토가 통과하지 않았습니다.')
         provenance=dict(job_id=record['id'],details=data['details'],checks=data['checks'],review=data['review'],automatic_analysis=True)
+        config=record.get('config',{})
+        provenance.update(direction_revision=config.get('steering',{}).get('revision',0))
+        if config.get('auto_session_id'):provenance['auto_session_id']=config['auto_session_id']
         experiment=self.experiments.create(payload,provenance=provenance)
         from council import dump
         dump(root/'registered-experiment.json',dict(id=experiment['id'],digest=experiment['digest'],node_id=node['id']))
-        return {**final,'phase':'experiment_approval','message':'LLM이 실행 코드와 내장 단위 검사를 준비했습니다. 실험 실행 탭에서 장치·예산을 확인하고 승인하세요.'}
+        message='자동모드 권한으로 검토된 LLM 실험을 실행 대기열에 등록합니다.' if config.get('auto_session_id') else 'LLM이 실행 코드와 내장 단위 검사를 준비했습니다. 실험 실행 탭에서 장치·예산을 확인하고 승인하세요.'
+        return {**final,'phase':'experiment_approval','message':message}
 
     def queue_analysis(self,run_id):
         with self.store._connect() as conn:conn.execute("INSERT OR IGNORE INTO research_analysis_queue VALUES(?,'pending',NULL,NULL)",(run_id,))
@@ -242,6 +266,7 @@ class ResearchEngine:
                 try:
                     run=self.experiments.run_info(entry['run_id']);exp=self.experiments.experiment(run['experiment_id'])
                     if not exp['spec'].get('generation'):raise KeyError('Not an LLM-managed experiment')
+                    if exp['spec']['generation'].get('auto_session_id'):raise KeyError('Automatic session owns this analysis')
                     job=self.start(dict(node_id=exp['node_id'],task='analyze',run_id=run['id'],confirm=True))
                     with self.store._connect() as conn:conn.execute("UPDATE research_analysis_queue SET state='dispatched',job_id=? WHERE run_id=?",(job['id'],run['id']))
                 except ValueError:continue

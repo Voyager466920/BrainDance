@@ -1,0 +1,248 @@
+"""Project-scoped, human-steerable research sessions with durable stage receipts."""
+import hashlib
+import json
+from pathlib import Path
+import threading
+import traceback
+import uuid
+
+from experiments import resource_signature,TERMINAL
+from tree_store import now
+import steering
+
+
+class Autopilot:
+    def __init__(self,store,research,experiments,autostart=True):
+        self.store,self.research,self.experiments=store,research,experiments
+        self.lock=threading.RLock();self.closed=threading.Event()
+        steering.initialize(store)
+        with store._connect() as conn:
+            conn.execute('''CREATE TABLE IF NOT EXISTS automatic_sessions (
+                id TEXT PRIMARY KEY,project_id TEXT NOT NULL,node_id TEXT NOT NULL,
+                status TEXT NOT NULL,message TEXT NOT NULL,config TEXT NOT NULL,
+                progress TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL)''')
+            conn.execute("UPDATE automatic_sessions SET status='paused',message='앱을 다시 열었습니다. 자동모드 재개를 누르면 남은 한도에서 이어갑니다.' WHERE status='running'")
+        experiments.plan_guard=self.guard
+        self.thread=threading.Thread(target=self._loop,daemon=True,name='braindance-automatic')
+        if autostart:self.thread.start()
+
+    @staticmethod
+    def decode(row):
+        item=dict(row)
+        for key in ['config','progress']:item[key]=json.loads(item[key])
+        return item
+
+    def sessions(self,project_id):
+        with self.store._connect() as conn:return [self.decode(r) for r in conn.execute('SELECT * FROM automatic_sessions WHERE project_id=? ORDER BY rowid DESC',(project_id,))]
+
+    def get(self,session_id):
+        with self.store._connect() as conn:row=conn.execute('SELECT * FROM automatic_sessions WHERE id=?',(session_id,)).fetchone()
+        if row is None:raise KeyError('자동모드 실행을 찾을 수 없습니다.')
+        return self.decode(row)
+
+    def root(self,project_id):
+        root=next((n for n in self.store.export_json()['nodes'] if n['project_id']==project_id and not n['parent_id']),None)
+        if root is None:raise KeyError('프로젝트를 찾을 수 없습니다.')
+        return root
+
+    def state(self,project_id):
+        root=self.root(project_id);self.store.get_node(root['id'])
+        sessions=self.sessions(project_id);current=sessions[0] if sessions else None
+        with self.store._connect() as conn:
+            directions=[dict(r) for r in conn.execute('SELECT * FROM research_directions WHERE project_id=? ORDER BY seq DESC LIMIT 20',(project_id,))]
+            runs=[dict(r) for r in conn.execute("SELECT r.id,r.state,r.experiment_id,e.node_id,e.spec FROM experiment_runs r JOIN experiments e ON e.id=r.experiment_id WHERE r.project_id=? AND r.state IN ('queued','running') ORDER BY r.queued_at",(project_id,))]
+            reports=[dict(r) for r in conn.execute("SELECT n.* FROM notes n JOIN node_projects p ON p.node_id=n.node_id WHERE p.project_id=? AND n.kind IN ('result','analysis') ORDER BY n.created_at DESC,n.rowid DESC LIMIT 8",(project_id,))]
+        for run in runs:
+            spec=json.loads(run.pop('spec'));run.update(title=spec['title'],device_ids=spec['device_ids'],timeout_seconds=spec['timeout_seconds'])
+        usage=None
+        if current:
+            path=Path(current['config']['session_budget'])
+            if path.is_file():
+                raw=json.loads(path.read_text());usage=dict(calls=raw['calls'],max_calls=raw['max_calls'],charged_tokens=sum(raw['charges'].values()),observed_tokens=sum(raw.get('observed',{}).values()),token_budget=raw['token_budget'])
+        return dict(session=current,directions=directions,runs=runs,reports=reports,usage=usage)
+
+    def save(self,item,status=None,message=None,**progress):
+        item['progress'].update(progress)
+        if status:item['status']=status
+        if message:item['message']=message
+        with self.store._connect() as conn:
+            conn.execute('UPDATE automatic_sessions SET status=?,message=?,progress=?,updated_at=? WHERE id=?',
+                (item['status'],item['message'],json.dumps(item['progress']),now(),item['id']))
+
+    def control(self,payload):
+        if set(payload)-{'project_id','action','max_cycles','max_model_calls','token_budget','context_path','mode'}:raise ValueError('지원하지 않는 자동모드 설정입니다.')
+        project_id=payload['project_id'];action=payload['action'];root=self.root(project_id);self.store.get_node(root['id'])
+        if action not in {'start','pause','resume','stop'}:raise ValueError('자동모드 동작을 확인하세요.')
+        with self.lock:
+            old=self.sessions(project_id);item=old[0] if old else None
+            if action=='start':
+                if item and item['status'] in {'running','paused'}:raise ValueError('기존 자동모드를 재개하거나 중지하세요.')
+                cycles=payload.get('max_cycles',3);calls=payload.get('max_model_calls',40);tokens=payload.get('token_budget',1500000)
+                for value,low,high in [(cycles,1,30),(calls,2,300),(tokens,100000,10000000)]:
+                    if type(value) is not int or not low<=value<=high:raise ValueError('자동모드 한도 범위를 확인하세요.')
+                context=payload.get('context_path','');mode=payload.get('mode','balanced')
+                if not isinstance(context,str) or len(context)>2048 or '\x00' in context or '\n' in context or mode not in {'lite','balanced','deep'}:raise ValueError('참고 폴더·연구 모드를 확인하세요.')
+                profile,assignment=self.experiments._resources(root)
+                sid=str(uuid.uuid4());path=self.research.root/('automatic-'+sid);path.mkdir(mode=0o700)
+                ledger=path/'session-budget.json';ledger.write_text(json.dumps(dict(calls=0,max_calls=calls,token_budget=tokens,charges={})))
+                item=dict(id=sid,project_id=project_id,node_id=root['id'],status='running',message='자동 연구를 시작합니다.',
+                    config=dict(max_cycles=cycles,mode=mode,context_path=context,resource_signature=resource_signature(profile,assignment),
+                                session_budget=str(ledger)),progress=dict(phase='prepare',cycles=0,revision=steering.snapshot(self.store,project_id)['revision'],code_hashes=[],failures=0),created_at=now(),updated_at=now())
+                with self.store._connect() as conn:
+                    conn.execute('INSERT INTO automatic_sessions VALUES(?,?,?,?,?,?,?,?,?)',tuple(json.dumps(v) if k in {'config','progress'} else v for k,v in item.items()))
+                    self.store._event(conn,root['id'],'automatic_authorized',dict(session_id=sid,limits=item['config'],scope='reviewed LLM-generated code on the selected project resources'))
+                self.store.add_note(root['id'],'memo','자동모드 시작','설정한 장치·시간·모델 한도 내에서 검토된 LLM 실험을 매번 승인하지 않고 실행합니다. 세션: '+sid)
+            elif not item:raise ValueError('자동모드를 먼저 시작하세요.')
+            elif action=='pause':self.save(item,'paused','현재 작업 뒤 대기합니다. 새 실험은 시작하지 않습니다.')
+            elif action=='stop':
+                self.save(item,'stopped','자동모드를 중지했습니다.');self.cancel_project(project_id)
+            else:
+                if item['status'] not in {'paused','blocked'}:raise ValueError('일시정지 또는 필요한 항목을 해결한 실행을 재개하세요.')
+                p=item['progress']
+                # A resume is explicit permission to prepare a replacement for an interrupted/blocked job.
+                if p.get('job_id') and self.research.get(p['job_id'])['state'] in {'interrupted','cancelled','failed'}:p.update(phase='prepare',job_id=None)
+                if p.get('run_id') and self.experiments.run_info(p['run_id'])['state'] in {'interrupted','blocked','cancelled'}:p.update(phase='prepare',run_id=None)
+                if item['status']=='blocked' and p.get('job_id'):
+                    prior=self.research.get(p['job_id'])
+                    reusable=prior['state']=='completed' and prior['phase'] in {'experiment_approval','analyzed'}
+                    if not reusable:p.update(phase='prepare',job_id=None,run_id=None)
+                self.save(item,'running','남은 예산에서 자동모드를 재개합니다.')
+            return self.state(project_id)
+
+    def cancel_project(self,project_id):
+        for job in self.research.list(project_id)['jobs']:
+            if job['state'] in {'queued','running'}:self.research.stop(job['id'])
+        with self.store._connect() as conn:ids=[r['id'] for r in conn.execute("SELECT id FROM experiment_runs WHERE project_id=? AND state IN ('queued','running')",(project_id,))]
+        for run_id in ids:self.experiments.cancel(run_id)
+
+    def intervene(self,payload):
+        if set(payload)!={'node_id','content','apply_mode'}:raise ValueError('노드·지시·반영 시점이 필요합니다.')
+        with self.lock:
+            result=steering.record(self.store,**payload)
+            for item in self.sessions(result['project_id'])[:1]:
+                if item['status'] in {'running','paused','blocked'}:self.save(item,preferred_node=result['node_id'])
+            if payload['apply_mode']=='restart':
+                self.cancel_project(result['project_id'])
+                for item in self.sessions(result['project_id'])[:1]:
+                    if item['status'] in {'running','paused','blocked'}:
+                        self.save(item,'running','현재 작업을 중지하고 새 방향으로 준비합니다.',phase='prepare',job_id=None,run_id=None,preferred_node=result['node_id'])
+            return result
+
+    def guard(self,experiment):
+        spec=experiment['spec'];generation=spec.get('generation',{})
+        if 'direction_revision' in generation and generation['direction_revision']!=steering.snapshot(self.store,spec['project_id'])['revision']:
+            raise ValueError('방향 지시가 바뀌었습니다. 새 지시로 실험을 다시 준비하세요.')
+        sid=generation.get('auto_session_id')
+        if sid:
+            item=self.get(sid)
+            if item['status']!='running':raise ValueError('자동모드가 실행 중이 아닙니다.')
+            if item['config']['resource_signature']!=spec['resource_signature']:raise ValueError('자동모드의 실행 환경이 바뀌었습니다.')
+
+    def has_hypotheses(self,project_id):
+        return any(n['project_id']==project_id and n['kind']=='hypothesis' and n['status']=='active' for n in self.store.export_json()['nodes'])
+
+    def busy(self,project_id):
+        with self.store._connect() as conn:return bool(conn.execute("SELECT 1 FROM experiment_runs WHERE project_id=? AND state IN ('queued','running')",(project_id,)).fetchone())
+
+    def launch(self,item,task,node_id=None,run_id=None):
+        _,assignment=self.experiments._resources(self.store.get_node(item['node_id']))
+        with self.store._connect() as conn:budget=self.experiments._budget(item['project_id'],assignment['updated_at'],assignment['time_budget_minutes']*60,conn)
+        return self.research.start(dict(node_id=node_id or item['node_id'],task=task,run_id=run_id,confirm=True,
+            mode=item['config']['mode'],context_path=item['config']['context_path']),
+            internal=dict(auto_session_id=item['id'],session_budget=item['config']['session_budget'],remaining_experiment_seconds=int(budget['remaining_seconds'])))
+
+    def tick(self,item):
+        if item['status']!='running':return
+        node=self.store.get_node(item['node_id'])
+        if node['status'] not in {'active','expanded'}:raise ValueError('프로젝트가 보류 또는 폐기되었습니다.')
+        profile,assignment=self.experiments._resources(node)
+        if resource_signature(profile,assignment)!=item['config']['resource_signature']:raise ValueError('실행 환경·장치·예산이 변경되어 자동모드를 멈췄습니다.')
+        p=item['progress'];phase=p['phase'];revision=steering.snapshot(self.store,item['project_id'])['revision']
+        if phase=='prepare':
+            if self.research.active_id is not None or self.busy(item['project_id']):return
+            if p['cycles']>=item['config']['max_cycles']:
+                self.save(item,'completed','설정한 실험 횟수를 완료했습니다.');return
+            if p['failures']>=2:raise ValueError('연속 두 번의 실패 후 자동모드를 멈췄습니다. 보고와 방향을 확인하세요.')
+            with self.store._connect() as conn:
+                budget=self.experiments._budget(item['project_id'],assignment['updated_at'],assignment['time_budget_minutes']*60,conn)
+            if budget['remaining_seconds']<1:self.save(item,'completed','프로젝트 실행 시간 예산을 소진했습니다.');return
+            task='draft' if self.has_hypotheses(item['project_id']) else 'research'
+            job=self.launch(item,task,p.get('preferred_node') if task=='draft' else None)
+            self.save(item,message='LLM이 다음 실험을 준비합니다.',phase='job',job_id=job['id'],revision=revision)
+        elif phase=='job':
+            job=self.research.get(p['job_id'])
+            if job['state'] in {'queued','running'}:return
+            if revision!=p['revision']:
+                self.save(item,message='변경된 방향을 반영해 다시 준비합니다.',phase='prepare',job_id=None);return
+            if job['state']!='completed' or job['phase']!='experiment_approval':raise ValueError(job['message'])
+            registration=json.loads((Path(job['run_dir'])/'registered-experiment.json').read_text());experiment=self.experiments.experiment(registration['id'])
+            code_hash=hashlib.sha256(experiment['spec']['code'].encode()).hexdigest()
+            if code_hash in p['code_hashes']:raise ValueError('동일한 코드의 반복 실행을 멈췄습니다. 새 비교나 조건을 지시하세요.')
+            with self.store._connect() as conn:existing=conn.execute('SELECT * FROM experiment_runs WHERE experiment_id=? ORDER BY queued_at DESC LIMIT 1',(experiment['id'],)).fetchone()
+            if existing:run=dict(existing)
+            else:
+                approval=self.experiments.approve(experiment['id'],experiment['digest'],True,authority='automatic:'+item['id'])
+                run=self.experiments.enqueue(experiment['id'],approval['id'])
+            self.save(item,message='검토된 LLM 실험을 자동 실행합니다.',phase='run',run_id=run['id'],experiment_id=experiment['id'],
+                      cycles=p['cycles']+1,code_hashes=p['code_hashes']+[code_hash])
+        elif phase=='run':
+            run=self.experiments.run_info(p['run_id'])
+            if run['state'] not in TERMINAL:return
+            if run['state'] not in {'succeeded','failed','timed_out'}:raise ValueError('실험이 중단됐습니다. 로그를 확인한 뒤 재개하세요.')
+            if self.research.active_id is not None:return
+            experiment=self.experiments.experiment(run['experiment_id']);job=self.launch(item,'analyze',experiment['node_id'],run['id'])
+            with self.store._connect() as conn:conn.execute("INSERT OR REPLACE INTO research_analysis_queue VALUES(?,'dispatched',?,NULL)",(run['id'],job['id']))
+            self.save(item,message='실험 결과를 분석하고 다음 비교를 결정합니다.',phase='analysis',job_id=job['id'],
+                      failures=0 if run['state']=='succeeded' else p['failures']+1)
+        elif phase=='analysis':
+            job=self.research.get(p['job_id'])
+            if job['state'] in {'queued','running'}:return
+            if job['state']!='completed' or job['phase']!='analyzed':raise ValueError(job['message'])
+            result=json.loads((Path(job['run_dir'])/'analysis.json').read_text());decision=result.get('next_experiment',{})
+            if result.get('outcome') not in {'measured','failed','inconclusive'} or decision.get('decision') not in {'continue','stop'}:
+                raise ValueError('분석 응답의 결과·다음 실험 판단이 유효하지 않습니다. 원본 보고를 확인하세요.')
+            if revision!=p['revision']:
+                self.save(item,message='결과 보고를 저장했습니다. 새 방향을 반영합니다.',phase='prepare');return
+            if decision['decision']=='stop':
+                self.save(item,'completed','LLM이 추가 실험 중단을 제안했습니다. 결과 보고를 확인하세요.');return
+            if not isinstance(decision.get('design'),str) or not decision['design'].strip():raise ValueError('다음 실험의 구체적인 설계가 없습니다.')
+            run=self.experiments.run_info(p['run_id'])
+            failures=p['failures']+(1 if result['outcome']!='measured' and run['state']=='succeeded' else 0)
+            self.save(item,message='결과 보고를 저장했습니다. LLM이 제안한 다음 실험으로 이어갑니다.',phase='prepare',failures=failures)
+
+    def _loop(self):
+        while not self.closed.wait(.5):
+            with self.lock:
+                with self.store._connect() as conn:items=[self.decode(r) for r in conn.execute("SELECT * FROM automatic_sessions WHERE status='running'")]
+                for item in items:
+                    try:self.tick(item)
+                    except Exception as error:
+                        with (Path(item['config']['session_budget']).parent/'controller.log').open('a') as log:log.write(now()+'\n'+traceback.format_exc()+'\n')
+                        self.save(item,'blocked',str(error)[:1800])
+                        try:self.store.add_note(item['node_id'],'memo','자동모드 · 확인 필요',str(error)[:6000])
+                        except (KeyError,ValueError):pass
+                try:self._restart_requests()
+                except Exception:
+                    with (self.research.root/'controller.log').open('a') as log:log.write(now()+'\n'+traceback.format_exc()+'\n')
+
+    def _restart_requests(self):
+        if self.research.active_id is not None:return
+        with self.store._connect() as conn:rows=[dict(r) for r in conn.execute("SELECT * FROM research_directions WHERE state='restart_pending' ORDER BY seq DESC")]
+        for direction in rows:
+            project_id=direction['project_id']
+            if self.busy(project_id):continue
+            # Running/paused automatic sessions own their next step and budget.
+            sessions=self.sessions(project_id)
+            if sessions and sessions[0]['status'] in {'running','paused','blocked'}:continue
+            try:
+                root=self.root(project_id)
+                task='draft' if self.has_hypotheses(project_id) else 'research'
+                prior=self.research.list(project_id)['jobs'];context=next((j['config']['context_path'] for j in prior if j['config'].get('context_path')),'')
+                self.research.start(dict(node_id=direction['node_id'] if task=='draft' else root['id'],task=task,confirm=True,context_path=context))
+            except (KeyError,ValueError):
+                with self.store._connect() as conn:conn.execute("UPDATE research_directions SET state='blocked' WHERE seq=?",(direction['seq'],))
+            break
+
+    def close(self):
+        self.closed.set()
+        if self.thread.is_alive():self.thread.join(timeout=3)
