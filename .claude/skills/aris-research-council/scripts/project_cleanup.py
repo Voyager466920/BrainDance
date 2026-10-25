@@ -67,6 +67,10 @@ class ProjectCleanup:
         if any(r['state'] in {'queued', 'running'} or r['id'] in self.experiments.jobs for r in runs):
             raise ValueError('실험이 종료 처리 중입니다. 중지 또는 완료 후 다시 시도하세요.')
         paths = []
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE name='project_sessions'").fetchone():
+            for session in conn.execute('SELECT * FROM project_sessions WHERE project_id=?',(project_id,)):
+                if not re.fullmatch(r'[a-f0-9-]{36}',session['id']):raise ValueError('프로젝트 세션 경로가 올바르지 않습니다.')
+                paths.append('council-runs/project-'+session['id'])
         if conn.execute("SELECT 1 FROM sqlite_master WHERE name='research_chat'").fetchone():
             for message in conn.execute("SELECT * FROM research_chat WHERE project_id=? AND role='assistant'",(project_id,)):
                 if message['state'] in {'queued','running','preparing'}:raise ValueError('대화 답변을 종료한 후 다시 삭제하세요.')
@@ -167,7 +171,7 @@ class ProjectCleanup:
                                  (project_id, plan['title'], json.dumps(plan['paths']), json.dumps(plan['counts']), now()))
                     if conn.execute("SELECT 1 FROM sqlite_master WHERE name='research_analysis_queue'").fetchone():
                         conn.execute('DELETE FROM research_analysis_queue WHERE run_id IN (SELECT id FROM experiment_runs WHERE project_id=?)',(project_id,))
-                    for table in ['automatic_sessions','research_directions','research_chat']:
+                    for table in ['automatic_sessions','research_directions','research_chat','conversation_actions','project_sessions']:
                         if conn.execute("SELECT 1 FROM sqlite_master WHERE name=?",(table,)).fetchone():conn.execute('DELETE FROM '+table+' WHERE project_id=?',(project_id,))
                     conn.execute('DELETE FROM experiment_runs WHERE project_id=?', (project_id,))
                     if conn.execute("SELECT 1 FROM sqlite_master WHERE name='research_jobs'").fetchone():

@@ -13,13 +13,17 @@ def update(path,operation,**values):
     with path.with_suffix('.lock').open('a+') as lock:
         fcntl.flock(lock,fcntl.LOCK_EX)
         data=json.loads(path.read_text())
+        if operation=='check':
+            if data['calls']>=data['max_calls'] or sum(data['charges'].values())>=data['token_budget']:raise RuntimeError('자동모드 모델 호출 또는 토큰 한도를 소진했습니다.')
+            return data
         if operation=='reserve':
             if data['calls']+values['calls']>data['max_calls']:raise RuntimeError('자동모드 모델 호출 한도를 소진했습니다.')
             if sum(data['charges'].values())+values['estimate']>data['token_budget']:raise RuntimeError('자동모드 토큰 예상 한도를 소진했습니다.')
             data['calls']+=values['calls'];data['charges'][values['key']]=data['charges'].get(values['key'],0)+values['estimate']
-        else:
+        elif operation=='record':
             # Includes parallel native subagents: don't release a reserved estimate.
             data['charges'][values['key']]=max(data['charges'].get(values['key'],0),values['tokens'])
             data.setdefault('observed',{})[values['key']]=values['tokens']
+        else:raise ValueError('Unknown session budget operation')
         temp=path.with_suffix('.tmp');temp.write_text(json.dumps(data));temp.replace(path)
         return data

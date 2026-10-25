@@ -51,6 +51,13 @@ class LabTests(unittest.TestCase):
         for code in ['print(1)',CODE+'\nif __name__=="__main__":run_experiment()',CODE.replace('assert sum([1,2,3])==6','raise NotImplementedError()'),CODE.replace('assert sum([1,2,3])==6','pass'),CODE.replace('def self_test()', 'async def self_test()')]:
             with self.assertRaises(ValueError):check_code(code)
 
+    def test_human_gpu_number_must_match_the_assigned_uuid_before_code_generation(self):
+        state=dict(profiles=[dict(id='local',kind='local')],assignments={self.node['project_id']:dict(profile_id='local',device_ids=['GPU-selected'])})
+        inventory=dict(gpus=[dict(index='4',uuid='GPU-selected')])
+        self.job['steering']=dict(directions=[dict(content='GPU7에서 실험을 이어가')])
+        with patch('lab_worker.ComputeSettings.state',return_value=state),patch('target_explorer.query',return_value=inventory):
+            with self.assertRaisesRegex(ValueError,'GPU 번호'):environment(self.job,self.work,self.progress)
+
     def test_model_authored_plan_is_registered_then_real_cpu_tests_execute_before_metrics(self):
         with patch('lab_worker.council.codex_call',return_value=self.proposal()) as author,patch('lab_worker.council.claude_call',return_value=dict(verdict='pass',reasons=['Offline fixture review'])) as reviewer:
             prepare(self.job,self.work,self.progress)

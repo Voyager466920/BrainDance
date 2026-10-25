@@ -17,6 +17,10 @@ class Autopilot:
         self.lock=threading.RLock();self.closed=threading.Event()
         steering.initialize(store)
         with store._connect() as conn:
+            conn.execute('''CREATE TABLE IF NOT EXISTS conversation_actions (
+                id TEXT PRIMARY KEY,project_id TEXT NOT NULL,node_id TEXT NOT NULL,kind TEXT NOT NULL,
+                state TEXT NOT NULL,content TEXT NOT NULL,job_id TEXT,receipt TEXT NOT NULL,created_at TEXT NOT NULL)''')
+            conn.execute("UPDATE conversation_actions SET state='interrupted' WHERE state IN ('pending','running','applying')")
             conn.execute('''CREATE TABLE IF NOT EXISTS automatic_sessions (
                 id TEXT PRIMARY KEY,project_id TEXT NOT NULL,node_id TEXT NOT NULL,
                 status TEXT NOT NULL,message TEXT NOT NULL,config TEXT NOT NULL,
@@ -131,6 +135,65 @@ class Autopilot:
                         self.save(item,'running','현재 작업을 중지하고 새 방향으로 준비합니다.',phase='prepare',job_id=None,run_id=None,preferred_node=result['node_id'])
             return result
 
+    def conversation_action(self,message_id,node_id,kind,content,expected_revision):
+        """Host-owned action admission, retaining existing execution authority/limits."""
+        if kind not in {'investigate','execute'}:raise ValueError('지원하지 않는 대화 작업입니다.')
+        with self.lock:
+            node=self.store.get_node(node_id);project_id=node['project_id']
+            with self.store._connect() as conn:
+                old=conn.execute('SELECT * FROM conversation_actions WHERE id=?',(message_id,)).fetchone()
+                if old:return dict(old)
+            if steering.snapshot(self.store,project_id)['revision']!=expected_revision:raise ValueError('답변 중 새 지시가 들어왔습니다. 이전 지시로 실행하지 않았습니다.')
+            sessions=self.sessions(project_id);item=sessions[0] if sessions else None
+            if kind=='execute':
+                if not item or item['status'] not in {'running','paused','blocked'}:raise ValueError('이 프로젝트의 자동모드를 먼저 설정하세요. 대화로 실행 권한이나 예산을 새로 만들지 않습니다.')
+                profile,assignment=self.experiments._resources(self.root(project_id))
+                if resource_signature(profile,assignment)!=item['config']['resource_signature']:raise ValueError('선택 장치·예산이 바뀌어 기존 세션으로 실행할 수 없습니다. 자동모드 설정을 확인하세요.')
+                with self.store._connect() as conn:budget=self.experiments._budget(project_id,assignment['updated_at'],assignment['time_budget_minutes']*60,conn)
+                if budget['remaining_seconds']<1 or item['progress']['cycles']>=item['config']['max_cycles']:raise ValueError('설정된 실행 시간 또는 실험 횟수를 소진했습니다.')
+                from session_budget import update
+                update(item['config']['session_budget'],'check')
+            with self.store._connect() as conn:conn.execute('INSERT INTO conversation_actions VALUES(?,?,?,?,?,?,?,?,?)',(message_id,project_id,node_id,kind,'applying' if kind=='execute' else 'pending',content,None,'{}',now()))
+            try:
+                if kind=='execute':
+                    discovered=item['progress'].get('discovery_completed',False)
+                    result=self.intervene(dict(node_id=node_id,content=content,apply_mode='next'))
+                    active=self.research.active_id is not None or self.busy(project_id)
+                    progress=dict(discovery_completed=discovered,preferred_node=node_id)
+                    if not active:progress.update(phase='prepare',job_id=None,run_id=None,failures=0)
+                    self.save(item,'running','대화 지시로 기존 서버·코드를 탐색하고 남은 한도에서 실험을 이어갑니다.',**progress)
+                    receipt=dict(session_id=item['id'],direction_revision=result['revision'],status='running',limits_unchanged=True)
+                    state='applied'
+                else:receipt=dict(status='queued',read_only=True);state='pending'
+                with self.store._connect() as conn:conn.execute('UPDATE conversation_actions SET state=?,receipt=? WHERE id=?',(state,json.dumps(receipt),message_id))
+            except Exception as error:
+                with self.store._connect() as conn:conn.execute("UPDATE conversation_actions SET state='blocked',receipt=? WHERE id=?",(json.dumps(dict(error=str(error))),message_id))
+                raise
+            with self.store._connect() as conn:return dict(conn.execute('SELECT * FROM conversation_actions WHERE id=?',(message_id,)).fetchone())
+
+    def _conversation_requests(self):
+        with self.store._connect() as conn:items=[dict(r) for r in conn.execute("SELECT * FROM conversation_actions WHERE kind='investigate' AND state IN ('pending','running') ORDER BY created_at")]
+        for action in items:
+            try:
+                self.store.get_node(action['node_id'])
+                if action['state']=='running':
+                    job=self.research.get(action['job_id'])
+                    if job['state'] in {'running','queued'}:continue
+                    with self.store._connect() as conn:conn.execute('UPDATE conversation_actions SET state=?,receipt=? WHERE id=?',('completed' if job['state']=='completed' else 'blocked',json.dumps(dict(job_id=job['id'],message=job['message'])),action['id']))
+                    continue
+                if self.research.active_id is not None or self.busy(action['project_id']):continue
+                sessions=self.sessions(action['project_id']);item=sessions[0] if sessions else None
+                previous=self.research.list(action['project_id'])['jobs']
+                context=item['config']['context_path'] if item else next((j['config']['context_path'] for j in previous if j['config'].get('context_path')),'')
+                if not context:raise ValueError('탐색할 연구 폴더를 프로젝트 실행 설정에 입력하세요.')
+                internal=dict(auto_session_id=item['id'],session_budget=item['config']['session_budget']) if item and item['status'] in {'running','paused','blocked'} else None
+                job=self.research.start(dict(node_id=action['node_id'],task='inspect',confirm=True,context_path=context),internal=internal)
+                with self.store._connect() as conn:conn.execute("UPDATE conversation_actions SET state='running',job_id=? WHERE id=?",(job['id'],action['id']))
+            except Exception as error:
+                with self.store._connect() as conn:conn.execute("UPDATE conversation_actions SET state='blocked',receipt=? WHERE id=?",(json.dumps(dict(error=str(error))),action['id']))
+                try:self.store.add_note(action['node_id'],'analysis','대화 작업 · 확인 필요',str(error))
+                except (KeyError,ValueError):pass
+
     def guard(self,experiment):
         spec=experiment['spec'];generation=spec.get('generation',{})
         if 'direction_revision' in generation and generation['direction_revision']!=steering.snapshot(self.store,spec['project_id'])['revision']:
@@ -219,6 +282,7 @@ class Autopilot:
     def _loop(self):
         while not self.closed.wait(.5):
             with self.lock:
+                self._conversation_requests()
                 with self.store._connect() as conn:items=[self.decode(r) for r in conn.execute("SELECT * FROM automatic_sessions WHERE status='running'")]
                 for item in items:
                     try:self.tick(item)

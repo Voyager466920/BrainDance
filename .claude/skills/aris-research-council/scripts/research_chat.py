@@ -113,7 +113,8 @@ class ResearchChat:
         runs=[]
         for run in state['runs'][:2]:
             actual=self.control.experiments.run_info(run['id']);runs.append({**run,'stdout_tail':actual['stdout_tail'][-5000:],'stderr_tail':actual['stderr_tail'][-3000:]})
-        return dict(as_of=now(),project_goal=root['metadata'].get('research_goal',root['title']),selected_node={k:selected[k] for k in ['id','title','kind','metadata','evidence']},
+        from project_session import context
+        return dict(as_of=now(),shared_project_session=context(self.store,project_id),project_goal=root['metadata'].get('research_goal',root['title']),selected_node={k:selected[k] for k in ['id','title','kind','metadata','evidence']},
             actual_session=state['session'],current_runs=runs,recent_reports=[{**n,'content':n['content'][:6000]} for n in state['reports'][:3]],
             actual_jobs=[{k:j[k] for k in ['id','state','phase','message']} for j in jobs],human_directions=state['directions'][:6],
             conversation=list(reversed(history)),user_message=user,reply_to=message['metadata'].get('reply_to'),mode=message['metadata']['mode'],direction_already_applied=message['metadata'].get('direction_applied'))
@@ -127,6 +128,8 @@ class ResearchChat:
             context=self.context(message);session=context['actual_session']
             job=dict(id=message['id'],task='chat',db=self.store.db_path,node_id=message['node_id'],project_id=message['project_id'],
                 aris_repo=available['aris_repo'],phase_timeout_seconds=240,chat_context=context)
+            from project_session import identity
+            job['project_session']=identity(self.store,message['project_id'])
             if session and session['status'] in {'running','paused','blocked'}:job['session_budget']=session['config']['session_budget']
             from council import dump
             dump(root/'job.json',job)
@@ -143,7 +146,7 @@ class ResearchChat:
                 error=(root/'progress.json')
                 raise ValueError(json.loads(error.read_text()).get('message','답변을 완료하지 못했습니다.') if error.exists() else '답변을 완료하지 못했습니다.')
             result=json.loads((root/'chat-response.json').read_text());reply=result['reply'];intent=result['intent']
-            if not isinstance(reply,str) or not reply.strip() or len(reply)>18000 or intent not in {'question','direction','pause','stop'}:raise ValueError('대화 응답 형식이 올바르지 않습니다. 원본 로그를 보존했습니다.')
+            if not isinstance(reply,str) or not reply.strip() or len(reply)>18000 or intent not in {'question','direction','pause','stop','investigate','execute'}:raise ValueError('대화 응답 형식이 올바르지 않습니다. 원본 로그를 보존했습니다.')
             if metadata['mode']=='auto' and intent!='question':
                 if intent=='direction':
                     revision=steering.snapshot(self.store,message['project_id'])['revision']
@@ -152,6 +155,13 @@ class ResearchChat:
                     else:
                         action=self.control.intervene(dict(node_id=message['node_id'],content=context['user_message'],apply_mode='next'))
                         metadata['direction_applied']=action['revision'];reply+='\n\n다음 작업에 반영할 방향 지시로 저장했습니다.'
+                elif intent in {'investigate','execute'}:
+                    try:
+                        action=self.control.conversation_action(message['id'],message['node_id'],intent,context['user_message'],metadata['direction_revision_at_send'])
+                        metadata['action_id']=action['id'];metadata['action_kind']=intent
+                        reply+='\n\n'+('서버·코드의 읽기 전용 탐색을 요청했습니다. 결과는 이 프로젝트 대화에 이어집니다.' if intent=='investigate' else '기존 프로젝트 세션을 재개했습니다. 같은 대화와 연구 기록을 바탕으로 탐색 → 코드 검토 → 선택한 장치·남은 예산 내 실행 → 결과 분석을 이어갑니다.')
+                    except (ValueError,RuntimeError) as error:
+                        reply+='\n\n작업은 시작하지 않았습니다: '+str(error);metadata['action_error']=str(error)
                 else:
                     if session:
                         self.control.control(dict(project_id=message['project_id'],action=intent));metadata['control_applied']=intent

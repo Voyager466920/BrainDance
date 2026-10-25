@@ -407,6 +407,11 @@ def claude_call(folder, name, prompt, model, config, budget, agents=None, requir
 
 
 def codex_call(folder, prompt, config, budget, aris_repo):
+    from project_session import codex_call as shared_call
+    return shared_call(folder,prompt,config,budget,aris_repo,_codex_call)
+
+
+def _codex_call(folder, prompt, config, budget, aris_repo):
     """MCP stdio client only; server execution/contract remains the official ARIS code."""
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
@@ -424,9 +429,11 @@ def codex_call(folder, prompt, config, budget, aris_repo):
     cfg = {"model_reasoning_effort": config["codex_effort"]}
     for name in config["codex_disabled_mcps"]:
         cfg[f"mcp_servers.{name}.enabled"] = False
-    args = dict(prompt=prompt, model=config["codex_model"], config=cfg,
-                sandbox="read-only", cwd=str(folder.resolve()))
-    dump(folder / "request.json", dict(method="tools/call", params=dict(name="codex", arguments=args)))
+    resumed=config.get('_resume_thread')
+    tool='codex-reply' if resumed else 'codex'
+    args = dict(prompt=prompt,threadId=resumed) if resumed else dict(prompt=prompt, model=config["codex_model"], config=cfg,
+                sandbox="read-only", cwd=config.get('_project_cwd',str(folder.resolve())))
+    dump(folder / "request.json", dict(method="tools/call", params=dict(name=tool, arguments=args)))
     usage, thread, model_evidence = {}, None, None
     with open(folder / "stderr.log", "w") as err, open(folder / "mcp.stdout.jsonl", "w") as raw:
         p = subprocess.Popen(python_command(server), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -471,7 +478,7 @@ def codex_call(folder, prompt, config, budget, aris_repo):
             send(dict(jsonrpc="2.0", id=0, method="initialize", params=dict(protocolVersion="2024-11-05", capabilities={}, clientInfo=dict(name="aris-research-council", version="1"))))
             receive(0, deadline)
             send(dict(jsonrpc="2.0", method="notifications/initialized"))
-            send(dict(jsonrpc="2.0", id=1, method="tools/call", params=dict(name="codex", arguments=args, _meta=dict(progressToken=1))))
+            send(dict(jsonrpc="2.0", id=1, method="tools/call", params=dict(name=tool, arguments=args, _meta=dict(progressToken=1))))
             result = receive(1, deadline)
             dump(folder / "mcp-return.json", result)
             if result.get("isError"):

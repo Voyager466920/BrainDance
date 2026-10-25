@@ -88,7 +88,10 @@ class ResearchEngine:
             'council/usage.json','council/round-1/COUNCIL_REPORT.md','error.log',
             'worker.stderr.log','literature.stderr.log','verification.stderr.log','arxiv-fetch.stderr.log',
             'generated-experiment.py','generated-experiment.json','generated-proposal.json','environment.json','environment.stderr.log',
-            'registered-experiment.json','analysis.json','lab-usage.json'] if (root/name).is_file()]
+            'registered-experiment.json','analysis.json','lab-usage.json','explored-environment.json',
+            'exploration-1.json','exploration-2.json'] if (root/name).is_file()]
+        reads=root/'target-reads'
+        if reads.is_dir():item['files'].extend(str(p.relative_to(root)) for p in reads.iterdir() if p.is_file() and not p.is_symlink() and p.suffix in {'.json','.log'})
         # Bounded, known phase paths expose error diagnostics without arbitrary files.
         for phase in ['generation','peer-review','chairman']:
             folder=root/'council/round-1'/phase
@@ -105,7 +108,7 @@ class ResearchEngine:
         if set(payload)-{'node_id','mode','confirm','token_budget','phase_timeout_seconds','reuse_literature','task','run_id','context_path'} or payload.get('confirm') is not True:
             raise ValueError('연구 시작과 모델 사용량 발생을 확인하세요.')
         task=payload.get('task','research')
-        if task not in {'research','draft','analyze'}:raise ValueError('지원하지 않는 연구 작업입니다.')
+        if task not in {'research','draft','analyze','inspect'}:raise ValueError('지원하지 않는 연구 작업입니다.')
         context_path=payload.get('context_path','')
         if not isinstance(context_path,str) or len(context_path)>2048 or '\x00' in context_path or '\n' in context_path:raise ValueError('참고 폴더 경로를 확인하세요.')
         mode=payload.get('mode','balanced')
@@ -155,12 +158,14 @@ class ResearchEngine:
                 council_overrides=dict(rounds=1,max_councils=1,token_budget=token_budget,timeout_seconds=timeout,output_tokens=6000))
             from steering import prompt_context
             config['steering']=prompt_context(self.store,node['project_id'])
+            from project_session import identity
+            config['project_session']=identity(self.store,node['project_id'])
             if internal:
                 config.update(internal)
                 config['council_overrides']['session_budget']=internal['session_budget']
             if config['steering']['directions']:
                 config['topic']+='\n사용자 방향 지시 (최신 지시가 상충하는 과거 지시보다 우선):\n'+json.dumps(config['steering']['directions'],ensure_ascii=False)
-            conn.execute("UPDATE research_directions SET state='applied',job_id=? WHERE project_id=? AND seq<=?",(job_id,node['project_id'],config['steering']['revision']))
+            if task!='inspect':conn.execute("UPDATE research_directions SET state='applied',job_id=? WHERE project_id=? AND seq<=?",(job_id,node['project_id'],config['steering']['revision']))
             from council import dump
             dump(root/'job.json',config)
             timestamp=now();record=dict(id=job_id,project_id=node['project_id'],node_id=node['id'],title=topic,

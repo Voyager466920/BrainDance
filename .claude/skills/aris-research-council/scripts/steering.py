@@ -22,7 +22,8 @@ def prompt_context(store,project_id):
     directions=snapshot(store,project_id)
     with store._connect() as conn:
         notes=[dict(r) for r in conn.execute("SELECT n.title,n.content,n.kind FROM notes n JOIN node_projects p ON p.node_id=n.node_id WHERE p.project_id=? AND n.kind IN ('analysis','result') ORDER BY n.created_at DESC,n.rowid DESC LIMIT 5",(project_id,))]
-    return dict(**directions,recent_results=[{**n,'content':n['content'][:6000]} for n in reversed(notes)])
+    from project_session import context
+    return dict(**directions,shared_project_session=context(store,project_id),recent_results=[{**n,'content':n['content'][:6000]} for n in reversed(notes)])
 
 
 def record(store,node_id,content,apply_mode):

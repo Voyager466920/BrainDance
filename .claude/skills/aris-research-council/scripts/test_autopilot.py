@@ -23,6 +23,8 @@ from unittest.mock import patch
 import research_worker
 job=json.loads(Path(sys.argv[1]).read_text())
 def author(folder,prompt,*args):
+ if job['task']=='chat':return dict(reply='OFFLINE host action request',intent='investigate' if job['chat_context']['user_message'].startswith('Inspect') else 'execute')
+ if job['task']=='inspect':return dict(summary='OFFLINE inspected actual source fixture',requests=[])
  if job['task']=='analyze':return dict(outcome='measured',observations=['actual CPU fixture metrics'],interpretation='infrastructure test only',limitations=[],next_steps=[],next_experiment=dict(decision='continue',title='next comparison',rationale='exercise loop',design='fresh run'))
  code='import os,json\nfrom pathlib import Path\ndef self_test():\n    assert 1+1==2\ndef run_experiment():\n    Path(os.environ["BRAINDANCE_METRICS_PATH"]).write_text(json.dumps({"baseline":{"sum":2},"candidate":{"sum":3}}))\n# '+job['id']
  return dict(ready=True,title='CPU automatic fixture',summary='not scientific evidence',code=code,interpreter='builtin',cwd='',args=[],timeout_seconds=2,metric='sum',direction='maximize',dependencies=[],limitations=[])
@@ -99,6 +101,51 @@ class AutomaticTests(unittest.TestCase):
         self.compute.assign(self.node['project_id'],dict(profile_id='local',device_ids=['cpu'],time_budget_minutes=2))
         with self.assertRaisesRegex(ValueError,'변경'):other.tick(other.get(item['id']))
         self.assertEqual(self.research.list(self.node['project_id'])['jobs'],[])
+
+    def test_chat_execute_resumes_existing_limits_and_runs_the_real_cpu_pipeline(self):
+        from research_chat import ResearchChat
+        session=self.start();self.automatic.save(session,'blocked','Need source inspection.',discovery_completed=True)
+        ledger=Path(session['config']['session_budget']);before=json.loads(ledger.read_text());before['calls']=2;before['charges']={'previous':1234};ledger.write_text(json.dumps(before))
+        chat=ResearchChat(self.store,self.research,self.automatic,autostart=False);self.addCleanup(chat.close)
+        reply=chat.send(dict(node_id=self.node['id'],content='Execute using the existing code and current CPU budget.',mode='auto',request_id='message-execute-fixture-001'))
+        chat.execute(reply);actual=chat.get(reply['id']);self.assertEqual(actual['state'],'completed',actual['content'])
+        self.assertEqual(actual['metadata']['action_kind'],'execute')
+        item=self.drive();self.assertEqual(item['status'],'completed');self.assertEqual(item['progress']['cycles'],2)
+        self.assertEqual(item['config'],session['config'])
+        usage=json.loads(ledger.read_text());self.assertEqual(usage['calls'],2);self.assertEqual(usage['charges']['previous'],1234)
+        tree=self.store.export_json();self.assertEqual(len(tree['experiment_runs']),2)
+        self.assertTrue(all(r['state']=='succeeded' for r in tree['experiment_runs']))
+        ids={j['config']['project_session']['id'] for j in tree['research_jobs']}
+        request=json.loads((self.research.root/('chat-'+reply['id'])/'job.json').read_text())
+        self.assertEqual(ids,{request['project_session']['id']})
+        self.assertTrue(any('Execute using the existing code' in j['config']['steering']['shared_project_session']['conversation'][-2]['content'] for j in tree['research_jobs']))
+        self.assertTrue(all(a['authority']=='automatic:'+session['id'] for a in tree['experiment_approvals']))
+
+    def test_chat_inspection_does_not_resume_or_execute_a_blocked_project(self):
+        from research_chat import ResearchChat
+        session=self.start();folder=self.root/'source';folder.mkdir();(folder/'README.md').write_text('Actual read-only fixture source')
+        session['config']['context_path']=str(folder)
+        with self.store._connect() as conn:conn.execute('UPDATE automatic_sessions SET config=? WHERE id=?',(json.dumps(session['config']),session['id']))
+        self.automatic.save(session,'blocked','Need environment details.',discovery_completed=True)
+        chat=ResearchChat(self.store,self.research,self.automatic,autostart=False);self.addCleanup(chat.close)
+        reply=chat.send(dict(node_id=self.node['id'],content='Inspect the selected source folder only.',mode='auto',request_id='message-inspection-fixture-001'))
+        chat.execute(reply);self.assertEqual(chat.get(reply['id'])['metadata']['action_kind'],'investigate')
+        self.automatic._conversation_requests()
+        deadline=time.monotonic()+5
+        while self.research.active_id and time.monotonic()<deadline:time.sleep(.03)
+        self.automatic._conversation_requests()
+        self.assertEqual(self.automatic.get(session['id'])['status'],'blocked')
+        self.assertFalse(self.store.export_json()['experiment_runs'])
+        self.assertTrue(any(n['title']=='서버·코드 탐색 보고' for n in self.store.export_json()['notes']))
+
+    def test_chat_execution_rejects_new_authority_changed_resources_and_spent_limits(self):
+        with self.assertRaises(ValueError):self.automatic.conversation_action('no-session',self.node['id'],'execute','Run.',0)
+        item=self.start();self.automatic.save(item,'blocked','Blocked.',cycles=2)
+        with self.assertRaises(ValueError):self.automatic.conversation_action('spent',self.node['id'],'execute','Run.',0)
+        self.automatic.save(item,cycles=0)
+        self.compute.assign(self.node['project_id'],dict(profile_id='local',device_ids=['cpu'],time_budget_minutes=2))
+        with self.assertRaises(ValueError):self.automatic.conversation_action('changed',self.node['id'],'execute','Run.',0)
+        self.assertFalse(self.store.export_json()['experiment_runs'])
 
     def test_shared_admission_survives_new_worker_and_keeps_interrupted_reservations(self):
         item=self.start(max_model_calls=3,token_budget=100000);path=item['config']['session_budget']
