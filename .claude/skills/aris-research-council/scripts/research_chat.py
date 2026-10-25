@@ -43,21 +43,44 @@ class ResearchChat:
         rows.sort(key=lambda r:(r['created_at'],r.get('seq',0),r['id']))
         return dict(messages=rows,project_id=project_id)
 
+    def reply_reference(self,value,project_id):
+        if value is None:return None
+        if not isinstance(value,dict) or set(value)!={'type','id'}:raise ValueError('답글 대상을 확인하세요.')
+        kind=value['type'];identity=value['id']
+        if not isinstance(kind,str) or kind not in {'job','session','run'} or not isinstance(identity,str) or not re.fullmatch(r'[a-zA-Z0-9-]{1,100}',identity):raise ValueError('답글 대상이 올바르지 않습니다.')
+        try:
+            if kind=='job':
+                source=self.research.get(identity);title='실험 준비 확인' if source['phase']=='blocked' else '연구 작업 확인'
+                message=source.get('error') or source['message']
+            elif kind=='session':
+                source=self.control.get(identity);title='자동모드 확인';message=source['message']
+            else:
+                with self.store._connect() as conn:row=conn.execute('SELECT project_id,state,error FROM experiment_runs WHERE id=?',(identity,)).fetchone()
+                if row is None:raise KeyError(identity)
+                source=dict(row);title='실험 실행 확인';message=source['error'] or source['state']
+        except KeyError:raise ValueError('답글 대상을 찾을 수 없습니다.')
+        if source['project_id']!=project_id:raise ValueError('다른 프로젝트의 문제에는 답글을 보낼 수 없습니다.')
+        return dict(type=kind,id=identity,title=title,message=message[:6000])
+
     def send(self,payload):
-        if set(payload)!={'node_id','content','mode','request_id'}:raise ValueError('메시지·반영 방식·요청 ID를 확인하세요.')
+        if set(payload)-{'node_id','content','mode','request_id','reply_to'} or not {'node_id','content','mode','request_id'}<=set(payload):raise ValueError('메시지·반영 방식·요청 ID를 확인하세요.')
         node=self.store.get_node(payload['node_id']);content=payload['content'];mode=payload['mode'];request_id=payload['request_id']
         if not isinstance(content,str) or not content.strip() or len(content)>6000:raise ValueError('메시지는 1–6000자로 입력하세요.')
         if mode not in {'auto','ask','next','restart'}:raise ValueError('대화 반영 방식을 확인하세요.')
         if not isinstance(request_id,str) or not re.fullmatch(r'[a-zA-Z0-9-]{16,80}',request_id):raise ValueError('요청 ID가 올바르지 않습니다.')
+        reply_to=self.reply_reference(payload.get('reply_to'),node['project_id'])
         with self.lock,self.store._connect() as conn:
             old=conn.execute("SELECT * FROM research_chat WHERE project_id=? AND request_id=? AND role='assistant'",(node['project_id'],request_id)).fetchone()
             if old:
                 previous=conn.execute("SELECT content FROM research_chat WHERE project_id=? AND request_id=? AND role='user'",(node['project_id'],request_id)).fetchone()
-                if old['node_id']!=node['id'] or previous['content']!=content.strip() or json.loads(old['metadata'])['mode']!=mode:raise ValueError('같은 요청 ID의 메시지 내용이 바뀌었습니다.')
+                old_meta=json.loads(old['metadata']);old_reply=old_meta.get('reply_to')
+                reference=lambda item:(item['type'],item['id']) if item else None
+                if old['node_id']!=node['id'] or previous['content']!=content.strip() or old_meta['mode']!=mode or reference(old_reply)!=reference(reply_to):raise ValueError('같은 요청 ID의 메시지 내용이 바뀌었습니다.')
                 return self.decode(old)
             if conn.execute("SELECT count(*) FROM research_chat WHERE project_id=? AND state IN ('queued','running')",(node['project_id'],)).fetchone()[0]>=4:raise ValueError('답변 대기 메시지가 많습니다. 진행 중인 답변을 기다려 주세요.')
             revision=steering.snapshot(self.store,node['project_id'])['revision']
             metadata=dict(mode=mode,direction_revision_at_send=revision)
+            if reply_to:metadata['reply_to']=reply_to
             timestamp=now();reply_id=str(uuid.uuid4())
             for role,text,state,msg_id in [('user',content.strip(),'completed',str(uuid.uuid4())),('assistant','','preparing' if mode in {'next','restart'} else 'queued',reply_id)]:
                 conn.execute('INSERT INTO research_chat(id,project_id,node_id,role,content,state,request_id,metadata,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)',
@@ -93,7 +116,7 @@ class ResearchChat:
         return dict(as_of=now(),project_goal=root['metadata'].get('research_goal',root['title']),selected_node={k:selected[k] for k in ['id','title','kind','metadata','evidence']},
             actual_session=state['session'],current_runs=runs,recent_reports=[{**n,'content':n['content'][:6000]} for n in state['reports'][:3]],
             actual_jobs=[{k:j[k] for k in ['id','state','phase','message']} for j in jobs],human_directions=state['directions'][:6],
-            conversation=list(reversed(history)),user_message=user,mode=message['metadata']['mode'],direction_already_applied=message['metadata'].get('direction_applied'))
+            conversation=list(reversed(history)),user_message=user,reply_to=message['metadata'].get('reply_to'),mode=message['metadata']['mode'],direction_already_applied=message['metadata'].get('direction_applied'))
 
     def execute(self,message):
         root=self.research.root/('chat-'+message['id']);root.mkdir(mode=0o700,exist_ok=True)

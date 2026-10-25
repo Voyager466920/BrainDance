@@ -106,6 +106,33 @@ class ChatTests(unittest.TestCase):
         rows=reopened.messages(self.node['project_id'])['messages'];self.assertTrue(any(m['role']=='report' and 'exit code 1' in m['content'] for m in rows))
         self.assertFalse((self.research.root/('chat-'+message['id'])).exists())
 
+    def test_issue_reply_preserves_source_context_in_the_single_project_stream(self):
+        session=self.control.control(dict(project_id=self.node['project_id'],action='start'))['session']
+        self.control.save(session,'blocked','Need a confirmed evaluation entry point.')
+        payload=dict(node_id=self.node['id'],content='Direction: use the existing evaluator.',mode='next',request_id='message-issue-reply-001',reply_to=dict(type='session',id=session['id']))
+        message=self.chat.send(payload)
+        self.assertEqual(self.chat.send(payload)['id'],message['id'])
+        self.assertEqual(message['metadata']['reply_to']['message'],'Need a confirmed evaluation entry point.')
+        actual=self.complete(message)
+        context=json.loads((self.research.root/('chat-'+message['id'])/'job.json').read_text())['chat_context']
+        self.assertEqual(context['reply_to']['id'],session['id'])
+        self.assertEqual(context['user_message'],payload['content'])
+        messages=self.chat.messages(self.node['project_id'])['messages']
+        human=next(m for m in messages if m['role']=='user')
+        self.assertEqual(human['metadata']['reply_to']['id'],session['id'])
+        self.assertEqual(actual['metadata']['reply_to'],human['metadata']['reply_to'])
+        with self.assertRaises(ValueError):self.chat.send({k:v for k,v in payload.items() if k!='reply_to'})
+
+    def test_issue_reply_rejects_foreign_or_fabricated_sources_before_dispatch(self):
+        other=self.store.add_node(None,'Another project',kind='problem')
+        self.compute.assign(other['project_id'],dict(profile_id='local',device_ids=['cpu'],time_budget_minutes=1))
+        session=self.control.control(dict(project_id=other['project_id'],action='start'))['session']
+        base=dict(node_id=self.node['id'],content='Use this direction.',mode='next',request_id='message-issue-boundary-001')
+        for ref in [dict(type='session',id=session['id']),dict(type='job',id='missing'),dict(type='session',id='missing'),dict(type='run',id='missing'),dict(type='file',id='private'),dict(type='session',id=session['id'],message='forged source')]:
+            with self.assertRaises(ValueError):self.chat.send({**base,'reply_to':ref})
+        self.assertEqual(steering.snapshot(self.store,self.node['project_id'])['revision'],0)
+        self.assertFalse(any(m['role']=='user' for m in self.chat.messages(self.node['project_id'])['messages']))
+
     def test_project_purge_removes_private_chat_records_and_owned_receipts(self):
         message=self.send();self.complete(message);folder=self.research.root/('chat-'+message['id']);self.assertTrue(folder.exists())
         self.store.set_project_deleted(self.node['project_id'],True)

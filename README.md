@@ -21,9 +21,11 @@ Literature discovery and reviewer integration reuse [ARIS](https://github.com/wa
 
 The distributed app bundles its backend; Python and Node.js are not required to open it. Model tasks use the authenticated CLIs and their account usage. The app is ad-hoc signed and is not notarized. GPU frameworks, models and datasets must exist on the selected execution target; selecting a device does not reserve it against other software.
 
-## Research through the experiment conversation
+## One conversation for each project
 
-Open **실험 실행** (Experiments). The upper panel shows the actual current experiment or research stage and links to its live logs. The conversation below receives execution reports and analysis alongside your messages and real Codex replies.
+The **대화** (Conversation) tab contains the project’s shared stream of reports, your messages, and real Codex replies. One input stays pinned to the bottom while you switch between Research Overview, Progress, Research Notes, Council transcripts, and Experiments. Sending from any tab continues this same project conversation.
+
+Problems appear in a compact notice above the tabs. Choose **답글** (Reply) to answer a specific problem; the source record and your reply stay linked in the main conversation and are supplied to the model. The sidebar icon hides or shows the project list, and each project’s arrow expands or collapses its hypothesis tree.
 
 - Ask about progress, evidence, results or blockers while research continues.
 - Use **대화 · 의도에 맞게 반영** for natural conversation. Clear direction changes become instructions for the next step; explicit pause/stop requests control this project.
@@ -34,7 +36,7 @@ Open **실험 실행** (Experiments). The upper panel shows the actual current e
 
 The conversation has a separate reply worker, so it can answer during a running research job. Replies use timestamped actual state and retained result reports; they do not claim live results that were not observed. Messages, action receipts and original model responses stay in your private workspace. Replies consume connected-account usage; active automatic sessions include them in their shared model budget. Reopening the app marks interrupted replies explicitly and does not replay model calls silently.
 
-**실행 계획 · 코드 · 이전 실험** keeps immutable plans, source code and execution history available below the conversation. Manual code entry remains an advanced option.
+The **실험 실행** (Experiments) tab keeps immutable plans, source code, and execution history under **실행 계획 · 코드 · 이전 실험**. Research launch controls and detailed automatic-session usage are available under **실행 설정** in Progress. Manual code entry remains an advanced option.
 
 ## Project automatic mode
 
