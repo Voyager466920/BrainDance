@@ -115,7 +115,7 @@ class ResearchChat:
             actual=self.control.experiments.run_info(run['id']);runs.append({**run,'stdout_tail':actual['stdout_tail'][-5000:],'stderr_tail':actual['stderr_tail'][-3000:]})
         from project_session import context
         return dict(as_of=now(),shared_project_session=context(self.store,project_id),project_goal=root['metadata'].get('research_goal',root['title']),selected_node={k:selected[k] for k in ['id','title','kind','metadata','evidence']},
-            actual_session=state['session'],current_runs=runs,recent_reports=[{**n,'content':n['content'][:6000]} for n in state['reports'][:3]],
+            actual_session=state['session'],model_usage=state.get('usage'),current_runs=runs,recent_reports=[{**n,'content':n['content'][:6000]} for n in state['reports'][:3]],
             actual_jobs=[{k:j[k] for k in ['id','state','phase','message']} for j in jobs],human_directions=state['directions'][:6],
             conversation=list(reversed(history)),user_message=user,reply_to=message['metadata'].get('reply_to'),mode=message['metadata']['mode'],direction_already_applied=message['metadata'].get('direction_applied'))
 

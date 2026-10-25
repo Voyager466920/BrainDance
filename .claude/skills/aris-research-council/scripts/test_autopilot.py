@@ -160,6 +160,10 @@ class AutomaticTests(unittest.TestCase):
         self.assertFalse(self.research.list(self.node['project_id'])['jobs'])
         self.assertTrue(any(n['title']=='실행 한도 변경' for n in self.store.export_json()['notes']))
         self.assertEqual(after['limit_changes'][0]['before']['max_calls'],20)
+        from research_chat import ResearchChat
+        chat=ResearchChat(self.store,self.research,self.automatic,autostart=False);self.addCleanup(chat.close)
+        question=chat.send(dict(node_id=self.node['id'],content='What is the updated allowance?',mode='ask',request_id='message-limits-context-001'))
+        usage=chat.context(question)['model_usage'];self.assertEqual(usage['max_calls'],40);self.assertEqual(usage['calls'],18)
 
     def test_limits_reject_stale_sessions_decreases_and_unrelated_setting_changes(self):
         item=self.start(max_model_calls=20);ledger=Path(item['config']['session_budget']);original=ledger.read_text()
