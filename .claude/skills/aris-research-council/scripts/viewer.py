@@ -91,7 +91,7 @@ class ViewerHandler(BaseHTTPRequestHandler):
             return
         path = urlsplit(self.path).path
         if path == '/api/health':
-            self._reply(200, {'app': 'BrainDance', 'version': '0.2.1'})
+            self._reply(200, {'app': 'BrainDance', 'version': '0.2.2'})
         elif path == '/api/project/trash':
             self._reply(200,self.server.cleanup.trash())
         elif path == '/api/project/purge-preview':
@@ -191,7 +191,11 @@ class ViewerHandler(BaseHTTPRequestHandler):
             self._reply(500, {'error': '로컬 파일 작업을 완료하지 못했습니다: '+str(exc)})
 
     def _mutate(self, path, payload):
-        if path=='/api/experiment':
+        if path=='/api/providers/refresh':
+            if payload:raise ValueError('Expected empty object')
+            self._reply(200,self.server.provider_status.get(force=True))
+            return
+        elif path=='/api/experiment':
             result=self.server.experiments.create(payload)
         elif path=='/api/experiment/approve':
             if set(payload)!={'id','digest','consent'}:raise ValueError('Expected id, digest, consent')

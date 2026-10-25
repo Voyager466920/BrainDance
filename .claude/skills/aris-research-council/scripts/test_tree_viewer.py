@@ -325,6 +325,16 @@ class ViewerTests(unittest.TestCase):
         self.assertEqual(self.server.compute_state()['assignments'][project_id]['device_ids'],['cpu'])
         self.assertEqual(self.server.store.get_node(self.root['id'])['title'],self.root['title'])
 
+    def test_account_plan_refresh_is_same_origin_and_does_not_start_models(self):
+        fixture={'providers':[{'name':'GPT','connection':'authenticated','plan_label':'ChatGPT Plus','plan_state':'available','windows':[]}]}
+        with patch.object(self.server.provider_status,'get',return_value=fixture) as get:
+            self.assertEqual(self.request('/api/providers/refresh',{})[0],403)
+            self.assertEqual(self.request('/api/providers/refresh',{'extra':True},self.credentials())[0],400)
+            get.assert_not_called()
+            status,_,body=self.request('/api/providers/refresh',{},self.credentials())
+            self.assertEqual(status,200);self.assertEqual(json.loads(body),fixture)
+            get.assert_called_once_with(force=True)
+
     def test_approved_automatic_experiment_http_flow_and_artifact_download(self):
         self.server.compute.assign(self.root['project_id'],dict(profile_id='local',device_ids=['cpu'],auto_run=True,time_budget_minutes=1))
         payload=dict(node_id=self.root['id'],title='HTTP CPU execution',timeout_seconds=5,
@@ -439,6 +449,18 @@ assert(elements.get('conversation').textContent.includes('Codex'));
 vm.runInContext("renderProviders({providers:[{name:'GPT',connection:'connected',windows:[{minutes:300,used_percent:0}],checked_at:'2026-10-24'},{name:'Claude',connection:'authenticated',usage_state:'rate_limited',windows:[],checked_at:'2026-10-24'}]});",context);
 assert(elements.get('provider-status').textContent.includes('0% 사용'));
 assert(elements.get('provider-status').textContent.includes('사용량 조회 제한'));
+vm.runInContext("renderProviders({providers:[{name:'GPT',connection:'connected',plan_label:'ChatGPT Plus',plan_state:'available',auth_label:'ChatGPT 계정',windows:[]},{name:'Claude',connection:'authenticated',plan_label:'Claude Max 5×',plan_state:'available',windows:[],usage_state:'rate_limited'}]});setSettingsTab('accounts');",context);
+assert(elements.get('account-plan-list').textContent.includes('ChatGPT Plus'));
+assert(elements.get('account-plan-list').textContent.includes('Claude Max 5×'));
+assert(!elements.get('settings-panel-accounts').hidden);
+assert(elements.get('settings-panel-ssh').hidden);
+assert(elements.get('settings-panel-execution').hidden);
+vm.runInContext("renderAccountPlans({providers:[{name:'GPT',connection:'signed_out',windows:[]},{name:'Claude',connection:'authenticated',plan_state:'not_applicable',windows:[]}]});",context);
+assert(elements.get('account-plan-list').textContent.includes('로그인 필요'));
+assert(elements.get('account-plan-list').textContent.includes('구독 플랜 해당 없음'));
+assert(!elements.get('account-plan-list').textContent.includes('ChatGPT Plus'));
+vm.runInContext("renderAccountPlans({providers:[{name:'GPT',connection:'authenticated',plan_state:'unavailable',windows:[]}]});",context);
+assert(elements.get('account-plan-list').textContent.includes('플랜 확인 불가'));
 vm.runInContext("fixture.nodes[1].status='active';renderTree();",context);
 function all(e){return [e].concat(...e.children.map(all));}
 assert(all(elements.get('tree')).some(e=>(e.className||'').includes('is-active')));
