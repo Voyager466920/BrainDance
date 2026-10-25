@@ -35,7 +35,7 @@ class ResearchChat:
         root=self.control.root(project_id);self.store.get_node(root['id'])
         with self.store._connect() as conn:
             rows=[self.decode(r) for r in conn.execute('SELECT * FROM research_chat WHERE project_id=? ORDER BY seq DESC LIMIT 120',(project_id,))]
-            for note in conn.execute("SELECT n.* FROM notes n JOIN node_projects p ON p.node_id=n.node_id WHERE p.project_id=? AND (n.kind IN ('result','analysis') OR n.title LIKE '%필요한 항목%') ORDER BY n.created_at DESC,n.rowid DESC LIMIT 30",(project_id,)):
+            for note in conn.execute("SELECT n.* FROM notes n JOIN node_projects p ON p.node_id=n.node_id WHERE p.project_id=? AND (n.kind IN ('result','analysis') OR n.title LIKE '%필요한 항목%' OR n.title='실행 한도 변경') ORDER BY n.created_at DESC,n.rowid DESC LIMIT 30",(project_id,)):
                 rows.append(dict(id='report:'+note['id'],project_id=project_id,node_id=note['node_id'],role='report',state='completed',title=note['title'],content=note['content'][:24000],created_at=note['created_at'],metadata=dict(note_id=note['id'])))
         jobs=self.research.list(project_id)['jobs'][:8]
         for job in jobs:

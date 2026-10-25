@@ -74,11 +74,21 @@ class Autopilot:
                 (item['status'],item['message'],json.dumps(item['progress']),now(),item['id']))
 
     def control(self,payload):
-        if set(payload)-{'project_id','action','max_cycles','max_model_calls','token_budget','context_path','mode'}:raise ValueError('지원하지 않는 자동모드 설정입니다.')
+        if set(payload)-{'project_id','action','max_cycles','max_model_calls','token_budget','context_path','mode','session_id'}:raise ValueError('지원하지 않는 자동모드 설정입니다.')
         project_id=payload['project_id'];action=payload['action'];root=self.root(project_id);self.store.get_node(root['id'])
-        if action not in {'start','pause','resume','stop'}:raise ValueError('자동모드 동작을 확인하세요.')
+        if action not in {'start','pause','resume','stop','limits'}:raise ValueError('자동모드 동작을 확인하세요.')
         with self.lock:
             old=self.sessions(project_id);item=old[0] if old else None
+            if action=='limits':
+                if set(payload)!={'project_id','action','session_id','max_model_calls','token_budget'}:raise ValueError('변경할 실행과 호출·토큰 한도를 확인하세요.')
+                if not item or item['id']!=payload['session_id']:raise ValueError('자동 실행 세션이 바뀌었습니다. 한도 창을 다시 여세요.')
+                from session_budget import update
+                data=update(item['config']['session_budget'],'limits',max_calls=payload['max_model_calls'],token_budget=payload['token_budget'])
+                with self.store._connect() as conn:
+                    conn.execute('UPDATE automatic_sessions SET updated_at=? WHERE id=?',(now(),item['id']))
+                    self.store._event(conn,root['id'],'automatic_limits_changed',dict(session_id=item['id'],change=data['limit_changes'][-1]))
+                self.store.add_note(root['id'],'memo','실행 한도 변경',json.dumps(dict(session_id=item['id'],calls_used=data['calls'],max_calls=data['max_calls'],token_budget=data['token_budget']),ensure_ascii=False))
+                return self.state(project_id)
             if action=='start':
                 if item and item['status'] in {'running','paused'}:raise ValueError('기존 자동모드를 재개하거나 중지하세요.')
                 cycles=payload.get('max_cycles',3);calls=payload.get('max_model_calls',40);tokens=payload.get('token_budget',1500000)

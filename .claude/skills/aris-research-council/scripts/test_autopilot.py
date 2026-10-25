@@ -147,6 +147,38 @@ class AutomaticTests(unittest.TestCase):
         with self.assertRaises(ValueError):self.automatic.conversation_action('changed',self.node['id'],'execute','Run.',0)
         self.assertFalse(self.store.export_json()['experiment_runs'])
 
+    def test_limits_increase_keeps_usage_history_and_blocked_session(self):
+        from project_session import identity
+        item=self.start(max_model_calls=20);self.automatic.save(item,'blocked','Need a larger model allowance.')
+        session_id=identity(self.store,self.node['project_id'])['id'];ledger=Path(item['config']['session_budget']);before=json.loads(ledger.read_text())
+        before.update(calls=18,charges={'past':39000},observed={'past':30000});ledger.write_text(json.dumps(before))
+        result=self.automatic.control(dict(project_id=self.node['project_id'],action='limits',session_id=item['id'],max_model_calls=40,token_budget=before['token_budget']))
+        after=json.loads(ledger.read_text());self.assertEqual(after['calls'],18);self.assertEqual(after['max_calls']-after['calls'],22)
+        self.assertEqual(after['charges'],before['charges']);self.assertEqual(after['observed'],before['observed'])
+        self.assertEqual(result['session']['id'],item['id']);self.assertEqual(result['session']['status'],'blocked');self.assertEqual(result['session']['config'],item['config'])
+        self.assertEqual(identity(self.store,self.node['project_id'])['id'],session_id)
+        self.assertFalse(self.research.list(self.node['project_id'])['jobs'])
+        self.assertTrue(any(n['title']=='실행 한도 변경' for n in self.store.export_json()['notes']))
+        self.assertEqual(after['limit_changes'][0]['before']['max_calls'],20)
+
+    def test_limits_reject_stale_sessions_decreases_and_unrelated_setting_changes(self):
+        item=self.start(max_model_calls=20);ledger=Path(item['config']['session_budget']);original=ledger.read_text()
+        payload=dict(project_id=self.node['project_id'],action='limits',session_id=item['id'],max_model_calls=40,token_budget=1500000)
+        for values in [dict(session_id='another-session'),dict(max_model_calls=19),dict(max_model_calls=True),dict(token_budget=1499999),dict(context_path='/other/folder')]:
+            with self.assertRaises(ValueError):self.automatic.control({**payload,**values})
+            self.assertEqual(ledger.read_text(),original)
+
+    def test_existing_worker_admits_more_calls_after_shared_limit_increase(self):
+        item=self.start(max_model_calls=2,token_budget=100000);ledger=Path(item['config']['session_budget'])
+        budget=Budget(dict(max_model_calls=5,token_budget=1000000,session_budget=str(ledger)),self.root/'worker-usage.json')
+        budget.reserve(2,1000)
+        with self.assertRaises(RuntimeError):budget.reserve(1,1000)
+        self.automatic.control(dict(project_id=self.node['project_id'],action='limits',session_id=item['id'],max_model_calls=4,token_budget=100000))
+        budget.reserve(1,1000)
+        actual=json.loads(ledger.read_text());self.assertEqual(actual['calls'],3);self.assertEqual(actual['max_calls'],4)
+        self.assertEqual(sum(actual['charges'].values()),2000)
+        self.assertEqual(self.automatic.get(item['id'])['status'],'running')
+
     def test_shared_admission_survives_new_worker_and_keeps_interrupted_reservations(self):
         item=self.start(max_model_calls=3,token_budget=100000);path=item['config']['session_budget']
         cfg=dict(max_model_calls=10,token_budget=1000000,session_budget=path)

@@ -44,6 +44,8 @@ The conversation has its own reply worker. Replies use timestamped actual state 
 
 The **실험 실행** (Experiments) tab keeps immutable plans, source code, and execution history under **실행 계획 · 코드 · 이전 실험**. Research launch controls and detailed automatic-session usage are available under **실행 설정** in Progress. Manual code entry remains an advanced option.
 
+Use the project header **한도** (Limits) button to increase an existing run’s total model-call or token allowance later. Used calls, token charges, research history, GPU/time settings, and the project conversation session are preserved. Saving a larger limit does not resume paused or blocked work; ask the conversation to continue when ready. Models cannot increase these limits themselves.
+
 ## Project automatic mode
 
 Each project tile has its own **자동모드** control, visible even when collapsed. Every new session starts paper discovery and hypothesis review at the project root, even when hypotheses already exist, then continues through experiment design, code authoring/review, self-tests, execution, analysis and a next-experiment decision.
