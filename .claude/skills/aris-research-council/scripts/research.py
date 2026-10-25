@@ -231,8 +231,10 @@ class ResearchEngine:
                 except (ProcessLookupError,subprocess.TimeoutExpired):
                     try:os.killpg(process.pid,signal.SIGKILL);process.wait(timeout=3)
                     except (ProcessLookupError,subprocess.TimeoutExpired):pass
-            with self.lock:self.process=None;self.active_id=None
-            self.store.export_json(Path(self.store.db_path).with_suffix('.json'))
+            try:
+                self.store.export_json(Path(self.store.db_path).with_suffix('.json'))
+            finally:
+                with self.lock:self.process=None;self.active_id=None
 
     def command(self):
         return [sys.executable,'--research-worker'] if getattr(sys,'frozen',False) else [sys.executable,'-u',str(Path(__file__).with_name('research_worker.py'))]

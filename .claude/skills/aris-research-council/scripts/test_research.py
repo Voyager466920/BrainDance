@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from unittest.mock import patch
@@ -59,6 +60,24 @@ class ResearchTests(unittest.TestCase):
         with self.assertRaises(KeyError):self.engine.file(job['id'],'../../compute.json')
         snapshot=json.loads((self.root/'tree.json').read_text());self.assertEqual(snapshot['research_jobs'][0]['state'],'completed')
         self.assertFalse(snapshot['experiment_runs'])
+
+    def test_worker_slot_stays_busy_until_snapshot_is_persisted(self):
+        entered=threading.Event();release=threading.Event();original=self.store.export_json
+        def delayed_export(*args,**kwargs):
+            entered.set()
+            if not release.wait(6):raise TimeoutError('snapshot release')
+            return original(*args,**kwargs)
+        with patch.object(self.store,'export_json',side_effect=delayed_export):
+            job=self.start()
+            try:
+                self.assertTrue(entered.wait(6))
+                self.assertEqual(self.engine.get(job['id'])['state'],'completed')
+                self.assertEqual(self.engine.active_id,job['id'])
+                with self.assertRaises(ValueError):self.start()
+            finally:release.set()
+            self.wait(job)
+        snapshot=json.loads((self.root/'tree.json').read_text())
+        self.assertEqual(snapshot['research_jobs'][0]['state'],'completed')
 
     def test_consent_and_resource_limits_prevent_dispatch(self):
         for extra in [dict(confirm=False),dict(mode='invented'),dict(token_budget=1),dict(phase_timeout_seconds=1)]:
