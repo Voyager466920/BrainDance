@@ -14,8 +14,9 @@ from tree_store import now
 
 
 class ProjectCleanup:
-    def __init__(self, store, experiments, compute):
+    def __init__(self, store, experiments, compute, research=None):
         self.store, self.experiments, self.compute = store, experiments, compute
+        self.research=research
         self.workspace = Path(store.db_path).parent
         with store._connect() as conn:
             conn.execute('''CREATE TABLE IF NOT EXISTS project_cleanup_jobs (
@@ -66,6 +67,19 @@ class ProjectCleanup:
         if any(r['state'] in {'queued', 'running'} or r['id'] in self.experiments.jobs for r in runs):
             raise ValueError('실험이 종료 처리 중입니다. 중지 또는 완료 후 다시 시도하세요.')
         paths = []
+        has_research=conn.execute("SELECT 1 FROM sqlite_master WHERE name='research_jobs'").fetchone()
+        if has_research:
+            research_jobs=conn.execute('SELECT * FROM research_jobs WHERE project_id=?',(project_id,)).fetchall()
+            if any(r['state'] in {'queued','running'} or (self.research and self.research.active_id==r['id']) for r in research_jobs):
+                raise ValueError('연구가 진행 또는 종료 처리 중입니다. 중지 후 다시 시도하세요.')
+            others={r['node_id'] for r in conn.execute('SELECT node_id FROM node_projects WHERE project_id!=?',(project_id,))}
+            other_refs=self._run_refs(conn,others)
+            for research_job in research_jobs:
+                expected=self.workspace/'council-runs'/research_job['id']
+                if not re.fullmatch(r'[a-f0-9-]{36}',research_job['id']) or Path(research_job['run_dir']).absolute()!=expected:
+                    raise ValueError('관리 경로 밖의 연구 파일은 자동 삭제하지 않습니다.')
+                if not any(Path(ref).is_absolute() and Path(ref).resolve().is_relative_to(expected) for ref in other_refs):
+                    paths.append('council-runs/'+research_job['id'])
         for run in runs:
             if not re.fullmatch(r'[a-f0-9-]{36}', run['id']):
                 raise ValueError('실험 폴더 식별자가 올바르지 않습니다.')
@@ -140,6 +154,8 @@ class ProjectCleanup:
                     conn.execute('INSERT INTO project_cleanup_jobs VALUES(?,?,?,?,?,NULL)',
                                  (project_id, plan['title'], json.dumps(plan['paths']), json.dumps(plan['counts']), now()))
                     conn.execute('DELETE FROM experiment_runs WHERE project_id=?', (project_id,))
+                    if conn.execute("SELECT 1 FROM sqlite_master WHERE name='research_jobs'").fetchone():
+                        conn.execute('DELETE FROM research_jobs WHERE project_id=?',(project_id,))
                     for table in ('experiment_approvals', 'experiments'):
                         field = 'experiment_id' if table == 'experiment_approvals' else 'id'
                         conn.execute('DELETE FROM '+table+' WHERE '+field+' IN (SELECT id FROM experiments WHERE node_id IN (SELECT node_id FROM node_projects WHERE project_id=?))', (project_id,))

@@ -29,7 +29,15 @@ The app uses a native AppKit window with WKWebView and includes its Python backe
 2. Enter a project name and research goal.
 3. Choose a local or saved SSH execution environment.
 4. Click **장치 조회** (Discover devices), then select CPU or one or more GPUs.
-5. Set the concurrency and time budget, then click **프로젝트 만들기** (Create project).
+5. Set the concurrency and time budget, then click **만들고 연구 시작** (Create and start research), or disable the research-start option to save only.
+
+The **만들고 연구 시작** (Create and start research) option is enabled by default and clearly indicates Claude/Codex usage. Disable it to save the project without starting model work. For an existing project, click **연구 시작** (Start research), review Lite/Balanced/Deep and the limits, then confirm. **Balanced** is the default.
+
+The app now runs the installed official ARIS `research-lit` Skill, the official paper-identity verifier, and the existing four-participant Council automatically through experiment **design**. A project badge and stage panel show actual progress: literature discovery, identity checks, hypothesis generation, anonymous cross-review, Chairman synthesis, and design persistence. **진행 기록** (Progress log) shows stage events and downloadable evidence, usage receipts and reports. The green node indicator describes node eligibility; a separate **진행 중** badge indicates running research. Research requires both authenticated CLIs and the official ARIS checkout at `~/aris_repo` (or `ARIS_REPO`). It uses the selected account quotas and does not run GPU experiments.
+
+Each research launch runs one bounded Council. You can stop it from the project panel. Failures and interruptions retain partial artifacts and explicit states; they do not silently retry model calls. Research runs while the app/backend is open. Restarting marks unfinished jobs as interrupted. Starting again creates a new run and can consume usage again. At most one research job runs in a workspace at a time. Unapproved executable experiments still require a separate code/device/time approval.
+
+For the same project and goal, saved verified literature is reused by default to avoid duplicate discovery calls. Uncheck **동일 목표의 저장된 논문 근거 재사용** to search again. A new Council still consumes usage. The execution-history selector retains previous failed/stopped runs, and reused-literature receipts link to their source run.
 
 Use the gear icon to open settings. The **SSH 추가** (Add SSH) tab lets you save and test a remote connection. You can also open it from the new-project form without losing your draft.
 
@@ -39,7 +47,7 @@ Click a project title to collapse or expand its nodes. The trash icon on the rig
 
 Open **휴지통** (Trash) and choose **영구 삭제** (Delete permanently) to remove a project after reviewing its name, record counts and local file size. This removes its database records, unshared imported Council conversations, project resource assignment, and dedicated local experiment logs/artifacts. SQLite is compacted to reclaim free pages. Exclusive Council outputs are removed only when they are under the workspace's managed `council-runs/` directory. Shared runs, arbitrary external folders, model/dataset caches, backups, SSH profiles/keys, and files on remote servers remain intact. Permanent deletion cannot be restored. If file cleanup fails, Trash retains a **정리 재시도** (Retry cleanup) entry, including after restarting the app. Queued, running or finishing experiments must stop before permanent deletion.
 
-**Creating a project does not start an experiment.** Open a node's **실험 실행** (Run experiments) tab to save Python code, review its exact code/device/time limit, and approve execution. BrainDance now supervises local and SSH runs and enforces project concurrency and time budgets. Device locks coordinate BrainDance's own jobs; they do not reserve a GPU against other software.
+**Creating a project can start research planning, but does not start a GPU experiment.** Open a node's **실험 실행** (Run experiments) tab to save Python code, review its exact code/device/time limit, and approve execution. BrainDance supervises local and SSH runs and enforces project concurrency and time budgets. Device locks coordinate BrainDance's own jobs; they do not reserve a GPU against other software.
 
 ### Run an experiment
 
@@ -108,7 +116,7 @@ Actual Council runs require:
 
 BrainDance reuses ARIS's official `codex-exec` MCP bridge. Its project-local Skill is at [.claude/skills/aris-research-council/SKILL.md](.claude/skills/aris-research-council/SKILL.md).
 
-The Council runs three Claude specialists and an independent Codex participant through hypothesis generation and anonymous cross-review, followed by a separate Claude Chairman synthesis. Council runs consume usage from connected accounts. They are invoked separately through the Skill or runner; opening the app or creating a project does not invoke models.
+The Council runs three Claude specialists and an independent Codex participant through hypothesis generation and anonymous cross-review, followed by a separate Claude Chairman synthesis. Council runs consume usage from connected accounts. Use the app's explicit research-start controls or the Skill/runner. Opening the app alone never starts research. The literature stage copies the unmodified installed ARIS Skill and its references into a private session plugin, runs it with command execution/delegation disabled, then invokes the upstream verifier on the host. Original abstracts are fetched with ARIS's helper when available; source excerpts/summaries and unavailable-source limitations remain labelled. This host adaptation is not a stock ARIS autonomous experiment loop. It does not inspect an SSH research repository just because a path is mentioned in a goal.
 
 See the [protocol](.claude/skills/aris-research-council/references/protocol.md) for commands, modes, budgets, and recovery behavior; [optimization notes](.claude/skills/aris-research-council/references/optimization.md) for token controls; and [provenance](.claude/skills/aris-research-council/references/provenance.md) for reused components and license notices.
 

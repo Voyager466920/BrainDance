@@ -15,6 +15,7 @@ from provider_status import ProviderStatus
 from compute import ComputeSettings
 from experiments import ExperimentEngine
 from project_cleanup import ProjectCleanup
+from research import ResearchEngine
 
 ASSET = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parent.parent)) / 'assets' / 'viewer.html'
 
@@ -34,13 +35,16 @@ class ViewerServer(ThreadingHTTPServer):
         self.allowed_hosts = {'127.0.0.1:' + str(actual_port), 'localhost:' + str(actual_port)}
         try:
             self.experiments=ExperimentEngine(store,self.compute,self.compute_state)
-            self.cleanup=ProjectCleanup(store,self.experiments,self.compute)
+            self.research=ResearchEngine(store)
+            self.cleanup=ProjectCleanup(store,self.experiments,self.compute,self.research)
         except Exception:
+            if hasattr(self,'research'):self.research.close()
             if hasattr(self,'experiments'):self.experiments.close()
             super().server_close()
             raise
 
     def server_close(self):
+        if hasattr(self,'research'):self.research.close()
         if hasattr(self,'experiments'):self.experiments.close()
         super().server_close()
 
@@ -91,7 +95,9 @@ class ViewerHandler(BaseHTTPRequestHandler):
             return
         path = urlsplit(self.path).path
         if path == '/api/health':
-            self._reply(200, {'app': 'BrainDance', 'version': '0.2.2'})
+            self._reply(200, {'app': 'BrainDance', 'version': '0.3.0'})
+        elif path.startswith('/api/research'):
+            self._research_get(path)
         elif path == '/api/project/trash':
             self._reply(200,self.server.cleanup.trash())
         elif path == '/api/project/purge-preview':
@@ -161,6 +167,24 @@ class ViewerHandler(BaseHTTPRequestHandler):
         except KeyError as error:self._reply(404,{'error':str(error)})
         except (ValueError,TypeError) as error:self._reply(400,{'error':str(error)})
 
+    def _research_get(self,path):
+        query=parse_qs(urlsplit(self.path).query)
+        try:
+            if path=='/api/research':
+                self._reply(200,self.server.research.list(query.get('project_id',[''])[0]))
+            elif path=='/api/research/job':
+                self._reply(200,self.server.research.info(query.get('id',[''])[0]))
+            elif path=='/api/research/file':
+                file=self.server.research.file(query.get('id',[''])[0],query.get('file',[''])[0])
+                self.send_response(200);self.send_header('Content-Type','application/octet-stream')
+                self.send_header('Content-Length',str(file.stat().st_size));self.send_header('X-Content-Type-Options','nosniff')
+                self.send_header('Content-Disposition',"attachment; filename*=UTF-8''"+quote(file.name))
+                self.end_headers()
+                with file.open('rb') as stream:shutil.copyfileobj(stream,self.wfile)
+            else:self._reply(404,{'error':'Not found'})
+        except KeyError as error:self._reply(404,{'error':str(error)})
+        except (ValueError,TypeError,OSError) as error:self._reply(400,{'error':str(error)})
+
     def do_POST(self):
         if not self._trusted_host():
             return
@@ -195,6 +219,11 @@ class ViewerHandler(BaseHTTPRequestHandler):
             if payload:raise ValueError('Expected empty object')
             self._reply(200,self.server.provider_status.get(force=True))
             return
+        elif path=='/api/research/start':
+            result=self.server.research.start(payload)
+        elif path=='/api/research/stop':
+            if set(payload)!={'id'}:raise ValueError('Expected research job id')
+            result=self.server.research.stop(payload['id'])
         elif path=='/api/experiment':
             result=self.server.experiments.create(payload)
         elif path=='/api/experiment/approve':

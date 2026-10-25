@@ -26,7 +26,8 @@ def main():
         '--name', 'BrainDanceServer', '--paths', SCRIPTS,
         '--add-data', str(SCRIPTS.parent/'assets')+':assets', '--collect-data', 'certifi',
         '--add-data', str(SCRIPTS/'experiment_worker.py')+':worker',
-        '--hidden-import', 'csv', '--hidden-import', 'statistics',
+        '--add-data', str(ROOT/'.claude/agents')+':agents',
+        '--hidden-import', 'csv', '--hidden-import', 'statistics', '--hidden-import', 'xml.etree.ElementTree',
         '--distpath', build/'server', '--workpath', build/'pyinstaller', '--specpath', build,
         '--target-architecture', architecture, ROOT/'desktop/backend.py')
     app = dist/'BrainDance.app'

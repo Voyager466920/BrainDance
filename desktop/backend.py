@@ -19,6 +19,15 @@ def data_directory():
 
 
 def main():
+    paths = [str(Path.home()/'.local/bin'), '/opt/homebrew/bin', '/usr/local/bin',
+             *os.environ.get('PATH', '').split(os.pathsep), '/usr/bin', '/bin']
+    os.environ['PATH'] = os.pathsep.join(dict.fromkeys(paths))
+    if getattr(sys, 'frozen', False):
+        import certifi
+        os.environ.setdefault('SSL_CERT_FILE', certifi.where())
+    if sys.argv[1:2]==['--research-worker']:
+        from research_worker import run
+        raise SystemExit(run(sys.argv[2]))
     if sys.argv[1:] == ['--probe-local']:
         # A frozen binary is not a Python interpreter. Run only the fixed hardware probe.
         exec(compile(PROBE, '<hardware-probe>', 'exec'), {'__name__': '__main__'})
@@ -32,12 +41,6 @@ def main():
         sys.argv=sys.argv[2:]
         runpy.run_path(sys.argv[0],run_name='__main__')
         return
-    paths = [str(Path.home()/'.local/bin'), '/opt/homebrew/bin', '/usr/local/bin',
-             *os.environ.get('PATH', '').split(os.pathsep), '/usr/bin', '/bin']
-    os.environ['PATH'] = os.pathsep.join(dict.fromkeys(paths))
-    if getattr(sys, 'frozen', False):
-        import certifi
-        os.environ.setdefault('SSL_CERT_FILE', certifi.where())
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--data-dir', type=Path, default=data_directory())
     parser.add_argument('--port', type=int, default=8766)

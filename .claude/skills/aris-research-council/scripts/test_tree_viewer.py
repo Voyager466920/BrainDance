@@ -335,6 +335,19 @@ class ViewerTests(unittest.TestCase):
             self.assertEqual(status,200);self.assertEqual(json.loads(body),fixture)
             get.assert_called_once_with(force=True)
 
+    def test_research_dispatch_requires_explicit_confirmation_and_same_origin(self):
+        payload=dict(node_id=self.root['id'],mode='balanced',confirm=True)
+        with patch.object(self.server.research,'start',return_value={'id':'offline-fixture','state':'queued'}) as start:
+            self.assertEqual(self.request('/api/research/start',payload)[0],403)
+            start.assert_not_called()
+            status,_,body=self.request('/api/research/start',payload,self.credentials())
+            self.assertEqual(status,200);self.assertEqual(json.loads(body)['state'],'queued')
+            start.assert_called_once_with(payload)
+        self.assertEqual(self.request('/api/research/start',{**payload,'confirm':False},self.credentials())[0],400)
+        self.assertEqual(self.request('/api/research?project_id='+self.root['project_id'])[0],200)
+        self.assertEqual(self.request('/api/research/job?id=unknown')[0],404)
+        self.assertEqual(self.request('/api/research/file?id=unknown&file=../../etc/passwd')[0],404)
+
     def test_approved_automatic_experiment_http_flow_and_artifact_download(self):
         self.server.compute.assign(self.root['project_id'],dict(profile_id='local',device_ids=['cpu'],auto_run=True,time_budget_minutes=1))
         payload=dict(node_id=self.root['id'],title='HTTP CPU execution',timeout_seconds=5,
@@ -461,6 +474,12 @@ assert(elements.get('account-plan-list').textContent.includes('구독 플랜 해
 assert(!elements.get('account-plan-list').textContent.includes('ChatGPT Plus'));
 vm.runInContext("renderAccountPlans({providers:[{name:'GPT',connection:'authenticated',plan_state:'unavailable',windows:[]}]});",context);
 assert(elements.get('account-plan-list').textContent.includes('플랜 확인 불가'));
+vm.runInContext("for(const n of fixture.nodes)n.project_id='root';fixture.research_jobs=[{id:'offline',project_id:'root',state:'running',phase:'generation',created_at:'2026-10-25',message:'OFFLINE progress fixture'}];renderResearchLaunch(fixture.nodes[1]);",context);
+assert(elements.get('research-launch').textContent.includes('진행 중'));
+assert(elements.get('research-launch').textContent.includes('가설 생성'));
+assert(elements.get('research-launch').textContent.includes('진행 기록'));
+vm.runInContext("fixture.research_jobs=[];renderResearchLaunch(fixture.nodes[1]);",context);
+assert(elements.get('research-launch').textContent.includes('연구 시작 전'));
 vm.runInContext("fixture.nodes[1].status='active';renderTree();",context);
 function all(e){return [e].concat(...e.children.map(all));}
 assert(all(elements.get('tree')).some(e=>(e.className||'').includes('is-active')));

@@ -25,8 +25,21 @@ import uuid
 
 from tree_store import TreeStore
 
-SKILL = Path(__file__).resolve().parents[1]
-ROOT = SKILL.parents[2]
+SKILL = Path(sys._MEIPASS) if getattr(sys,'frozen',False) else Path(__file__).resolve().parents[1]
+ROOT = Path.home()/'Library/Application Support/BrainDance' if getattr(sys,'frozen',False) else SKILL.parents[2]
+ACTIVE_PROCESSES = set()
+PROCESS_LOCK = threading.Lock()
+
+
+def stop_children():
+    with PROCESS_LOCK:children=list(ACTIVE_PROCESSES)
+    for child in children:
+        try:os.killpg(child.pid,signal.SIGTERM)
+        except ProcessLookupError:pass
+
+
+def python_command(script):
+    return [sys.executable]+(['--run-experiment'] if getattr(sys,'frozen',False) else [])+[str(script)]
 ROLES = ("novelty", "method", "skeptic")
 MODES = {
     "lite": dict(generation_model="haiku", peer_model="haiku", chairman_model="sonnet",
@@ -91,6 +104,7 @@ def process(argv, prompt, cwd, logbase, timeout, env=None):
     with open(str(logbase) + ".stdout.jsonl", "w") as out, open(str(logbase) + ".stderr.log", "w") as err:
         p = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=out, stderr=err,
                              cwd=str(cwd), env=env, text=True, start_new_session=True)
+        with PROCESS_LOCK:ACTIVE_PROCESSES.add(p)
         try:
             p.communicate(prompt, timeout=timeout)
         except subprocess.TimeoutExpired:
@@ -101,6 +115,13 @@ def process(argv, prompt, cwd, logbase, timeout, env=None):
                 os.killpg(p.pid, signal.SIGKILL)
                 p.wait()
             raise TimeoutError("Model call timed out; partial raw logs retained. No automatic retry.")
+        finally:
+            if p.poll() is None:
+                try:os.killpg(p.pid,signal.SIGTERM);p.wait(timeout=3)
+                except (ProcessLookupError,subprocess.TimeoutExpired):
+                    try:os.killpg(p.pid,signal.SIGKILL);p.wait(timeout=2)
+                    except (ProcessLookupError,subprocess.TimeoutExpired):pass
+            with PROCESS_LOCK:ACTIVE_PROCESSES.discard(p)
     rows = []
     for line in Path(str(logbase) + ".stdout.jsonl").read_text().splitlines():
         try:
@@ -252,6 +273,7 @@ Return ONLY JSON: strongest (one letter), strongest_reason, weakest (one letter)
 collective_miss, evaluations (array of objects with label, novelty_score, feasibility_score, rigor_score
 on 1-5, evidence_ids, rationale). Evaluate all four. Preserve dissent and evidence uncertainty.
 Do not infer authors or claim a majority is proof. Do not identify your role/model/provider.'''
+REVIEW += '\nBe concise: each rationale at most 180 Korean characters; each other prose field at most 250 Korean characters. Do not repeat the proposals or evidence excerpts.'
 
 
 def claude_call(folder, name, prompt, model, config, budget, agents=None, required=()):
@@ -401,8 +423,9 @@ def codex_call(folder, prompt, config, budget, aris_repo):
     dump(folder / "request.json", dict(method="tools/call", params=dict(name="codex", arguments=args)))
     usage, thread, model_evidence = {}, None, None
     with open(folder / "stderr.log", "w") as err, open(folder / "mcp.stdout.jsonl", "w") as raw:
-        p = subprocess.Popen([sys.executable, str(server)], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        p = subprocess.Popen(python_command(server), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                              stderr=err, text=True, bufsize=1, start_new_session=True)
+        with PROCESS_LOCK:ACTIVE_PROCESSES.add(p)
         inbox = __import__("queue").Queue()
         def reader():
             for line in p.stdout:
@@ -461,6 +484,7 @@ def codex_call(folder, prompt, config, budget, aris_repo):
                     os.killpg(p.pid, signal.SIGTERM)
                     p.wait(timeout=5)
             t.join(timeout=2)
+            with PROCESS_LOCK:ACTIVE_PROCESSES.discard(p)
     if not thread or not usage:
         raise RuntimeError("Missing actual Codex completion/thread receipt")
     # Capture execution context without treating a requested model as backend attestation.
@@ -504,7 +528,7 @@ def native_wave(folder, roles, phase, topic, context, config, budget):
     model = config["generation_model"] if phase == "generation" else config["peer_model"]
     agents = {}
     for role in roles:
-        agent_file = ROOT / ".claude/agents" / ("council-" + role + ".md")
+        agent_file = (Path(sys._MEIPASS)/'agents' if getattr(sys,'frozen',False) else ROOT/".claude/agents") / ("council-" + role + ".md")
         definition = agent_file.read_text(encoding="utf-8")
         rolefocus = definition.split("---", 2)[-1].strip()
         instruction = PROPOSAL if phase == "generation" else REVIEW
@@ -614,7 +638,8 @@ def load_config(args):
     return cfg
 
 
-def run(args):
+def run(args, progress=None):
+    progress=progress or (lambda phase,message:None)
     cfg = load_config(args)
     stamp = dt.datetime.now(dt.timezone(dt.timedelta(hours=9))).strftime("%Y-%m-%d-%H%M%S")
     output = Path(args.output or ROOT / "council" / (stamp + "-" + uuid.uuid4().hex[:6])).resolve()
@@ -646,7 +671,7 @@ def run(args):
         prior_state = read_json(output / "run-state.json") if (output / "run-state.json").exists() else {}
         if prior_state and prior_state.get("topic") != args.topic:
             raise ValueError("Resume requires the original topic")
-        pack, context = prepare(args.literature, args.evidence, output, cfg, ROOT / ".aris/council/paper-cache")
+        pack, context = prepare(args.literature, args.evidence, output, cfg, db.parent/'paper-cache')
         # Fail before spending any model calls when the complete requested council cannot fit.
         per_council = 2 * (3 + math.ceil(3/min(3, cfg["max_parallel"])) + 1) + 1
         if per_council * cfg["rounds"] > cfg["max_model_calls"]:
@@ -663,6 +688,7 @@ def run(args):
             rdir = output / ("round-" + str(iteration + 1))
             rdir.mkdir(exist_ok=True)
             topic = args.topic + ("\nExpand this parent hypothesis: " + json.dumps(parent, ensure_ascii=False) if args.node_id or iteration else "")
+            progress('generation','Claude 전문가 3명과 Codex가 독립 가설을 생성합니다.')
             proposals = phase(rdir / "generation", "generation", topic, context, cfg, budget, args.aris_repo, pack["full_evidence_path"])
             validate_proposals(proposals, pack["selected_ids"])
             mapping_path = rdir / "private/anonymization-map.json"
@@ -677,8 +703,10 @@ def run(args):
             os.chmod(private / "anonymization-map.json", 0o600)
             dump(rdir / "anonymous-proposals.json", blind)
             blind_context = context + "\nANONYMOUS PROPOSALS:\n" + json.dumps(blind, ensure_ascii=False)
+            progress('peer-review','익명화한 가설을 Claude·Codex가 교차 평가합니다.')
             reviews = phase(rdir / "peer-review", "peer-review", topic, blind_context, cfg, budget, args.aris_repo, pack["full_evidence_path"])
             validate_reviews(reviews, blind, pack["selected_ids"])
+            progress('chairman','Claude Chairman이 논문 근거와 교차 평가를 종합합니다.')
             verdict = chairman(rdir / "chairman", topic, context, blind, reviews, cfg, budget)
             for a in verdict["assessments"]:
                 if a.get("status") not in ("active", "held", "discarded") or type(a.get("priority")) is not int or not 0 <= a["priority"] <= 100:
@@ -688,6 +716,7 @@ def run(args):
                 for score in ("novelty_score", "feasibility_score", "rigor_score"):
                     if not isinstance(a.get(score), (int, float)) or not 1 <= a[score] <= 5:
                         raise ValueError("Invalid chairman score")
+            progress('design','가설 분기와 비교군·지표·기각 기준을 연구 트리에 저장합니다.')
             dump(statefile, dict(parent_id=parent["id"], topic=args.topic, tree_commit_started=True))
             if parent['kind'] == 'problem' and verdict.get('research_title'):
                 store.update_node(parent['id'], title=verdict['research_title'],

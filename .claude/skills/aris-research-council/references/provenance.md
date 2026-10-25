@@ -8,6 +8,8 @@ User-requested adaptations are four specialist participants (three Claude agents
 
 BrainDance additionally provides its own approved Python experiment supervisor and queue for local/SSH execution, with bounded runtime, process-group cancellation, device coordination, raw logs and result receipts. These are BrainDance extensions, not stock ARIS features. No autoresearch integration or additional memory service is included. Existing global Claude/Codex settings and official ARIS files are outside the extension's managed files.
 
+The app's research-start controller hosts the unchanged installed ARIS `research-lit` Skill and shared references in a private session plugin, reuses upstream `verify_papers.py` and `arxiv_fetch.py`, then calls the existing Council. This bounded host uses sequential extraction with search/file tools and performs helper execution outside the model. Persistent stage monitoring, explicit launch/stop, source reuse and research-job retention are BrainDance additions.
+
 ## Upstream MIT notice
 
 MIT License
