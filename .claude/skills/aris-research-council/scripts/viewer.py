@@ -99,7 +99,7 @@ class ViewerHandler(BaseHTTPRequestHandler):
             return
         path = urlsplit(self.path).path
         if path == '/api/health':
-            self._reply(200, {'app': 'BrainDance', 'version': '0.5.0'})
+            self._reply(200, {'app': 'BrainDance', 'version': '0.5.1'})
         elif path=='/api/control':
             try:self._reply(200,self.server.autopilot.state(parse_qs(urlsplit(self.path).query).get('project_id',[''])[0]))
             except (KeyError,StopIteration):self._reply(404,{'error':'프로젝트를 찾을 수 없습니다.'})

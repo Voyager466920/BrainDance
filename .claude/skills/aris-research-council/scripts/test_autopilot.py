@@ -26,7 +26,13 @@ def author(folder,prompt,*args):
  if job['task']=='analyze':return dict(outcome='measured',observations=['actual CPU fixture metrics'],interpretation='infrastructure test only',limitations=[],next_steps=[],next_experiment=dict(decision='continue',title='next comparison',rationale='exercise loop',design='fresh run'))
  code='import os,json\nfrom pathlib import Path\ndef self_test():\n    assert 1+1==2\ndef run_experiment():\n    Path(os.environ["BRAINDANCE_METRICS_PATH"]).write_text(json.dumps({"baseline":{"sum":2},"candidate":{"sum":3}}))\n# '+job['id']
  return dict(ready=True,title='CPU automatic fixture',summary='not scientific evidence',code=code,interpreter='builtin',cwd='',args=[],timeout_seconds=2,metric='sum',direction='maximize',dependencies=[],limitations=[])
-with patch('lab_worker.council.codex_call',side_effect=author),patch('lab_worker.council.claude_call',return_value=dict(verdict='pass',reasons=[])):
+def literature(job,root,progress):
+ work=root/'literature';work.mkdir();(work/'LITERATURE.md').write_text('OFFLINE literature fixture, not actual search')
+ (work/'verified-evidence.json').write_text(json.dumps({'papers':[]}));(root/'literature-usage.json').write_text(json.dumps({'skill_invoked':True,'fixture':True}))
+ progress.emit('literature','OFFLINE literature fixture');return work
+def council_fixture(args,progress):
+ progress('generation','OFFLINE hypothesis fixture');work=Path(args.output);work.mkdir();(work/'status.json').write_text(json.dumps({'status':'completed','fixture':True}))
+with patch('research_worker.literature',side_effect=literature),patch('research_worker.verify',side_effect=lambda job,root,work,progress:work/'verified-evidence.json'),patch('research_worker.council.run',side_effect=council_fixture),patch('lab_worker.council.codex_call',side_effect=author),patch('lab_worker.council.claude_call',return_value=dict(verdict='pass',reasons=[])):
  code=research_worker.run(sys.argv[1])
  import time
  time.sleep(.8) # The host must not expose provisional completion before registration.
@@ -43,7 +49,7 @@ class AutomaticTests(unittest.TestCase):
         self.experiments=ExperimentEngine(self.store,self.compute,self.compute.state);self.addCleanup(self.experiments.close)
         self.research=ResearchEngine(self.store,self.experiments);self.addCleanup(self.research.close)
         self.automatic=Autopilot(self.store,self.research,self.experiments,autostart=False);self.addCleanup(self.automatic.close)
-        self.script=self.root/'fixture.py';self.script.write_text('sys_path_placeholder\n'+FIXTURE)
+        self.script=self.root/'fixture.py'
         self.script.write_text('import sys\nsys.path.insert(0,'+repr(str(Path(__file__).parent))+')\n'+FIXTURE)
         self.research.command=lambda:[sys.executable,'-u',str(self.script)]
         self.research.availability=lambda:dict(available=True,missing=[],aris_repo='/offline-fixture')
@@ -68,6 +74,11 @@ class AutomaticTests(unittest.TestCase):
         self.assertTrue(all(a['authority'].startswith('automatic:') for a in tree['experiment_approvals']))
         analysis=[j for j in tree['research_jobs'] if j['config'].get('task')=='analyze'];self.assertEqual(len(analysis),2)
         self.assertTrue(all(j['config']['auto_session_id']==item['id'] for j in analysis))
+        tasks=[j['config']['task'] for j in tree['research_jobs']]
+        self.assertEqual(tasks,['research','analyze','draft','analyze'])
+        self.assertTrue(item['progress']['discovery_completed'])
+        first=tree['research_jobs'][0];self.assertIsNone(first['config']['reuse_literature'])
+        self.assertEqual(first['node_id'],self.node['id'])
 
     def test_direction_reaches_real_job_context_and_old_plan_is_rejected(self):
         plan=self.experiments.create(dict(node_id=self.hyp['id'],title='old plan',code='print(1)',timeout_seconds=1),provenance=dict(direction_revision=0))
@@ -139,3 +150,18 @@ class AutomaticTests(unittest.TestCase):
         self.automatic.tick(resumed)
         self.assertEqual(len(self.research.list(self.node['project_id'])['jobs']),1)
         self.assertEqual(len(self.store.export_json()['experiment_runs']),1)
+
+    def test_project_modes_are_independent_and_existing_hypotheses_do_not_skip_discovery(self):
+        first=self.start()
+        other=self.store.add_node(None,'Second independent project',kind='problem')
+        self.store.add_node(other['id'],'Existing second hypothesis',kind='hypothesis')
+        self.compute.assign(other['project_id'],dict(profile_id='local',device_ids=['cpu'],time_budget_minutes=1))
+        second=self.automatic.control(dict(project_id=other['project_id'],action='start'))['session']
+        self.automatic.control(dict(project_id=self.node['project_id'],action='pause'))
+        self.assertEqual(self.automatic.get(first['id'])['status'],'paused')
+        self.assertEqual(self.automatic.get(second['id'])['status'],'running')
+        self.automatic.tick(second)
+        job=self.research.get(self.automatic.get(second['id'])['progress']['job_id'])
+        self.assertEqual(job['node_id'],other['id']);self.assertEqual(job['config']['task'],'research')
+        self.assertIsNone(job['config']['reuse_literature'])
+        self.assertNotEqual(first['config']['session_budget'],second['config']['session_budget'])

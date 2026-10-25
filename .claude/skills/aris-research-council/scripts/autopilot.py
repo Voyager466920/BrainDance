@@ -86,8 +86,8 @@ class Autopilot:
                 sid=str(uuid.uuid4());path=self.research.root/('automatic-'+sid);path.mkdir(mode=0o700)
                 ledger=path/'session-budget.json';ledger.write_text(json.dumps(dict(calls=0,max_calls=calls,token_budget=tokens,charges={})))
                 item=dict(id=sid,project_id=project_id,node_id=root['id'],status='running',message='자동 연구를 시작합니다.',
-                    config=dict(max_cycles=cycles,mode=mode,context_path=context,resource_signature=resource_signature(profile,assignment),
-                                session_budget=str(ledger)),progress=dict(phase='prepare',cycles=0,revision=steering.snapshot(self.store,project_id)['revision'],code_hashes=[],failures=0),created_at=now(),updated_at=now())
+                    config=dict(scope='project',pipeline='discovery-to-results',max_cycles=cycles,mode=mode,context_path=context,resource_signature=resource_signature(profile,assignment),
+                                session_budget=str(ledger)),progress=dict(phase='prepare',discovery_completed=False,cycles=0,revision=steering.snapshot(self.store,project_id)['revision'],code_hashes=[],failures=0),created_at=now(),updated_at=now())
                 with self.store._connect() as conn:
                     conn.execute('INSERT INTO automatic_sessions VALUES(?,?,?,?,?,?,?,?,?)',tuple(json.dumps(v) if k in {'config','progress'} else v for k,v in item.items()))
                     self.store._event(conn,root['id'],'automatic_authorized',dict(session_id=sid,limits=item['config'],scope='reviewed LLM-generated code on the selected project resources'))
@@ -120,7 +120,10 @@ class Autopilot:
         with self.lock:
             result=steering.record(self.store,**payload)
             for item in self.sessions(result['project_id'])[:1]:
-                if item['status'] in {'running','paused','blocked'}:self.save(item,preferred_node=result['node_id'])
+                if item['status'] in {'running','paused','blocked'}:
+                    changes=dict(preferred_node=result['node_id'])
+                    if self.store.get_node(result['node_id'])['kind']=='problem':changes['discovery_completed']=False
+                    self.save(item,**changes)
             if payload['apply_mode']=='restart':
                 self.cancel_project(result['project_id'])
                 for item in self.sessions(result['project_id'])[:1]:
@@ -148,7 +151,7 @@ class Autopilot:
         _,assignment=self.experiments._resources(self.store.get_node(item['node_id']))
         with self.store._connect() as conn:budget=self.experiments._budget(item['project_id'],assignment['updated_at'],assignment['time_budget_minutes']*60,conn)
         return self.research.start(dict(node_id=node_id or item['node_id'],task=task,run_id=run_id,confirm=True,
-            mode=item['config']['mode'],context_path=item['config']['context_path']),
+            mode=item['config']['mode'],context_path=item['config']['context_path'],reuse_literature=task!='research'),
             internal=dict(auto_session_id=item['id'],session_budget=item['config']['session_budget'],remaining_experiment_seconds=int(budget['remaining_seconds'])))
 
     def tick(self,item):
@@ -166,14 +169,17 @@ class Autopilot:
             with self.store._connect() as conn:
                 budget=self.experiments._budget(item['project_id'],assignment['updated_at'],assignment['time_budget_minutes']*60,conn)
             if budget['remaining_seconds']<1:self.save(item,'completed','프로젝트 실행 시간 예산을 소진했습니다.');return
-            task='draft' if self.has_hypotheses(item['project_id']) else 'research'
+            task='draft' if p.get('discovery_completed') else 'research'
             job=self.launch(item,task,p.get('preferred_node') if task=='draft' else None)
-            self.save(item,message='LLM이 다음 실험을 준비합니다.',phase='job',job_id=job['id'],revision=revision)
+            self.save(item,message='프로젝트의 논문 탐색부터 전체 연구를 시작합니다.' if task=='research' else 'LLM이 다음 실험을 준비합니다.',phase='job',job_id=job['id'],revision=revision)
         elif phase=='job':
             job=self.research.get(p['job_id'])
             if job['state'] in {'queued','running'}:return
             if revision!=p['revision']:
                 self.save(item,message='변경된 방향을 반영해 다시 준비합니다.',phase='prepare',job_id=None);return
+            discovery=Path(job['run_dir'])/'council/status.json'
+            if job['config'].get('task')=='research' and discovery.is_file() and json.loads(discovery.read_text()).get('status')=='completed':
+                self.save(item,discovery_completed=True,research_job_id=job['id'])
             if job['state']!='completed' or job['phase']!='experiment_approval':raise ValueError(job['message'])
             registration=json.loads((Path(job['run_dir'])/'registered-experiment.json').read_text());experiment=self.experiments.experiment(registration['id'])
             code_hash=hashlib.sha256(experiment['spec']['code'].encode()).hexdigest()
