@@ -428,8 +428,10 @@ class Element {
  set textContent(v){this.text=String(v);this.children=[];}
  get textContent(){return this.text+this.children.map(c=>c.textContent||'').join('');}
  get childNodes(){return this.children;}
- append(...c){this.children.push(...c);}
- replaceChildren(...c){this.text='';this.children=c;}
+ append(...c){for(const child of c){if(child.parentElement)child.parentElement.children=child.parentElement.children.filter(e=>e!==child);child.parentElement=this;this.children.push(child);}}
+ replaceChildren(...c){for(const child of this.children)child.parentElement=null;this.text='';this.children=[];this.append(...c);}
+ querySelectorAll(selector){const found=[];for(const child of this.children){if(selector.startsWith('.')&&(child.className||'').split(' ').includes(selector.slice(1)))found.push(child);found.push(...child.querySelectorAll(selector));}return found;}
+ focus(){this.focused=true;}
  setAttribute(key,value){this[key]=value;}
 }
 const elements=new Map();
@@ -478,6 +480,24 @@ vm.runInContext("for(const n of fixture.nodes)n.project_id='root';fixture.resear
 assert(elements.get('research-launch').textContent.includes('진행 중'));
 assert(elements.get('research-launch').textContent.includes('가설 생성'));
 assert(elements.get('research-launch').textContent.includes('진행 기록'));
+vm.runInContext("fixture.automatic_sessions=[{id:'session',project_id:'root',status:'blocked',message:'OFFLINE progress fixture',created_at:'2026-10-25',progress:{cycles:0},config:{max_cycles:3}}];renderControl({session:fixture.automatic_sessions[0],runs:[],directions:[],reports:[]});",context);
+assert.strictEqual(elements.get('automatic-control').textContent.includes('OFFLINE progress fixture'),false);
+assert.strictEqual(elements.get('automatic-control').textContent.split('자동모드 재개').length-1,1);
+vm.runInContext("fixture.automatic_sessions[0].message='Different session reason';renderControl({session:fixture.automatic_sessions[0],runs:[],directions:[],reports:[]});",context);
+assert(elements.get('automatic-control').textContent.includes('Different session reason'));
+const originalChat=elements.get('research-chat'),originalInput=elements.get('chat-input');
+vm.runInContext("chatBusy=true;chatProject='root';activeTab='overview';mountResearchChat();document.getElementById('chat-input').value='다음 실험은 지연 측정부터 진행해';rememberChatDraft();activeTab='progress';mountResearchChat();",context);
+assert.strictEqual(originalChat.parentElement,elements.get('chat-slot-progress'));
+assert.strictEqual(elements.get('chat-input'),originalInput);
+assert.strictEqual(originalInput.value,'다음 실험은 지연 측정부터 진행해');
+vm.runInContext("activeTab='experiments';mountResearchChat();",context);
+assert.strictEqual(originalChat.parentElement,elements.get('chat-slot-experiments'));
+assert.strictEqual(originalInput.value,'다음 실험은 지연 측정부터 진행해');
+vm.runInContext("activeTab='overview';mountResearchChat();focusResearchChat();renderChat([{id:'status',role:'status',content:'OFFLINE progress fixture',created_at:'2026-10-25'},{id:'reply',role:'assistant',state:'completed',content:'실제 대화 응답 fixture',created_at:'2026-10-25'}]);",context);
+assert.strictEqual(originalChat.parentElement,elements.get('chat-slot-overview'));
+assert(originalInput.focused);
+assert(!elements.get('chat-timeline').textContent.includes('OFFLINE progress fixture'));
+assert(elements.get('chat-timeline').textContent.includes('실제 대화 응답 fixture'));
 vm.runInContext("fixture.research_jobs=[];renderResearchLaunch(fixture.nodes[1]);",context);
 assert(elements.get('research-launch').textContent.includes('연구 시작 전'));
 vm.runInContext("fixture.nodes[1].status='active';renderTree();",context);
