@@ -17,8 +17,9 @@ TERMINAL={'completed','failed','cancelled','interrupted'}
 
 
 class ResearchEngine:
-    def __init__(self,store):
+    def __init__(self,store,experiments=None):
         self.store=store;self.workspace=Path(store.db_path).parent
+        self.experiments=experiments
         self.root=self.workspace/'council-runs';self.root.mkdir(exist_ok=True,mode=0o700)
         self.lock=threading.RLock();self.closed=threading.Event();self.process=None;self.active_id=None
         self.lease=(self.root/'.research.lock').open('a+')
@@ -33,6 +34,15 @@ class ResearchEngine:
                 created_at TEXT NOT NULL,updated_at TEXT NOT NULL,finished_at TEXT,error TEXT
             )''')
             conn.execute("UPDATE research_jobs SET state='interrupted',message='이전 실행기가 종료됐습니다. 원본 로그를 확인한 뒤 새 실행을 시작하세요.',finished_at=?,updated_at=? WHERE state IN ('queued','running')",(now(),now()))
+            conn.execute('CREATE TABLE IF NOT EXISTS research_analysis_queue (run_id TEXT PRIMARY KEY,state TEXT NOT NULL,job_id TEXT,error TEXT)')
+        self.analysis_thread=None
+        if experiments is not None:
+            experiments.on_finished=self.queue_analysis
+            with store._connect() as conn:
+                for row in conn.execute("SELECT r.id,e.spec FROM experiment_runs r JOIN experiments e ON e.id=r.experiment_id WHERE r.state IN ('succeeded','failed','timed_out')"):
+                    if json.loads(row['spec']).get('generation'):
+                        conn.execute("INSERT OR IGNORE INTO research_analysis_queue VALUES(?,'pending',NULL,NULL)",(row['id'],))
+            self.analysis_thread=threading.Thread(target=self._analysis_loop,daemon=True);self.analysis_thread.start()
 
     def availability(self):
         aris=Path(os.environ.get('ARIS_REPO',str(Path.home()/'aris_repo'))).expanduser().resolve()
@@ -59,6 +69,9 @@ class ResearchEngine:
 
     def info(self,job_id):
         item=self.get(job_id);root=Path(item['run_dir']);log=root/'progress.jsonl'
+        registration=root/'registered-experiment.json'
+        if registration.is_file():
+            item['generated_experiment']=json.loads(registration.read_text())
         lines=[]
         if log.exists():
             for line in log.read_text()[-50000:].splitlines()[-100:]:
@@ -68,7 +81,9 @@ class ResearchEngine:
         item['files']=[name for name in ['literature-request.txt','literature/LITERATURE.md','literature/source-evidence.json',
             'literature/verification.json','literature/verified-evidence.json','literature-usage.json',
             'council/usage.json','council/round-1/COUNCIL_REPORT.md','error.log',
-            'worker.stderr.log','literature.stderr.log','verification.stderr.log','arxiv-fetch.stderr.log'] if (root/name).is_file()]
+            'worker.stderr.log','literature.stderr.log','verification.stderr.log','arxiv-fetch.stderr.log',
+            'generated-experiment.py','generated-experiment.json','generated-proposal.json','environment.json','environment.stderr.log',
+            'registered-experiment.json','analysis.json','lab-usage.json'] if (root/name).is_file()]
         # Bounded, known phase paths expose error diagnostics without arbitrary files.
         for phase in ['generation','peer-review','chairman']:
             folder=root/'council/round-1'/phase
@@ -82,13 +97,22 @@ class ResearchEngine:
         return path
 
     def start(self,payload):
-        if set(payload)-{'node_id','mode','confirm','token_budget','phase_timeout_seconds','reuse_literature'} or payload.get('confirm') is not True:
+        if set(payload)-{'node_id','mode','confirm','token_budget','phase_timeout_seconds','reuse_literature','task','run_id','context_path'} or payload.get('confirm') is not True:
             raise ValueError('연구 시작과 모델 사용량 발생을 확인하세요.')
+        task=payload.get('task','research')
+        if task not in {'research','draft','analyze'}:raise ValueError('지원하지 않는 연구 작업입니다.')
+        context_path=payload.get('context_path','')
+        if not isinstance(context_path,str) or len(context_path)>2048 or '\x00' in context_path or '\n' in context_path:raise ValueError('참고 폴더 경로를 확인하세요.')
         mode=payload.get('mode','balanced')
         if mode not in {'lite','balanced','deep'}:raise ValueError('지원하지 않는 연구 모드입니다.')
         node=self.store.get_node(payload.get('node_id'))
         if node['status'] not in {'active','expanded'}:raise ValueError('활성 노드에서 연구를 시작하세요.')
-        if node['kind']!='problem' or node['parent_id'] is not None:raise ValueError('프로젝트의 연구 문제 노드에서 시작하세요.')
+        if task=='research' and (node['kind']!='problem' or node['parent_id'] is not None):raise ValueError('프로젝트의 연구 문제 노드에서 시작하세요.')
+        if task=='analyze':
+            if not self.experiments:raise ValueError('실험 실행기가 연결되지 않았습니다.')
+            run=self.experiments.run_info(payload.get('run_id',''))
+            experiment=self.experiments.experiment(run['experiment_id'])
+            if experiment['node_id']!=node['id'] or run['state'] not in {'succeeded','failed','timed_out'}:raise ValueError('분석할 완료 실험이 올바르지 않습니다.')
         token_budget=payload.get('token_budget',{'lite':250000,'balanced':500000,'deep':1000000}[mode])
         timeout=payload.get('phase_timeout_seconds',900)
         if type(token_budget) is not int or not 100000<=token_budget<=1000000:raise ValueError('Council 토큰 예산은 100000–1000000으로 입력하세요.')
@@ -100,7 +124,11 @@ class ResearchEngine:
         with self.lock,self.store._connect() as conn:
             if self.closed.is_set():raise ValueError('연구 실행기가 종료 중입니다.')
             old=conn.execute("SELECT * FROM research_jobs WHERE project_id=? AND state IN ('queued','running')",(node['project_id'],)).fetchone()
-            if old:return self.decode(old)
+            if old:
+                old=self.decode(old)
+                if old['config'].get('task','research')!=task or (task=='analyze' and old['config'].get('run_id')!=payload.get('run_id')):
+                    raise ValueError('이 프로젝트의 다른 작업이 진행 중입니다.')
+                return old
             if self.active_id is not None:raise ValueError('다른 프로젝트가 연구 중입니다. 완료 또는 중지 후 시작하세요.')
             job_id=str(uuid.uuid4());root=self.root/job_id;root.mkdir(mode=0o700)
             topic=node['metadata'].get('research_goal') or node['metadata'].get('original_topic') or node['title']
@@ -111,6 +139,7 @@ class ResearchEngine:
                     if previous.get('topic')==topic and (folder/'literature/verified-evidence.json').is_file() and (folder/'literature-usage.json').is_file():
                         reusable=dict(job_id=prior['id'],run_dir=str(folder));break
             config=dict(id=job_id,node_id=node['id'],project_id=node['project_id'],topic=topic,mode=mode,
+                task=task,context_path=context_path,run_id=payload.get('run_id'),
                 db=self.store.db_path,aris_repo=available['aris_repo'],literature_model='sonnet',
                 claude_budget_usd=3 if mode=='lite' else 8,phase_timeout_seconds=timeout,
                 reuse_literature=reusable,
@@ -167,6 +196,8 @@ class ResearchEngine:
                         if self.cancel.is_set():raise InterruptedError()
                         raise RuntimeError('연구 완료 영수증 없이 프로세스가 종료됐습니다.')
                     if process.returncode!=0 and final.get('state')=='completed':raise RuntimeError('연구 종료 코드와 완료 영수증이 일치하지 않습니다.')
+                    if final.get('state')=='completed' and (root/'generated-experiment.json').is_file():
+                        final=self._register_generated(record,final)
                     self._update(record['id'],final)
                 elif self.cancel.is_set():raise InterruptedError()
                 else:raise RuntimeError('연구 실행 영수증이 없습니다. 원본 worker 로그를 확인하세요.')
@@ -184,6 +215,41 @@ class ResearchEngine:
     def command(self):
         return [sys.executable,'--research-worker'] if getattr(sys,'frozen',False) else [sys.executable,'-u',str(Path(__file__).with_name('research_worker.py'))]
 
+    def _register_generated(self,record,final):
+        if not self.experiments:raise ValueError('생성 코드를 등록할 실험 실행기가 없습니다.')
+        root=Path(record['run_dir']);data=json.loads((root/'generated-experiment.json').read_text());payload=data['payload']
+        node=self.store.get_node(payload['node_id'])
+        if node['project_id']!=record['project_id']:raise ValueError('생성 코드의 프로젝트가 일치하지 않습니다.')
+        from experiments import resource_signature
+        profile,assignment=self.experiments._resources(node)
+        if data['target_signature']!=resource_signature(profile,assignment):raise ValueError('생성 중 실행 환경이 바뀌었습니다. 새 환경에서 다시 준비하세요.')
+        if data['review'].get('verdict')!='pass':raise ValueError('코드 검토가 통과하지 않았습니다.')
+        provenance=dict(job_id=record['id'],details=data['details'],checks=data['checks'],review=data['review'],automatic_analysis=True)
+        experiment=self.experiments.create(payload,provenance=provenance)
+        from council import dump
+        dump(root/'registered-experiment.json',dict(id=experiment['id'],digest=experiment['digest'],node_id=node['id']))
+        return {**final,'phase':'experiment_approval','message':'LLM이 실행 코드와 내장 단위 검사를 준비했습니다. 실험 실행 탭에서 장치·예산을 확인하고 승인하세요.'}
+
+    def queue_analysis(self,run_id):
+        with self.store._connect() as conn:conn.execute("INSERT OR IGNORE INTO research_analysis_queue VALUES(?,'pending',NULL,NULL)",(run_id,))
+
+    def _analysis_loop(self):
+        while not self.closed.wait(.5):
+            if self.active_id is not None:continue
+            with self.store._connect() as conn:pending=[dict(r) for r in conn.execute("SELECT * FROM research_analysis_queue WHERE state='pending'")]
+            for entry in pending:
+                if self.closed.is_set() or self.active_id is not None:break
+                try:
+                    run=self.experiments.run_info(entry['run_id']);exp=self.experiments.experiment(run['experiment_id'])
+                    if not exp['spec'].get('generation'):raise KeyError('Not an LLM-managed experiment')
+                    job=self.start(dict(node_id=exp['node_id'],task='analyze',run_id=run['id'],confirm=True))
+                    with self.store._connect() as conn:conn.execute("UPDATE research_analysis_queue SET state='dispatched',job_id=? WHERE run_id=?",(job['id'],run['id']))
+                except ValueError:continue
+                except (KeyError,OSError) as error:
+                    with self.store._connect() as conn:conn.execute("UPDATE research_analysis_queue SET state='blocked',error=? WHERE run_id=?",(str(error),entry['run_id']))
+                except Exception as error:
+                    with self.store._connect() as conn:conn.execute("UPDATE research_analysis_queue SET state='blocked',error=? WHERE run_id=?",(type(error).__name__,entry['run_id']))
+
     def _project_active(self,record):
         try:return self.store.get_node(record['node_id'])['status'] in {'active','expanded'}
         except (KeyError,ValueError):return False
@@ -196,5 +262,6 @@ class ResearchEngine:
 
     def close(self):
         self.closed.set()
+        if self.analysis_thread and self.analysis_thread.is_alive():self.analysis_thread.join(timeout=2)
         if hasattr(self,'thread') and self.thread.is_alive():self.thread.join(timeout=18)
         self.lease.close()

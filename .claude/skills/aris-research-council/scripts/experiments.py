@@ -56,6 +56,7 @@ def summarize(metrics,metric,direction):
 class ExperimentEngine:
     def __init__(self,store,compute,compute_state,autostart=True):
         self.store,self.compute,self.compute_state=store,compute,compute_state
+        self.on_finished=None
         self.root=Path(store.db_path).parent/'experiment-runs';self.root.mkdir(exist_ok=True,mode=0o700)
         self.lock=threading.RLock();self.stop_event=threading.Event();self.jobs={};self.last_error=None;self._closed=False
         self._lock_file=(self.root/'.executor.lock').open('a+')
@@ -97,7 +98,7 @@ class ExperimentEngine:
         if not profile:raise ValueError('실행 환경이 없습니다.')
         return profile,assignment
 
-    def create(self,payload):
+    def create(self,payload,provenance=None):
         allowed={'node_id','title','code','interpreter','cwd','args','timeout_seconds','metric','direction'}
         if set(payload)-allowed:raise ValueError('지원하지 않는 실험 설정입니다.')
         node=self.store.get_node(payload.get('node_id'))
@@ -118,6 +119,7 @@ class ExperimentEngine:
         spec=dict(node_id=node['id'],project_id=node['project_id'],title=title.strip(),code=code,
                   interpreter=interpreter,cwd=cwd,args=args,timeout_seconds=timeout,metric=metric.strip(),direction=direction,
                   profile=profile,device_ids=assignment['device_ids'],resource_signature=resource_signature(profile,assignment))
+        if provenance is not None:spec['generation']=provenance
         record=dict(id=str(uuid.uuid4()),node_id=node['id'],spec=spec,digest=digest(spec),created_at=timestamp())
         with self.lock,self.store._connect() as conn:
             self.store._ensure_active(conn,node['id'])
@@ -206,6 +208,11 @@ class ExperimentEngine:
                 approval=conn.execute('SELECT a.id FROM experiment_approvals a LEFT JOIN experiment_runs r ON r.approval_id=a.id WHERE a.experiment_id=? AND r.id IS NULL ORDER BY a.created_at DESC LIMIT 1',(item['id'],)).fetchone()
                 item['pending_approval_id']=approval['id'] if approval else None
                 item['runs']=[self._run_dict(r) for r in conn.execute('SELECT * FROM experiment_runs WHERE experiment_id=? ORDER BY queued_at DESC',(item['id'],))]
+                if conn.execute("SELECT 1 FROM sqlite_master WHERE name='research_analysis_queue'").fetchone():
+                    for run in item['runs']:
+                        analysis=conn.execute('''SELECT q.state,j.state AS job_state FROM research_analysis_queue q
+                            LEFT JOIN research_jobs j ON j.id=q.job_id WHERE q.run_id=?''',(run['id'],)).fetchone()
+                        if analysis:run['llm_analysis_state']=analysis['job_state'] or analysis['state']
                 experiments.append(item)
             try:
                 profile,assignment=self._resources(node);budget=self._budget(node['project_id'],assignment['updated_at'],assignment['time_budget_minutes']*60,conn)
@@ -256,6 +263,10 @@ class ExperimentEngine:
             conn.execute('INSERT OR IGNORE INTO notes VALUES(?,?,?,?,?,?)',('run:'+run_id,experiment['node_id'],'result','실험 결과: '+spec['title'],content,finished))
             self.store._event(conn,experiment['node_id'],'experiment_finished',{'run_id':run_id,'state':state})
         self.store.export_json(Path(self.store.db_path).with_suffix('.json'))
+        if spec.get('generation') and state in {'succeeded','failed','timed_out'} and self.on_finished:
+            try:self.on_finished(run_id)
+            except Exception as caught:
+                with (self.root/'executor.log').open('a') as stream:stream.write(timestamp()+' analysis queue failed: '+str(caught)+'\n')
 
     def _keys(self,spec):
         host=spec['profile'].get('host','local')

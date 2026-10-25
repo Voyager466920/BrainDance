@@ -153,6 +153,8 @@ class ProjectCleanup:
                 if not plan['cleanup_pending']:
                     conn.execute('INSERT INTO project_cleanup_jobs VALUES(?,?,?,?,?,NULL)',
                                  (project_id, plan['title'], json.dumps(plan['paths']), json.dumps(plan['counts']), now()))
+                    if conn.execute("SELECT 1 FROM sqlite_master WHERE name='research_analysis_queue'").fetchone():
+                        conn.execute('DELETE FROM research_analysis_queue WHERE run_id IN (SELECT id FROM experiment_runs WHERE project_id=?)',(project_id,))
                     conn.execute('DELETE FROM experiment_runs WHERE project_id=?', (project_id,))
                     if conn.execute("SELECT 1 FROM sqlite_master WHERE name='research_jobs'").fetchone():
                         conn.execute('DELETE FROM research_jobs WHERE project_id=?',(project_id,))

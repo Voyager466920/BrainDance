@@ -163,6 +163,14 @@ def run(spec_path):
         cancelled.set();council.stop_children();raise KeyboardInterrupt()
     signal.signal(signal.SIGTERM,stop);signal.signal(signal.SIGINT,stop)
     try:
+        if job.get('task')=='draft':
+            from lab_worker import prepare
+            if prepare(job,root,progress):progress.emit('prepared','LLM 실행 코드를 검토했습니다. 승인 화면에 등록합니다.',state='completed')
+            return 0
+        if job.get('task')=='analyze':
+            from lab_worker import analyze
+            analyze(job,root,progress)
+            return 0
         reusable=job.get('reuse_literature')
         if reusable:
             previous=Path(reusable['run_dir']);work=root/'literature';work.mkdir()
@@ -190,7 +198,8 @@ def run(spec_path):
             output=str(root/'council'),aris_repo=job['aris_repo'],resume=False)
         council.run(args,progress.emit)
         store.export_json(Path(job['db']).with_suffix('.json'))
-        progress.emit('approval','논문 탐색·Council·실험 설계가 완료됐습니다. GPU 실행은 코드와 예산 승인 후 시작합니다.',state='completed')
+        from lab_worker import prepare
+        if prepare(job,root,progress):progress.emit('prepared','연구 설계와 LLM 실행 코드를 검토했습니다. 승인 화면에 등록합니다.',state='completed')
         return 0
     except BaseException as error:
         council.stop_children()

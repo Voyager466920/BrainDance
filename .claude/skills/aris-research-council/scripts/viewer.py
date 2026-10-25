@@ -35,7 +35,7 @@ class ViewerServer(ThreadingHTTPServer):
         self.allowed_hosts = {'127.0.0.1:' + str(actual_port), 'localhost:' + str(actual_port)}
         try:
             self.experiments=ExperimentEngine(store,self.compute,self.compute_state)
-            self.research=ResearchEngine(store)
+            self.research=ResearchEngine(store,self.experiments)
             self.cleanup=ProjectCleanup(store,self.experiments,self.compute,self.research)
         except Exception:
             if hasattr(self,'research'):self.research.close()
@@ -95,7 +95,7 @@ class ViewerHandler(BaseHTTPRequestHandler):
             return
         path = urlsplit(self.path).path
         if path == '/api/health':
-            self._reply(200, {'app': 'BrainDance', 'version': '0.3.0'})
+            self._reply(200, {'app': 'BrainDance', 'version': '0.4.0'})
         elif path.startswith('/api/research'):
             self._research_get(path)
         elif path == '/api/project/trash':
