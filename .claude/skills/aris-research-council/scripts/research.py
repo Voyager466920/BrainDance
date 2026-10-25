@@ -48,12 +48,14 @@ class ResearchEngine:
             self.analysis_thread=threading.Thread(target=self._analysis_loop,daemon=True);self.analysis_thread.start()
 
     def availability(self):
-        aris=Path(os.environ.get('ARIS_REPO',str(Path.home()/'aris_repo'))).expanduser().resolve()
+        configured=os.environ.get('BRAINDANCE_ENGINE_DIR') or os.environ.get('ARIS_REPO')
+        candidates=[Path.home()/'.local/share/BrainDance/research-engine',Path.home()/'aris_repo']
+        aris=Path(configured).expanduser().resolve() if configured else next((p for p in candidates if (p/'skills/research-lit/SKILL.md').is_file()),candidates[-1]).resolve()
         checks={'Claude CLI':bool(shutil.which('claude')),'Codex CLI':bool(shutil.which('codex')),
-                'ARIS research-lit':(aris/'skills/research-lit/SKILL.md').is_file(),
-                'ARIS verifier':(aris/'tools/verify_papers.py').is_file(),
-                'ARIS Codex MCP':(aris/'mcp-servers/codex-exec/server.py').is_file()}
-        return dict(available=all(checks.values()),missing=[k for k,v in checks.items() if not v],aris_repo=str(aris))
+                '논문 탐색 엔진':(aris/'skills/research-lit/SKILL.md').is_file(),
+                '논문 확인 도구':(aris/'tools/verify_papers.py').is_file(),
+                '독립 검토 연결':(aris/'mcp-servers/codex-exec/server.py').is_file()}
+        return dict(available=all(checks.values()),chat_available=checks['Codex CLI'] and checks['독립 검토 연결'],missing=[k for k,v in checks.items() if not v],aris_repo=str(aris))
 
     @staticmethod
     def decode(row):

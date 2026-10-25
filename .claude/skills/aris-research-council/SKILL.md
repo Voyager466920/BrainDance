@@ -17,3 +17,5 @@ Extend the installed official ARIS skills; do not replace their literature workf
 5. Report real participant/model receipts, actual usage where available, budget stops, source limitations, and artifact paths. Distinguish measured provider usage from estimates or offline context-size comparisons. A proposed experiment is not an executed result.
 
 Read [optimization.md](references/optimization.md) when choosing limits, comparing tokens, or changing models. Read [provenance.md](references/provenance.md) when inspecting reused behavior or redistributing the extension. Preserve global Claude/Codex configuration and upstream ARIS; keep changes project-local.
+
+The experiment tab provides a persistent project conversation alongside actual progress and reports. Use its question-only mode to inspect results without changing direction; next/restart messages apply the original human instruction with an action receipt. Replies run separately from research and respect the active session budget. See the experiment-conversation section in [research-jobs.md](references/research-jobs.md). Keep internal framework names out of product-facing responses.

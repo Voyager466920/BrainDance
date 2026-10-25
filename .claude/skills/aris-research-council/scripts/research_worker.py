@@ -50,7 +50,7 @@ def install_skill(aris,work):
     council.dump(plugin/'.claude-plugin/plugin.json',dict(name='aris-official',version='1.0.0',description='Unmodified installed ARIS literature Skill for this private BrainDance run'))
     for name in ('research-lit','shared-references'):
         source=aris/'skills'/name
-        if not source.is_dir():raise FileNotFoundError('공식 ARIS Skill을 찾을 수 없습니다: '+name)
+        if not source.is_dir():raise FileNotFoundError('논문 탐색 도구를 찾을 수 없습니다: '+name)
         shutil.copytree(source,skills/name,ignore=shutil.ignore_patterns('__pycache__','*.pyc'))
     (work/'.aris').mkdir()
     (work/'.aris/installed-skills.txt').write_text('repo_root\t'+str(aris)+'\n')
@@ -79,14 +79,14 @@ When no usable papers can be retrieved, write the actual failure to LITERATURE.m
           '--tools','Skill,Read,Write,Glob,Grep,WebSearch,WebFetch',
           '--allowedTools','Skill,Read,Write,Glob,Grep,WebSearch,WebFetch',
           '--disallowedTools','Bash,Agent','--max-budget-usd',str(job['claude_budget_usd'])]
-    progress.emit('literature','공식 ARIS /research-lit으로 논문을 탐색하고 근거를 수집합니다.')
+    progress.emit('literature','논문을 탐색하고 근거를 수집합니다.')
     env=os.environ.copy();env['CLAUDE_CODE_MAX_OUTPUT_TOKENS']='7000';env['ARIS_REPO']=str(aris)
     budget=council.Budget({**council.MODES[job['mode']],**({'session_budget':job['session_budget']} if job.get('session_budget') else {})},root/'literature-admission.json')
     budget.reserve(1,len(prompt.encode())//4+50000)
     rows=council.process(argv,prompt,work,root/'literature',job['phase_timeout_seconds'],env)
     results=[r for r in rows if r.get('type')=='result']
     if not results or results[-1].get('is_error') or results[-1].get('subtype')!='success':
-        raise RuntimeError('ARIS 논문 탐색이 완료되지 않았습니다. 원본 CLI 로그를 확인하세요.')
+        raise RuntimeError('논문 탐색이 완료되지 않았습니다. 원본 로그를 확인하세요.')
     requested=set();succeeded=set()
     for row in rows:
         for block in (row.get('message') or {}).get('content',[]) if isinstance((row.get('message') or {}).get('content'),list) else []:
@@ -115,7 +115,7 @@ def verify(job,root,work,progress):
     ids=[p.get('id') for p in papers]
     if any(not isinstance(pid,str) or not pid for pid in ids) or len(set(ids))!=len(ids):raise ValueError('논문 ID가 중복되거나 비어 있습니다.')
     if set(ids)!={p.get('id') for p in candidates}:raise ValueError('탐색 근거와 검증 후보 목록이 다릅니다.')
-    progress.emit('verification','공식 ARIS 검증 도구로 논문 ID·존재를 확인합니다. 논문 주장 검증과는 구분합니다.')
+    progress.emit('verification','논문 ID·존재를 확인합니다. 논문 주장 검증과는 구분합니다.')
     # Reuse the upstream fetcher to preserve genuine, unmodified source abstracts.
     arxiv_ids=[p.get('arxiv_id') for p in papers if isinstance(p.get('arxiv_id'),str) and re.fullmatch(r'\d{4}\.\d{4,5}(v\d+)?',p['arxiv_id'])]
     if arxiv_ids:
@@ -166,6 +166,10 @@ def run(spec_path):
         cancelled.set();council.stop_children();raise KeyboardInterrupt()
     signal.signal(signal.SIGTERM,stop);signal.signal(signal.SIGINT,stop)
     try:
+        if job.get('task')=='chat':
+            from lab_worker import chat
+            chat(job,root,progress)
+            return 0
         if job.get('task')=='draft':
             from lab_worker import prepare
             if prepare(job,root,progress):progress.emit('prepared','LLM 실행 코드를 검토했습니다. 승인 화면에 등록합니다.',state='completed')
@@ -193,7 +197,7 @@ def run(spec_path):
         store.update_node(node['id'],metadata={'research_job':job['id'],'research_literature':str(work/'LITERATURE.md')})
         with store._connect() as conn:
             conn.execute('UPDATE nodes SET evidence=? WHERE id=?',(json.dumps(council.read_json(evidence)['papers'],ensure_ascii=False),node['id']))
-        store.add_note(node['id'],'analysis','ARIS 논문 탐색 결과',(work/'LITERATURE.md').read_text()[:99000])
+        store.add_note(node['id'],'analysis','논문 탐색 결과',(work/'LITERATURE.md').read_text()[:99000])
         cfg={**council.DEFAULTS,**council.MODES[job['mode']], 'mode':job['mode'],'coordinator_model':'haiku'}
         cfg.update(job['council_overrides']);council.dump(root/'council-config.json',cfg)
         args=SimpleNamespace(mode=job['mode'],config=str(root/'council-config.json'),topic=job['topic'],

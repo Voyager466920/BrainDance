@@ -1,0 +1,177 @@
+"""Project research conversation, independent from the running research worker."""
+import json
+import os
+from pathlib import Path
+import re
+import signal
+import subprocess
+import threading
+import uuid
+
+from tree_store import now
+import steering
+
+
+class ResearchChat:
+    def __init__(self,store,research,control,autostart=True):
+        self.store,self.research,self.control=store,research,control
+        self.lock=threading.RLock();self.closed=threading.Event();self.process=None;self.active_id=None;self.cancelled=set()
+        with store._connect() as conn:
+            conn.execute('''CREATE TABLE IF NOT EXISTS research_chat (
+                seq INTEGER PRIMARY KEY AUTOINCREMENT,id TEXT NOT NULL UNIQUE,
+                project_id TEXT NOT NULL,node_id TEXT NOT NULL,role TEXT NOT NULL,
+                content TEXT NOT NULL,state TEXT NOT NULL,request_id TEXT NOT NULL,
+                metadata TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,
+                UNIQUE(project_id,request_id,role))''')
+            conn.execute("UPDATE research_chat SET state='interrupted',content='앱이 종료되어 답변 작성을 멈췄습니다. 메시지를 다시 보내면 새 답변을 요청합니다.',updated_at=? WHERE state IN ('queued','running','preparing')",(now(),))
+        self.thread=threading.Thread(target=self._loop,daemon=True,name='braindance-chat')
+        if autostart:self.thread.start()
+
+    @staticmethod
+    def decode(row):
+        row=dict(row);row['metadata']=json.loads(row['metadata']);return row
+
+    def messages(self,project_id):
+        root=self.control.root(project_id);self.store.get_node(root['id'])
+        with self.store._connect() as conn:
+            rows=[self.decode(r) for r in conn.execute('SELECT * FROM research_chat WHERE project_id=? ORDER BY seq DESC LIMIT 120',(project_id,))]
+            for note in conn.execute("SELECT n.* FROM notes n JOIN node_projects p ON p.node_id=n.node_id WHERE p.project_id=? AND (n.kind IN ('result','analysis') OR n.title LIKE '%필요한 항목%') ORDER BY n.created_at DESC,n.rowid DESC LIMIT 30",(project_id,)):
+                rows.append(dict(id='report:'+note['id'],project_id=project_id,node_id=note['node_id'],role='report',state='completed',title=note['title'],content=note['content'][:24000],created_at=note['created_at'],metadata=dict(note_id=note['id'])))
+        jobs=self.research.list(project_id)['jobs'][:8]
+        for job in jobs:
+            rows.append(dict(id='job:'+job['id'],project_id=project_id,node_id=job['node_id'],role='status',state=job['state'],content=job['message'],phase=job['phase'],created_at=job['created_at'],metadata=dict(job_id=job['id'])))
+        rows.sort(key=lambda r:(r['created_at'],r.get('seq',0),r['id']))
+        return dict(messages=rows,project_id=project_id)
+
+    def send(self,payload):
+        if set(payload)!={'node_id','content','mode','request_id'}:raise ValueError('메시지·반영 방식·요청 ID를 확인하세요.')
+        node=self.store.get_node(payload['node_id']);content=payload['content'];mode=payload['mode'];request_id=payload['request_id']
+        if not isinstance(content,str) or not content.strip() or len(content)>6000:raise ValueError('메시지는 1–6000자로 입력하세요.')
+        if mode not in {'auto','ask','next','restart'}:raise ValueError('대화 반영 방식을 확인하세요.')
+        if not isinstance(request_id,str) or not re.fullmatch(r'[a-zA-Z0-9-]{16,80}',request_id):raise ValueError('요청 ID가 올바르지 않습니다.')
+        with self.lock,self.store._connect() as conn:
+            old=conn.execute("SELECT * FROM research_chat WHERE project_id=? AND request_id=? AND role='assistant'",(node['project_id'],request_id)).fetchone()
+            if old:
+                previous=conn.execute("SELECT content FROM research_chat WHERE project_id=? AND request_id=? AND role='user'",(node['project_id'],request_id)).fetchone()
+                if old['node_id']!=node['id'] or previous['content']!=content.strip() or json.loads(old['metadata'])['mode']!=mode:raise ValueError('같은 요청 ID의 메시지 내용이 바뀌었습니다.')
+                return self.decode(old)
+            if conn.execute("SELECT count(*) FROM research_chat WHERE project_id=? AND state IN ('queued','running')",(node['project_id'],)).fetchone()[0]>=4:raise ValueError('답변 대기 메시지가 많습니다. 진행 중인 답변을 기다려 주세요.')
+            revision=steering.snapshot(self.store,node['project_id'])['revision']
+            metadata=dict(mode=mode,direction_revision_at_send=revision)
+            timestamp=now();reply_id=str(uuid.uuid4())
+            for role,text,state,msg_id in [('user',content.strip(),'completed',str(uuid.uuid4())),('assistant','','preparing' if mode in {'next','restart'} else 'queued',reply_id)]:
+                conn.execute('INSERT INTO research_chat(id,project_id,node_id,role,content,state,request_id,metadata,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)',
+                    (msg_id,node['project_id'],node['id'],role,text,state,request_id,json.dumps(metadata),timestamp,timestamp))
+        # Explicit direction controls take effect immediately, without waiting for a reply.
+        if mode in {'next','restart'}:
+            try:
+                result=self.control.intervene(dict(node_id=node['id'],content=content,apply_mode=mode))
+                metadata['direction_applied']=result['revision']
+                with self.store._connect() as conn:conn.execute("UPDATE research_chat SET metadata=?,state='queued' WHERE id=?",(json.dumps(metadata),reply_id))
+            except Exception as error:
+                self.finish(reply_id,'지시는 적용하지 못했습니다: '+str(error),'failed',metadata)
+        return self.get(reply_id)
+
+    def get(self,msg_id):
+        with self.store._connect() as conn:row=conn.execute('SELECT * FROM research_chat WHERE id=?',(msg_id,)).fetchone()
+        if row is None:raise KeyError('대화 메시지를 찾을 수 없습니다.')
+        return self.decode(row)
+
+    def finish(self,msg_id,content,state,metadata):
+        with self.store._connect() as conn:conn.execute('UPDATE research_chat SET content=?,state=?,metadata=?,updated_at=? WHERE id=?',(content,state,json.dumps(metadata,ensure_ascii=False),now(),msg_id))
+
+    def context(self,message):
+        project_id=message['project_id'];root=self.control.root(project_id);selected=self.store.get_node(message['node_id'])
+        state=self.control.state(project_id)
+        with self.store._connect() as conn:
+            history=[dict(r) for r in conn.execute("SELECT role,content FROM research_chat WHERE project_id=? AND state='completed' AND seq<? AND request_id!=? ORDER BY seq DESC LIMIT 10",(project_id,message['seq'],message['request_id']))]
+            user=conn.execute("SELECT content FROM research_chat WHERE project_id=? AND request_id=? AND role='user'",(project_id,message['request_id'])).fetchone()['content']
+        jobs=self.research.list(project_id)['jobs'][:3]
+        runs=[]
+        for run in state['runs'][:2]:
+            actual=self.control.experiments.run_info(run['id']);runs.append({**run,'stdout_tail':actual['stdout_tail'][-5000:],'stderr_tail':actual['stderr_tail'][-3000:]})
+        return dict(as_of=now(),project_goal=root['metadata'].get('research_goal',root['title']),selected_node={k:selected[k] for k in ['id','title','kind','metadata','evidence']},
+            actual_session=state['session'],current_runs=runs,recent_reports=[{**n,'content':n['content'][:6000]} for n in state['reports'][:3]],
+            actual_jobs=[{k:j[k] for k in ['id','state','phase','message']} for j in jobs],human_directions=state['directions'][:6],
+            conversation=list(reversed(history)),user_message=user,mode=message['metadata']['mode'],direction_already_applied=message['metadata'].get('direction_applied'))
+
+    def execute(self,message):
+        root=self.research.root/('chat-'+message['id']);root.mkdir(mode=0o700,exist_ok=True)
+        metadata=message['metadata'];self.finish(message['id'],'','running',metadata)
+        try:
+            available=self.research.availability()
+            if not available.get('chat_available',available['available']):raise ValueError('연구 대화 연결을 확인하세요: '+', '.join(available['missing']))
+            context=self.context(message);session=context['actual_session']
+            job=dict(id=message['id'],task='chat',db=self.store.db_path,node_id=message['node_id'],project_id=message['project_id'],
+                aris_repo=available['aris_repo'],phase_timeout_seconds=240,chat_context=context)
+            if session and session['status'] in {'running','paused','blocked'}:job['session_budget']=session['config']['session_budget']
+            from council import dump
+            dump(root/'job.json',job)
+            with (root/'worker.stdout.log').open('wb') as out,(root/'worker.stderr.log').open('wb') as err:
+                with self.lock:
+                    if self.closed.is_set() or message['id'] in self.cancelled:raise InterruptedError('대화 요청을 중지했습니다.')
+                    process=subprocess.Popen(self.research.command()+[str(root/'job.json')],stdout=out,stderr=err,start_new_session=True)
+                    self.process=process
+                try:code=process.wait(timeout=270)
+                finally:
+                    if process.poll() is None:os.killpg(process.pid,signal.SIGTERM);process.wait(timeout=12)
+            if self.closed.is_set():raise InterruptedError('앱이 종료되어 답변을 중지했습니다.')
+            if code or not (root/'chat-response.json').is_file():
+                error=(root/'progress.json')
+                raise ValueError(json.loads(error.read_text()).get('message','답변을 완료하지 못했습니다.') if error.exists() else '답변을 완료하지 못했습니다.')
+            result=json.loads((root/'chat-response.json').read_text());reply=result['reply'];intent=result['intent']
+            if not isinstance(reply,str) or not reply.strip() or len(reply)>18000 or intent not in {'question','direction','pause','stop'}:raise ValueError('대화 응답 형식이 올바르지 않습니다. 원본 로그를 보존했습니다.')
+            if metadata['mode']=='auto' and intent!='question':
+                if intent=='direction':
+                    revision=steering.snapshot(self.store,message['project_id'])['revision']
+                    if revision!=metadata['direction_revision_at_send']:
+                        reply+='\n\n답변 작성 중 새 방향 지시가 들어와, 이 메시지의 방향 변경은 적용하지 않았습니다.'
+                    else:
+                        action=self.control.intervene(dict(node_id=message['node_id'],content=context['user_message'],apply_mode='next'))
+                        metadata['direction_applied']=action['revision'];reply+='\n\n다음 작업에 반영할 방향 지시로 저장했습니다.'
+                else:
+                    if session:
+                        self.control.control(dict(project_id=message['project_id'],action=intent));metadata['control_applied']=intent
+                    elif intent=='stop':
+                        self.control.cancel_project(message['project_id']);metadata['control_applied']=intent
+                    else:reply+='\n\n현재 일시정지할 자동모드 실행은 없습니다.'
+                    if metadata.get('control_applied'):reply+='\n\n'+('프로젝트 작업을 중지했습니다.' if intent=='stop' else '자동모드를 일시정지했습니다.')
+            metadata.update(intent=intent,as_of=context['as_of'],receipt=str(root/'chat-response.json'))
+            usage=root/'chat-usage.json'
+            if usage.is_file():metadata['reported_tokens']=json.loads(usage.read_text()).get('observed_tokens')
+            if metadata.get('direction_applied'):reply+='\n\n지시 반영 기록: '+str(metadata['direction_applied'])
+            self.finish(message['id'],reply.strip(),'completed',metadata)
+        except Exception as error:
+            import traceback
+            (root/'chat-error.log').write_text(traceback.format_exc())
+            self.finish(message['id'],'답변을 완료하지 못했습니다: '+str(error),'interrupted' if self.closed.is_set() or message['id'] in self.cancelled else 'failed',metadata)
+        finally:
+            with self.lock:self.process=None
+
+    def _loop(self):
+        while not self.closed.wait(.3):
+            with self.lock:
+                with self.store._connect() as conn:row=conn.execute("SELECT * FROM research_chat WHERE role='assistant' AND state='queued' ORDER BY seq LIMIT 1").fetchone()
+                if row is None:continue
+                message=self.decode(row);self.active_id=message['id']
+            self.execute(message)
+            with self.lock:self.active_id=None
+
+    def cancel_project(self,project_id):
+        with self.lock,self.store._connect() as conn:
+            conn.execute("UPDATE research_chat SET state='interrupted',content='프로젝트가 종료되어 답변 요청을 중지했습니다.',updated_at=? WHERE project_id=? AND state IN ('queued','preparing')",(now(),project_id))
+            if self.active_id:
+                active=conn.execute('SELECT project_id FROM research_chat WHERE id=?',(self.active_id,)).fetchone()
+                if active and active['project_id']==project_id:
+                    self.cancelled.add(self.active_id)
+                    if self.process and self.process.poll() is None:
+                        try:os.killpg(self.process.pid,signal.SIGTERM)
+                        except ProcessLookupError:pass
+
+    def close(self):
+        self.closed.set()
+        with self.lock:
+            if self.process and self.process.poll() is None:
+                try:os.killpg(self.process.pid,signal.SIGTERM)
+                except ProcessLookupError:pass
+        if self.thread.is_alive():self.thread.join(timeout=15)
