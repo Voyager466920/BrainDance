@@ -68,7 +68,9 @@ class TerminalUITests(unittest.TestCase):
                 await self.wait_until(lambda:ui.project and ui.initialized and bool(ui.experiments))
                 await exercise(ui,pipe)
             finally:
-                if not task.done():ui.app.exit()
+                # The app future can be resolved before run() finishes cleanup.
+                # Avoid exiting twice while still awaiting that cleanup task.
+                if not task.done() and not ui.app.is_done:ui.app.exit()
                 await asyncio.wait_for(task,3)
         with create_pipe_input() as pipe:asyncio.run(run(pipe))
 
