@@ -125,6 +125,12 @@ class TerminalTests(unittest.TestCase):
         self.assertNotIn('HISTORICAL_VERBOSE_REPORT',out.getvalue())
         self.assertEqual(console.project['id'],self.project['id'])
 
+    def test_plain_exit_closes_without_sending_a_research_message(self):
+        console=terminal.Console(self.client,terminal.parser().parse_args(['--plain']))
+        console.project=self.project
+        self.assertFalse(asyncio.run(console.handle('/exit')))
+        self.assertEqual(self.client.messages(self.project),[])
+
 
 class TerminalLifecycleTests(unittest.TestCase):
     def test_frozen_backend_owns_assets_and_certificate_but_preserves_custom_ca(self):

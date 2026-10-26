@@ -195,6 +195,17 @@ class TerminalUITests(unittest.TestCase):
             await self.wait_until(lambda:not ui.app.is_running,timeout=1)
         self.scenario(exercise)
 
+    def test_exit_leaves_every_tab_even_while_sending_without_posting_to_chat(self):
+        from terminal_ui import SLASH
+        self.assertIn('/exit',SLASH)
+        for tab in range(6):
+            async def exercise(ui,pipe):
+                ui.select_tab(tab);ui.sending=True
+                pipe.send_text('/exit\r')
+                await self.wait_until(lambda:not ui.app.is_running,timeout=1)
+            self.scenario(exercise)
+        self.assertEqual(self.client.messages(self.project),[])
+
     def test_code_view_preserves_python_operators_instead_of_treating_them_as_markdown(self):
         code="print(2**3)\nprint({'accuracy': 0.7})"
         self.server.experiments.create(dict(node_id=self.client.root(self.project)['id'],title='Code viewer fixture',timeout_seconds=2,code=code))

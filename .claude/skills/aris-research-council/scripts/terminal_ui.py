@@ -31,7 +31,7 @@ from terminal_presenter import (STATES,readable,short,clock,duration,provider_li
 
 TABS=['대화','진행','아이디어','계획','실험','설정']
 MODES=[('auto','대화'),('ask','질문만'),('next','다음 방향'),('restart','중지 후 재준비')]
-SLASH=['/settings','/gpt','/claude','/ssh','/gpu','/projects','/new','/help','/quit']
+SLASH=['/settings','/gpt','/claude','/ssh','/gpu','/projects','/new','/help','/exit','/quit']
 
 
 class ResearchTerminal:
@@ -324,7 +324,7 @@ class ResearchTerminal:
                 if d.get('memory_total_mb') is not None:lines.append(f"최근 GPU 메모리 {d.get('memory_used_mb','?')} / {d['memory_total_mb']} MB · 사용률 {d.get('utilization_percent','?')}%")
             a=resource['assignment'];lines.extend(['','시간 예산 '+str(a['time_budget_minutes'])+'분 · 동시 실험 '+str(a['max_parallel_runs'])+'개'])
         lines.extend(['','조작','탭 클릭 / Alt+1–6 / Ctrl+B 다음 1–6 또는 N·P','Ctrl+P 프로젝트 · Ctrl+O 입력 방식 · PageUp/Down 기록 스크롤',
-            '모든 탭의 입력은 같은 프로젝트 대화에 기록됩니다.','/settings · /gpt · /claude · /ssh · /gpu · /projects · /new · /help · /quit'])
+            '모든 탭의 입력은 같은 프로젝트 대화에 기록됩니다.','/settings · /gpt · /claude · /ssh · /gpu · /projects · /new · /help · /exit'])
         return '\n'.join(lines)
 
     async def call(self,fn,*args):
@@ -427,6 +427,8 @@ class ResearchTerminal:
         await self.probe(resource['profile']['id'])
 
     def accept(self):
+        if self.editor.text.strip() in {'/exit','/quit'}:
+            self.app.exit();return
         completion=self.editor.buffer.complete_state
         if completion and completion.current_completion:self.editor.buffer.apply_completion(completion.current_completion)
         text=self.editor.text.strip()

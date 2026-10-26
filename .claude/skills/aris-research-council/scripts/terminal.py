@@ -317,7 +317,7 @@ HELP='''/projects · /use 번호 또는 이름 · /new 이름 --goal "연구 목
 /auto start --context "연구 폴더" · /auto pause|resume|stop
 /limits --calls 총횟수 · /limits --tokens 총토큰
 /ask 질문 · /next 다음 단계 지시 · /restart 중지 후 재준비 지시
-/reply job:ID 메시지 · /logs job|run ID · /quit
+/reply job:ID 메시지 · /logs job|run ID · /exit (종료)
 그냥 입력하면 같은 프로젝트 대화로 전송됩니다. Enter 전송 · Alt+Enter 줄바꿈.'''
 
 
@@ -401,9 +401,9 @@ class Console:
         def newline(event):event.current_buffer.insert_text('\n')
         colored=not getattr(self.args,'no_color',False) and 'NO_COLOR' not in os.environ and os.environ.get('TERM')!='dumb'
         style=Style.from_dict({'prompt':'#7bb594','toolbar':'#899c91'}) if colored else Style.from_dict({})
-        session=PromptSession(key_bindings=kb,completer=WordCompleter(['/projects','/use','/new','/status','/history','/tree','/connections','/devices','/target','/auto','/limits','/ask','/next','/restart','/reply','/logs','/quit','/help']),complete_while_typing=False,style=style)
+        session=PromptSession(key_bindings=kb,completer=WordCompleter(['/projects','/use','/new','/status','/history','/tree','/connections','/devices','/target','/auto','/limits','/ask','/next','/restart','/reply','/logs','/exit','/quit','/help']),complete_while_typing=False,style=style)
         self.prompt_session=session
-        print('/help 도움말 · /quit 연결 종료 (연구 작업은 유지)')
+        print('/help 도움말 · /exit 종료 (연구 작업은 유지)')
         selector=getattr(self.args,'project',None)
         projects=await asyncio.to_thread(self.client.projects)
         if selector or len(projects)==1:await asyncio.to_thread(self.select,selector)
