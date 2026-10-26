@@ -21,7 +21,8 @@ def main():
         result=subprocess.run([str(executable),'--cli',*args],capture_output=True,text=True,timeout=40)
         if result.returncode:raise RuntimeError(result.stderr)
         return result.stdout
-    assert 'BrainDance' in run('--banner')
+    startup=run()
+    assert 'BrainDance' in startup and '▉' in startup
     with tempfile.TemporaryDirectory(prefix='braindance-bundle-check-') as folder:
         database=Path(folder).resolve()/'tree.sqlite3'
         with socket.socket() as sock:sock.bind(('127.0.0.1',0));port=sock.getsockname()[1]

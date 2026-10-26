@@ -18,16 +18,7 @@ import urllib.request
 import uuid
 
 
-FONT={
- 'B':['11110','10001','10001','11110','10001','10001','11110'],
- 'R':['11110','10001','10001','11110','10100','10010','10001'],
- 'A':['01110','10001','10001','11111','10001','10001','10001'],
- 'I':['11111','00100','00100','00100','00100','00100','11111'],
- 'N':['10001','11001','11001','10101','10011','10011','10001'],
- 'D':['11110','10001','10001','10001','10001','10001','11110'],
- 'C':['01111','10000','10000','10000','10000','10000','01111'],
- 'E':['11111','10000','10000','11110','10000','10000','11111'],
-}
+LOGO_ASSETS=Path(getattr(sys,'_MEIPASS',Path(__file__).resolve().parent.parent))/'assets'
 PHASES={'preflight':'준비','environment':'환경 확인','exploration':'서버·코드 탐색','inspected':'탐색 완료',
  'literature':'논문 탐색','verification':'논문 확인','generation':'가설 생성','peer-review':'교차 평가',
  'chairman':'종합','coding':'실험 코드 작성','code-review':'코드 검토','registering':'계획 등록',
@@ -41,29 +32,12 @@ def safe_text(value):
 
 
 def banner(width=80,color=False):
-    def lettering(word,scale,slant=1):
-        rows=[]
-        for row in range(7):
-            glyphs=[]
-            for letter in word:
-                if letter==' ':glyphs.append(' '*scale);continue
-                pixels=FONT[letter][row]
-                # Widen each stroke, then shear successive rows to the right.
-                # Full blocks retain their weight in light and dark terminals.
-                glyphs.append(''.join(('█' if (i<5 and pixels[i]=='1') or (i>0 and pixels[i-1]=='1') else ' ')*scale for i in range(6)))
-            rows.append(' '*(2+int((6-row)*slant))+(' '*scale).join(glyphs).rstrip())
-        return rows
-    rows=None
-    for scale in [2,1]:
-        candidate=lettering('BRAIN DANCE',scale)
-        if max(map(len,candidate))<=width:rows=candidate;break
-    if rows is None:
-        candidate=lettering('BRAIN',1)+['']+lettering('DANCE',1)
-        if max(map(len,candidate))<=width:rows=candidate
-        else:
-            # Retain a slanted logo even in a narrow terminal.
-            rows=lettering('BRAIN',1,.5)+['']+lettering('DANCE',1,.5) if width>=40 else []
-    result='\n'.join([*rows,'  BrainDance','']) if rows else '  BrainDance'
+    result='  BrainDance'
+    for size in ['wide','regular','small']:
+        rows=(LOGO_ASSETS/('terminal-logo-'+size+'.txt')).read_text(encoding='utf-8').splitlines()
+        if max(map(len,rows))+2<=width:
+            result='\n'.join(['  '+row if row else '' for row in rows]+['','  BrainDance',''])
+            break
     return '\x1b[38;2;123;181;148m'+result+'\x1b[0m' if color else result
 
 
@@ -233,7 +207,6 @@ def parser():
     for name,kw in [('db',dict(type=Path)),('server',{}),('port',dict(type=int)),('project',{})]:common.add_argument('--'+name,default=argparse.SUPPRESS,**kw)
     for name in ['json','no-start','no-banner','no-color']:common.add_argument('--'+name,action='store_true',default=argparse.SUPPRESS)
     p=argparse.ArgumentParser(prog='braindance',description='BrainDance 프로젝트 대화·연구 터미널',parents=[common])
-    p.add_argument('--banner',action='store_true',help='ASCII 로고만 표시하고 종료')
     sub=p.add_subparsers(dest='command')
     sub.add_parser('install-cli',parents=[common])
     for name in ['projects','status','tree','connections','devices']:
@@ -376,6 +349,7 @@ class Console:
                     if not self.project or project['id']!=self.project['id']:continue
                     usage=state.get('usage');session=state.get('session')
                     self.toolbar=project['title']+' · '+(session['status'] if session else '수동')+(' · 호출 '+str(usage['calls'])+'/'+str(usage['max_calls']) if usage else '')
+                    if getattr(self,'prompt_session',None):self.prompt_session.app.invalidate()
                     self.error=None
             except (ClientError,urllib.error.URLError,TimeoutError,OSError) as error:
                 text=safe_text(error)
@@ -426,7 +400,7 @@ class Console:
         colored=not getattr(self.args,'no_color',False) and 'NO_COLOR' not in os.environ and os.environ.get('TERM')!='dumb'
         style=Style.from_dict({'prompt':'#7bb594','toolbar':'#899c91'}) if colored else Style.from_dict({})
         session=PromptSession(key_bindings=kb,completer=WordCompleter(['/projects','/use','/new','/status','/history','/tree','/connections','/devices','/target','/auto','/limits','/ask','/next','/restart','/reply','/logs','/quit','/help']),complete_while_typing=False,style=style)
-        if not getattr(self.args,'no_banner',False):print(banner(shutil.get_terminal_size((80,24)).columns,colored))
+        self.prompt_session=session
         print('/help 도움말 · /quit 연결 종료 (연구 작업은 유지)')
         selector=getattr(self.args,'project',None)
         projects=await asyncio.to_thread(self.client.projects)
@@ -437,7 +411,7 @@ class Console:
             try:
                 while True:
                     try:
-                        text=await session.prompt_async([('class:prompt','BrainDance > ')],bottom_toolbar=lambda:[('class:toolbar',safe_text(self.toolbar))])
+                        text=await session.prompt_async([('class:prompt','BrainDance > ')],rprompt=lambda:[('class:toolbar',safe_text(self.toolbar))],reserve_space_for_menu=0)
                         if not await self.handle(text):break
                     except KeyboardInterrupt:continue
                     except EOFError:break
@@ -452,9 +426,9 @@ def main(argv=None):
     if args.command=='install-cli':
         try:print(install_launcher());return 0
         except (ClientError,OSError) as error:print('BrainDance: '+safe_text(error),file=sys.stderr);return 1
-    if args.banner:
+    if args.command is None and not getattr(args,'no_banner',False) and not getattr(args,'json',False):
         color=sys.stdout.isatty() and not getattr(args,'no_color',False) and 'NO_COLOR' not in os.environ and os.environ.get('TERM')!='dumb'
-        print(banner(shutil.get_terminal_size((80,24)).columns,color));return 0
+        print(banner(shutil.get_terminal_size((80,24)).columns,color),flush=True)
     if args.command is None and not sys.stdin.isatty():parser().print_help();return 0
     try:
         client=connect(args)

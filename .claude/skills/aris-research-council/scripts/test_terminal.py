@@ -139,11 +139,12 @@ class TerminalLifecycleTests(unittest.TestCase):
         for width in [40,65,80,132,180]:
             text=terminal.banner(width)
             self.assertIn('BrainDance',text);self.assertLessEqual(max(map(len,text.splitlines())),width)
-        result=subprocess.run([sys.executable,str(ROOT/'braindance.py'),'--banner'],capture_output=True,text=True,timeout=10)
+        result=subprocess.run([sys.executable,str(ROOT/'braindance.py')],capture_output=True,text=True,timeout=10)
         self.assertEqual(result.returncode,0);self.assertIn('BrainDance',result.stdout);self.assertNotIn('\x1b',result.stdout)
+        self.assertIn('▉',result.stdout)
         with tempfile.TemporaryDirectory() as folder:
             path=Path(terminal.install_launcher(folder));self.assertTrue(os.access(path,os.X_OK))
-            result=subprocess.run([str(path),'--banner'],capture_output=True,text=True,timeout=10)
+            result=subprocess.run([str(path)],capture_output=True,text=True,timeout=10)
             self.assertEqual(result.returncode,0);self.assertIn('BrainDance',result.stdout)
             path.write_text('Unrelated existing command')
             with self.assertRaises(terminal.ClientError):terminal.install_launcher(folder)
