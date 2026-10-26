@@ -46,6 +46,15 @@ class LabTests(unittest.TestCase):
         self.assertTrue(inventory['context_exists']);self.assertEqual(inventory['files'][0]['excerpt'],'read-only context')
         self.assertNotIn('PRIVATE',json.dumps(inventory));self.assertIn('torch',inventory['packages'])
 
+    def test_human_named_folder_flows_through_inspection_to_executable_code(self):
+        context=self.root/'existing_vla';context.mkdir();(context/'evaluate.py').write_text('raise RuntimeError("SOURCE_MUST_ONLY_BE_READ")')
+        self.store.update_node(self.node['id'],metadata=dict(research_goal=str(context)+' 아래 기존 실험을 참고해'))
+        with patch('lab_worker.council.codex_call',side_effect=[dict(requests=[dict(op='read',files=[dict(path='evaluate.py')])]),dict(requests=[]),self.proposal()]) as author,patch('lab_worker.council.claude_call',return_value=dict(verdict='pass',reasons=[])):
+            payload=prepare(self.job,self.work,self.progress)
+        self.assertEqual(self.job['context_path'],str(context.resolve()))
+        self.assertIn('SOURCE_MUST_ONLY_BE_READ',author.call_args_list[-1].args[1])
+        self.assertIn('def run_experiment',payload['code']);self.assertTrue((self.work/'generated-experiment.py').exists())
+
     def test_code_contract_refuses_placeholders_and_host_controls_self_test_entrypoint(self):
         final=check_code(CODE);self.assertLess(final.index('    self_test()',final.index('if __name__')),final.index('    run_experiment()',final.index('if __name__')))
         for code in ['print(1)',CODE+'\nif __name__=="__main__":run_experiment()',CODE.replace('assert sum([1,2,3])==6','raise NotImplementedError()'),CODE.replace('assert sum([1,2,3])==6','pass'),CODE.replace('def self_test()', 'async def self_test()')]:

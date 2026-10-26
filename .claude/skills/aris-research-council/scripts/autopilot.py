@@ -195,7 +195,6 @@ class Autopilot:
                 sessions=self.sessions(action['project_id']);item=sessions[0] if sessions else None
                 previous=self.research.list(action['project_id'])['jobs']
                 context=item['config']['context_path'] if item else next((j['config']['context_path'] for j in previous if j['config'].get('context_path')),'')
-                if not context:raise ValueError('탐색할 연구 폴더를 프로젝트 실행 설정에 입력하세요.')
                 internal=dict(auto_session_id=item['id'],session_budget=item['config']['session_budget']) if item and item['status'] in {'running','paused','blocked'} else None
                 job=self.research.start(dict(node_id=action['node_id'],task='inspect',confirm=True,context_path=context),internal=internal)
                 with self.store._connect() as conn:conn.execute("UPDATE conversation_actions SET state='running',job_id=? WHERE id=?",(job['id'],action['id']))

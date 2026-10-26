@@ -87,7 +87,7 @@ class ResearchEngine:
             'literature/verification.json','literature/verified-evidence.json','literature-usage.json',
             'council/usage.json','council/round-1/COUNCIL_REPORT.md','error.log',
             'worker.stderr.log','literature.stderr.log','verification.stderr.log','arxiv-fetch.stderr.log',
-            'generated-experiment.py','generated-experiment.json','generated-proposal.json','environment.json','environment.stderr.log',
+            'generated-experiment.py','generated-experiment.json','generated-proposal.json','environment.json','environment.stderr.log','context-discovery.json','resolved-context.json',
             'registered-experiment.json','analysis.json','lab-usage.json','explored-environment.json',
             'exploration-1.json','exploration-2.json'] if (root/name).is_file()]
         reads=root/'target-reads'

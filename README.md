@@ -146,6 +146,8 @@ Pause allows current work to finish but starts no new automatic step. Stop cance
 
 ## Local and SSH experiments
 
+An explicit reference folder takes precedence. If it is blank, the host resolves folder names or paths from the original project goal and latest human directions on the selected target before inspecting source code. Discovery checks only those named folders at bounded workspace locations; it does not recursively scan the home directory, read credentials, or execute project code. A unique verified path is reused for the same automatic session while preserving its budget and history. Missing or ambiguous folders produce a specific error before spending model calls on code generation; the discovery receipts remain available in Progress.
+
 Settings shows the current CLI authentication, reported subscription plan and available quota windows. Unknown plans or unavailable usage are labelled explicitly. Settings also supports SSH profiles, connection checks and GPU discovery. Existing keys, SSH agent and host aliases are used; private connection settings stay outside the repository.
 
 Remote execution requires `python3`; NVIDIA discovery additionally requires `nvidia-smi`. Choose an installed Python environment for ML dependencies. The built-in runtime supports standard-library code. The app does not install remote packages or download models implicitly.

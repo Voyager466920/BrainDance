@@ -23,8 +23,8 @@ def environment(job,root,progress):
     assignment=state['assignments'].get(job['project_id'])
     if not assignment or not assignment.get('device_ids'):raise ValueError('프로젝트 실행 환경·장치를 먼저 선택하세요.')
     profile=next(p for p in state['profiles'] if p['id']==assignment['profile_id'])
-    context=job.get('context_path','')
-    from target_explorer import query
+    from target_explorer import query,resolve_context
+    context=resolve_context(job,TreeStore(job['db']),profile,root,progress)
     progress.emit('environment','선택한 서버의 GPU 번호·UUID와 연구 폴더의 소스·환경을 읽기 전용으로 확인합니다.')
     inventory=query(profile,context,dict(op='inventory'),Path(root)/'target-reads')
     inventory['selected_device_ids']=assignment['device_ids']

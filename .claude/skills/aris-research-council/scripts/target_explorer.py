@@ -1,6 +1,7 @@
 """Bounded, read-only target broker. Models request data, never shell commands."""
 import hashlib
 import json
+import re
 from pathlib import Path
 import shlex
 import subprocess
@@ -68,7 +69,21 @@ def read(name,start=1,lines=220):
  text=''.join(selected);return dict(path=name,start_line=start,excerpt=clean(text[:24000]),truncated=len(text)>24000)
 result={'context_exists':bool(root and root.is_dir()),'context_root':str(root) if root else None}
 op=request.get('op','inventory')
-if op=='inventory':
+if op=='discover':
+ result['candidates']=[]
+ anchors=[Path.home(),Path.cwd()]+[Path.home()/p for p in ['projects','workspace','workspaces','research','work','code']]+[Path('/workspace'),Path('/workspaces'),Path('/data')]
+ for hint in request['hints'][:8]:
+  if not isinstance(hint,str) or not re.fullmatch(r'[A-Za-z0-9_./@+~ -]{1,2048}',hint) or '..' in Path(hint).parts:raise ValueError('Invalid research folder hint')
+  p=Path(hint).expanduser();paths=[p] if p.is_absolute() else [a/p for a in anchors]
+  for p in paths:
+   try:
+    resolved=p.resolve()
+    if len(resolved.parts)<3 or not allowed(resolved) or not p.is_dir():continue
+    value=str(resolved)
+    if value not in result['candidates']:result['candidates'].append(value)
+   except OSError:continue
+ result['scope']='Exact human-named folders at bounded workspace locations; directory metadata only, no recursive home scan'
+elif op=='inventory':
  result.update(python=sys.executable,python_version=sys.version.split()[0],platform=platform.platform(),packages={n:importlib.util.find_spec(n) is not None for n in ['torch','numpy','pandas','transformers','datasets']},gpus=[],files=[],file_index=[])
  if shutil.which('nvidia-smi'):
   p=subprocess.run(['nvidia-smi','--query-gpu=index,uuid,name,memory.total,memory.used,utilization.gpu','--format=csv,noheader,nounits'],capture_output=True,text=True,timeout=12)
@@ -131,11 +146,12 @@ print(json.dumps(result,ensure_ascii=False))
 
 
 def query(profile,context,request,folder,observed_paths=()):
-    if not isinstance(request,dict) or request.get('op') not in {'inventory','read','search','stat','python'}:raise ValueError('Unsupported target operation')
+    if not isinstance(request,dict) or request.get('op') not in {'discover','inventory','read','search','stat','python'}:raise ValueError('Unsupported target operation')
     payload={**request,'root':context,'observed_paths':list(observed_paths)[:100]}
     # Ignore no extra command fields; only this fixed program is ever sent to SSH.
-    schemas={'inventory':{'op'},'read':{'op','files'},'search':{'op','terms'},'stat':{'op','paths'},'python':{'op','path'}}
+    schemas={'discover':{'op','hints'},'inventory':{'op'},'read':{'op','files'},'search':{'op','terms'},'stat':{'op','paths'},'python':{'op','path'}}
     if set(request)!=schemas[request['op']]:raise ValueError('Invalid target request fields')
+    if request['op']=='discover' and (not isinstance(request['hints'],list) or not 1<=len(request['hints'])<=8):raise ValueError('Invalid research folder hints')
     if len(json.dumps(payload))>40000:raise ValueError('Target request is too large')
     folder=Path(folder);folder.mkdir(parents=True,exist_ok=True)
     key=hashlib.sha256(json.dumps(payload,sort_keys=True).encode()).hexdigest()[:20]
@@ -168,6 +184,49 @@ def model_view(inventory,include_index=True):
     if include_index:view['file_index']=[row['path'] for row in index if row.get('kind')=='text'][:400]
     view['index_note']='Compact index only; full inventory and exact source/error receipts are retained. Search can locate other indexed sources.'
     return view
+
+
+def folder_hints(value):
+    """Only authenticated human goal/directions supply folder authority."""
+    value=re.sub(r'https?://\S+',' ',value)
+    explicit=re.findall(r'(?<![A-Za-z0-9_:/])(?:~/|/)[A-Za-z0-9_./@+-]+',value)
+    named=re.findall(r'(?<![A-Za-z0-9_/.-])([A-Za-z0-9_][A-Za-z0-9_./-]*)(?=\s*(?:아래|폴더|디렉터리|경로|저장소|directory\b|folder\b))',value)
+    return list(dict.fromkeys(p.rstrip('/.,') for p in explicit+named if '..' not in Path(p).parts))[:8]
+
+
+def resolve_context(job,store,profile,root,progress):
+    if job.get('context_path'):return job['context_path']
+    with store._connect() as conn:row=conn.execute('SELECT n.id FROM nodes n JOIN node_projects p ON n.id=p.node_id WHERE p.project_id=? AND n.parent_id IS NULL',(job['project_id'],)).fetchone()
+    if row is None:raise ValueError('연구 프로젝트를 찾을 수 없습니다.')
+    node=store.get_node(row['id'])
+    sources=[d['content'] for d in reversed(job.get('steering',{}).get('directions',[]))]+[node['metadata'].get('research_goal') or node['metadata'].get('original_topic') or node['title']]
+    hints=next((found for source in sources if (found:=folder_hints(source))),[])
+    if not hints:return ''
+    progress.emit('environment','사용자가 언급한 연구 폴더를 선택된 서버에서 찾습니다.')
+    receipt=query(profile,'',dict(op='discover',hints=hints),Path(root)/'target-reads')
+    council.dump(Path(root)/'context-discovery.json',receipt)
+    paths=receipt.get('candidates',[])
+    if len(paths)!=1:
+        if paths:raise ValueError('연구 폴더 후보가 여러 개입니다. 사용할 경로를 지정하세요: '+', '.join(paths[:8]))
+        raise ValueError('사용자가 지정한 연구 폴더를 선택된 서버에서 찾지 못했습니다: '+', '.join(hints))
+    job['context_path']=paths[0]
+    council.dump(Path(root)/'resolved-context.json',dict(context_path=paths[0],source='human-named directory verified on selected target'))
+    # Persist only the resolved path; retain the project session, limits and charges.
+    # A concurrent explicit path edit always takes precedence over this fallback.
+    with store._connect() as conn:
+        tables={r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if 'research_jobs' in tables and job.get('id'):
+            row=conn.execute("SELECT config FROM research_jobs WHERE id=? AND project_id=? AND state IN ('queued','running')",(job['id'],job['project_id'])).fetchone()
+            if row:
+                cfg=json.loads(row['config'])
+                if not cfg.get('context_path'):cfg['context_path']=paths[0];conn.execute('UPDATE research_jobs SET config=? WHERE id=?',(json.dumps(cfg,ensure_ascii=False),job['id']))
+        if 'automatic_sessions' in tables and job.get('auto_session_id'):
+            row=conn.execute('SELECT config FROM automatic_sessions WHERE id=? AND project_id=?',(job['auto_session_id'],job['project_id'])).fetchone()
+            if row:
+                cfg=json.loads(row['config'])
+                if not cfg.get('context_path'):cfg['context_path']=paths[0];conn.execute('UPDATE automatic_sessions SET config=? WHERE id=?',(json.dumps(cfg,ensure_ascii=False),job['auto_session_id']))
+    progress.emit('environment','연구 폴더를 확인했습니다: '+paths[0])
+    return paths[0]
 
 
 def explore(job,root,progress,profile,inventory,cfg,budget,objective):
