@@ -32,7 +32,7 @@ Install the terminal command from the macOS app, then start it:
 
 If `~/.local/bin` is already on your `PATH`, use `braindance` directly. The installer does not change your shell settings or overwrite an unrelated existing command. Python is bundled in the app.
 
-The interactive terminal opens with a muted green, bar-letter **BrainDance** ASCII logo, scaled to the terminal width. Use `--no-banner`, `--no-color`, or `NO_COLOR=1` to simplify it; `--banner` previews the logo without starting a server. There is no flashing animation.
+The interactive terminal opens with a muted green, bold italic **BrainDance** block-letter logo, scaled to the terminal width. Narrow terminals stack the two words. Use `--no-banner`, `--no-color`, or `NO_COLOR=1` to simplify it; `--banner` previews the logo without starting a server. There is no flashing animation.
 
 Choose a project with `/projects` and `/use 1`, then write naturally. The CLI uses the app's existing local API, conversation stream, project Codex session, target selection, and budgets. GUI and CLI messages and research reports are shared; there is no separate CLI research engine or model session. Reports appear while the input is waiting. Enter sends; Alt+Enter inserts a newline. `/quit` disconnects the terminal without cancelling research.
 

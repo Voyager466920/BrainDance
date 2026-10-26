@@ -41,13 +41,26 @@ def safe_text(value):
 
 
 def banner(width=80,color=False):
-    if width<65:return ('\x1b[38;2;123;181;148m' if color else '')+'  [ BrainDance ]'+('\x1b[0m' if color else '')
-    scale=2 if width>=130 else 1;gap='  ' if scale==2 else ' '
-    rows=[]
-    for row in range(7):
-        rows.append('  '+gap.join('   ' if letter==' ' else ''.join('|'*scale if pixel=='1' else ' '*scale for pixel in FONT[letter][row]) for letter in 'BRAIN DANCE').rstrip())
-    n=max(map(len,rows));rule='  '+'.'*(n-2)
-    result='\n'.join([rule,*rows,rule,'  BrainDance',''])
+    def lettering(word,scale):
+        rows=[]
+        for row in range(7):
+            glyphs=[]
+            for letter in word:
+                if letter==' ':glyphs.append(' '*3*scale);continue
+                pixels=FONT[letter][row]
+                # Widen each stroke, then shear successive rows to the right.
+                # Full blocks retain their weight in light and dark terminals.
+                glyphs.append(''.join(('█' if (i<5 and pixels[i]=='1') or (i>0 and pixels[i-1]=='1') else ' ')*scale for i in range(6)))
+            rows.append(' '*(2+(6-row)//2)+(' '*scale).join(glyphs).rstrip())
+        return rows
+    rows=None
+    for scale in [2,1]:
+        candidate=lettering('BRAIN DANCE',scale)
+        if max(map(len,candidate))<=width:rows=candidate;break
+    if rows is None:
+        candidate=lettering('BRAIN',1)+['']+lettering('DANCE',1)
+        rows=candidate if max(map(len,candidate))<=width else []
+    result='\n'.join([*rows,'  BrainDance','']) if rows else '  BrainDance'
     return '\x1b[38;2;123;181;148m'+result+'\x1b[0m' if color else result
 
 
