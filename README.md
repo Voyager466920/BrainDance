@@ -34,20 +34,17 @@ If `~/.local/bin` is already on your `PATH`, use `braindance` directly. The inst
 
 Running `braindance` immediately displays a muted green **BrainDance** wordmark with broad oblique strokes, cut corners, and a static scanline texture. Normal and narrow terminals stack the words; wide terminals show one line. Use `--no-banner`, `--no-color`, or `NO_COLOR=1` to simplify it. The separate `--banner` command has been removed. There is no flashing animation. The original lettering is shipped as text assets and can be regenerated with `python3 desktop/make_terminal_logo.py`; no font or image library is needed at runtime.
 
-Choose a project with `/projects` and `/use 1`, then write naturally. The CLI uses the app's existing local API, conversation stream, project Codex session, target selection, and budgets. GUI and CLI messages and research reports are shared; there is no separate CLI research engine or model session. Reports appear while the input is waiting. Enter sends; Alt+Enter inserts a newline. `/quit` disconnects the terminal without cancelling research.
+The default terminal is a mouse-enabled workspace with six bottom tabs: **대화** (Conversation), **진행** (Progress), **아이디어** (Ideas), **계획** (Plans), **실험** (Experiments), and **설정** (Settings). The project input stays in place across tabs. Structured reports are rendered as labelled prose; the original JSON, code, evidence and error logs remain stored unchanged.
 
-```text
-/status
-/ask 지금 진행 중인 실험과 막힌 부분을 알려줘
-선택한 서버와 기존 코드를 탐색하고 남은 예산 안에서 계속해줘
-/history --full
-/tree
-/auto pause
-/limits --calls 60 --tokens 2000000
-/auto resume
-```
+- Click a tab, use **Alt+1–6**, or press **Ctrl+B** followed by **1–6**, **N** (next), or **P** (previous). **Ctrl+P** opens the project selector. PageUp/PageDown scroll records; Ctrl+B then G returns to the newest conversation entry.
+- Write naturally from any tab. Enter sends, Alt+Enter adds a newline, and Ctrl+O cycles between conversation, question only, next-step direction, and stop-and-reprepare. Drafts are preserved across tabs and kept separately for each project.
+- The header shows the actual pipeline stage, automatic state, model-call usage, selected local/SSH target and devices. The stage bar indicates position in the pipeline, not an estimated training completion percentage. Experiment views show observed elapsed time, retained output, measured results and remaining runtime budget.
+- GPU discovery records the server hostname, physical NVIDIA GPU index and UUID. The selected target is checked in the background at most once per minute while this terminal is open. Receipts are timestamped; an unavailable GPU index is shown as unknown rather than guessed from list order. Settings also shows the latest GPU memory/utilization receipt.
+- Progress has automatic start/pause/resume/stop and budget controls. **문제에 답글** (Reply to issue), **가설에 지시** (Direct hypothesis), **계획에 지시** (Direct plan), and **실험에 지시** (Direct experiment) return to the same project conversation with the relevant context. A direction for the next step leaves currently running code intact; stop-and-reprepare is an explicit separate input mode.
+- Ideas include paper evidence, novelty, feasibility and Council evaluations. Plans include proposed designs, registered execution plans and a read-only code viewer. Experiments include both live runs and retained results. New-project setup selects the target, devices and runtime before saving.
+- Slash commands focus on setup: `/settings`, `/gpt`, `/claude`, `/ssh`, `/gpu`, `/projects`, `/new`, `/help`, and `/quit`. Typing `/` opens completion suggestions. Account controls invoke the existing official CLI login flow only when you choose Login; credentials are not placed in research messages.
 
-`/reply session:ID message` (also `job:ID` or `run:ID`) links a reply to a particular problem in the same main conversation. `/logs job ID` or `/logs run ID` retrieves retained progress/logs. `/help` lists commands. Model-backed replies consume the same connected account usage and existing session budget.
+The terminal uses the app's existing local API, conversation stream, project Codex session, target selection, and budgets. GUI and terminal messages and research reports are shared. Model-backed replies consume connected-account usage and the existing session budget. Closing the terminal with Ctrl+Q or `/quit` disconnects the view without cancelling server work. `braindance --plain` retains the earlier line-oriented console and its `/use`, `/ask`, `/history`, `/reply`, `/auto`, and `/limits` commands.
 
 Commands also work without an interactive terminal; `--json` produces plain machine-readable output without a logo or colors:
 

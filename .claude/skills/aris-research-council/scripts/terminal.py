@@ -107,7 +107,7 @@ class Client:
             body=json.dumps(payload,ensure_ascii=False).encode()
         request=urllib.request.Request(self.url+path,data=body,headers=headers)
         try:
-            with self.opener.open(request,timeout=45 if path=='/api/compute/probe' else 8) as response:
+            with self.opener.open(request,timeout=45 if path in {'/api/compute/probe','/api/providers','/api/providers/refresh'} else 8) as response:
                 data=response.read().decode('utf-8')
                 return json.loads(data) if 'application/json' in response.headers.get('Content-Type','') else data
         except urllib.error.HTTPError as error:
@@ -205,7 +205,7 @@ def status_text(project,state):
 def parser():
     common=argparse.ArgumentParser(add_help=False)
     for name,kw in [('db',dict(type=Path)),('server',{}),('port',dict(type=int)),('project',{})]:common.add_argument('--'+name,default=argparse.SUPPRESS,**kw)
-    for name in ['json','no-start','no-banner','no-color']:common.add_argument('--'+name,action='store_true',default=argparse.SUPPRESS)
+    for name in ['json','no-start','no-banner','no-color','plain']:common.add_argument('--'+name,action='store_true',default=argparse.SUPPRESS)
     p=argparse.ArgumentParser(prog='braindance',description='BrainDance 프로젝트 대화·연구 터미널',parents=[common])
     sub=p.add_subparsers(dest='command')
     sub.add_parser('install-cli',parents=[common])
@@ -433,7 +433,11 @@ def main(argv=None):
     try:
         client=connect(args)
         if args.command is None:
-            try:asyncio.run(Console(client,args).run())
+            try:
+                if getattr(args,'plain',False):asyncio.run(Console(client,args).run())
+                else:
+                    from terminal_ui import ResearchTerminal
+                    asyncio.run(ResearchTerminal(client,args).run())
             except ImportError:raise ClientError('대화형 CLI에는 prompt-toolkit이 필요합니다. requirements-cli.txt를 설치하거나 패키지 앱의 braindance 명령을 사용하세요.')
             return 0
         project=None if args.command in {'projects','connections','connection','devices','new'} else client.project(getattr(args,'project',None))

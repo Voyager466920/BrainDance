@@ -51,7 +51,7 @@ def lettering(word,scale):
 
 
 def main():
-    for name,words,scale in [('wide',['BRAIN DANCE'],1.2),('regular',['BRAIN','DANCE'],1.35),('small',['BRAIN','DANCE'],.65)]:
+    for name,words,scale in [('wide',['BRAIN DANCE'],1.2),('regular',['BRAIN','DANCE'],1.35),('small',['BRAIN','DANCE'],.65),('panel',['BRAIN DANCE'],.72)]:
         blocks=[lettering(word,scale) for word in words]
         width=max(len(row) for block in blocks for row in block)
         lines=[]

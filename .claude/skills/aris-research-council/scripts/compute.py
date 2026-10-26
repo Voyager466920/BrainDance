@@ -16,20 +16,20 @@ PROBE = r'''
 import csv,io,json,platform,shutil,subprocess
 devices=[dict(id='cpu',name='CPU',kind='cpu')]
 if shutil.which('nvidia-smi'):
- p=subprocess.run(['nvidia-smi','--query-gpu=uuid,name,memory.total,memory.used,utilization.gpu','--format=csv,noheader,nounits'],capture_output=True,text=True,timeout=12)
+ p=subprocess.run(['nvidia-smi','--query-gpu=index,uuid,name,memory.total,memory.used,utilization.gpu','--format=csv,noheader,nounits'],capture_output=True,text=True,timeout=12)
  if p.returncode: raise RuntimeError(p.stderr[:2000])
  for row in csv.reader(io.StringIO(p.stdout)):
-  if len(row)!=5: continue
-  identity,name,total,used,util=[v.strip() for v in row]
+  if len(row)!=6: continue
+  index,identity,name,total,used,util=[v.strip() for v in row]
   number=lambda value:int(value) if value.isdigit() else None
-  devices.append(dict(id=identity,name=name,kind='cuda',memory_total_mb=number(total),memory_used_mb=number(used),utilization_percent=number(util)))
+  devices.append(dict(id=identity,index=number(index),name=name,kind='cuda',memory_total_mb=number(total),memory_used_mb=number(used),utilization_percent=number(util)))
 elif platform.system()=='Darwin':
  p=subprocess.run(['system_profiler','SPDisplaysDataType','-json'],capture_output=True,text=True,timeout=15)
  if p.returncode==0:
   for i,item in enumerate(json.loads(p.stdout).get('SPDisplaysDataType',[])):
    name=item.get('sppci_model','')
    if name.startswith('Apple '): devices.append(dict(id='metal:'+str(i),name=name,kind='metal'))
-print(json.dumps(dict(platform=platform.system(),devices=devices)))
+print(json.dumps(dict(platform=platform.system(),hostname=platform.node(),devices=devices)))
 '''
 
 
