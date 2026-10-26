@@ -41,17 +41,17 @@ def safe_text(value):
 
 
 def banner(width=80,color=False):
-    def lettering(word,scale):
+    def lettering(word,scale,slant=1):
         rows=[]
         for row in range(7):
             glyphs=[]
             for letter in word:
-                if letter==' ':glyphs.append(' '*3*scale);continue
+                if letter==' ':glyphs.append(' '*scale);continue
                 pixels=FONT[letter][row]
                 # Widen each stroke, then shear successive rows to the right.
                 # Full blocks retain their weight in light and dark terminals.
                 glyphs.append(''.join(('█' if (i<5 and pixels[i]=='1') or (i>0 and pixels[i-1]=='1') else ' ')*scale for i in range(6)))
-            rows.append(' '*(2+(6-row)//2)+(' '*scale).join(glyphs).rstrip())
+            rows.append(' '*(2+int((6-row)*slant))+(' '*scale).join(glyphs).rstrip())
         return rows
     rows=None
     for scale in [2,1]:
@@ -59,7 +59,10 @@ def banner(width=80,color=False):
         if max(map(len,candidate))<=width:rows=candidate;break
     if rows is None:
         candidate=lettering('BRAIN',1)+['']+lettering('DANCE',1)
-        rows=candidate if max(map(len,candidate))<=width else []
+        if max(map(len,candidate))<=width:rows=candidate
+        else:
+            # Retain a slanted logo even in a narrow terminal.
+            rows=lettering('BRAIN',1,.5)+['']+lettering('DANCE',1,.5) if width>=40 else []
     result='\n'.join([*rows,'  BrainDance','']) if rows else '  BrainDance'
     return '\x1b[38;2;123;181;148m'+result+'\x1b[0m' if color else result
 
