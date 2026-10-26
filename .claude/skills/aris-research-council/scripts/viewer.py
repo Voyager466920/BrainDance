@@ -20,6 +20,8 @@ from project_cleanup import ProjectCleanup
 from research import ResearchEngine
 from autopilot import Autopilot
 from research_chat import ResearchChat
+from notion_reports import PublicationService
+from research_reports import report_html
 
 ASSET = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parent.parent)) / 'assets' / 'viewer.html'
 
@@ -42,8 +44,11 @@ class ViewerServer(ThreadingHTTPServer):
             self.research=ResearchEngine(store,self.experiments)
             self.autopilot=Autopilot(store,self.research,self.experiments)
             self.chat=ResearchChat(store,self.research,self.autopilot)
+            self.publications=PublicationService(store)
+            self.chat.publications=self.publications
             self.cleanup=ProjectCleanup(store,self.experiments,self.compute,self.research)
         except Exception:
+            if hasattr(self,'publications'):self.publications.close()
             if hasattr(self,'chat'):self.chat.close()
             if hasattr(self,'autopilot'):self.autopilot.close()
             if hasattr(self,'research'):self.research.close()
@@ -52,6 +57,7 @@ class ViewerServer(ThreadingHTTPServer):
             raise
 
     def server_close(self):
+        if hasattr(self,'publications'):self.publications.close()
         if hasattr(self,'chat'):self.chat.close()
         if hasattr(self,'autopilot'):self.autopilot.close()
         if hasattr(self,'research'):self.research.close()
@@ -105,7 +111,7 @@ class ViewerHandler(BaseHTTPRequestHandler):
             return
         path = urlsplit(self.path).path
         if path == '/api/health':
-            self._reply(200, {'app': 'BrainDance', 'version': '0.10.2', 'pid': os.getpid(),
+            self._reply(200, {'app': 'BrainDance', 'version': '0.11.0', 'pid': os.getpid(),
                              'workspace_id': hashlib.sha256(str(Path(self.server.store.db_path).resolve()).encode()).hexdigest()})
         elif path=='/api/chat':
             try:self._reply(200,self.server.chat.messages(parse_qs(urlsplit(self.path).query).get('project_id',[''])[0]))
@@ -114,6 +120,8 @@ class ViewerHandler(BaseHTTPRequestHandler):
             try:self._reply(200,self.server.autopilot.state(parse_qs(urlsplit(self.path).query).get('project_id',[''])[0]))
             except (KeyError,StopIteration):self._reply(404,{'error':'프로젝트를 찾을 수 없습니다.'})
             except ValueError as error:self._reply(400,{'error':str(error)})
+        elif path in {'/api/reports','/api/notion','/api/reports/file','/api/reports/preview'}:
+            self._reports_get(path)
         elif path.startswith('/api/research'):
             self._research_get(path)
         elif path == '/api/project/trash':
@@ -160,6 +168,21 @@ class ViewerHandler(BaseHTTPRequestHandler):
             self._reply(200, html.encode('utf-8'), 'text/html; charset=utf-8')
         else:
             self._reply(404, {'error': 'Not found'})
+
+    def _reports_get(self,path):
+        query=parse_qs(urlsplit(self.path).query);project=query.get('project_id',[''])[0]
+        try:
+            if path in {'/api/reports','/api/notion'}:self._reply(200,self.server.publications.state(project))
+            elif path=='/api/reports/preview':
+                record=self.server.publications.state(project)['report']
+                if record is None:raise ValueError('먼저 보고서를 만들어 주세요.')
+                self._reply(200,report_html(record),'text/html; charset=utf-8')
+            else:
+                name=query.get('file',[''])[0]
+                file=self.server.publications.file(project,query.get('digest',[''])[0],name)
+                mime='image/png' if name.endswith('.png') else 'text/plain; charset=utf-8'
+                self._reply(200,file.read_bytes(),mime)
+        except (ValueError,KeyError) as error:self._reply(400,{'error':str(error)})
 
     def _experiment_get(self,path):
         query=parse_qs(urlsplit(self.path).query)
@@ -223,6 +246,9 @@ class ViewerHandler(BaseHTTPRequestHandler):
             if not isinstance(payload, dict):
                 raise ValueError('Request body must be an object')
             path = urlsplit(self.path).path
+            if path in {'/api/notion/configure','/api/notion/disconnect','/api/notion/sync','/api/reports/build'}:
+                self._publication_mutate(path,payload)
+                return
             with self.server.mutation_lock:
                 self._mutate(path, payload)
         except KeyError as exc:
@@ -231,6 +257,21 @@ class ViewerHandler(BaseHTTPRequestHandler):
             self._reply(400, {'error': str(exc)})
         except OSError as exc:
             self._reply(500, {'error': '로컬 파일 작업을 완료하지 못했습니다: '+str(exc)})
+
+    def _publication_mutate(self,path,payload):
+        service=self.server.publications
+        if path=='/api/notion/configure':
+            if set(payload)-{'project_id','parent','token','auto_sync'}:raise ValueError('지원하지 않는 Notion 설정입니다.')
+            token=payload.get('token','')
+            if not isinstance(token,str) or len(token)>1000:raise ValueError('Notion 토큰을 확인하세요.')
+            result=service.configure(payload.get('project_id'),payload.get('parent'),token,payload.get('auto_sync',False))
+        elif path=='/api/notion/disconnect':
+            if payload:raise ValueError('Expected empty object')
+            result=service.disconnect()
+        else:
+            if set(payload)!={'project_id'}:raise ValueError('프로젝트를 선택하세요.')
+            result=service.enqueue(payload['project_id'],publish=path=='/api/notion/sync')
+        self._reply(200,result)
 
     def _mutate(self, path, payload):
         if path=='/api/providers/refresh':
@@ -262,7 +303,12 @@ class ViewerHandler(BaseHTTPRequestHandler):
         elif path=='/api/project/purge':
             if set(payload)!={'project_id','confirmation_name'}:
                 raise ValueError('삭제할 프로젝트와 확인한 이름이 필요합니다.')
-            result=self.server.cleanup.purge(payload['project_id'],payload['confirmation_name'])
+            service=self.server.publications
+            if not service.execution_lock.acquire(blocking=False):raise ValueError('보고서 처리가 완료된 뒤 삭제하세요.')
+            try:
+                result=self.server.cleanup.purge(payload['project_id'],payload['confirmation_name'])
+                service.forget(payload['project_id'])
+            finally:service.execution_lock.release()
         elif path in {'/api/project/delete','/api/project/restore'}:
             if set(payload)!={'project_id'}:
                 raise ValueError('Expected project_id')
