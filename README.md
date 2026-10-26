@@ -21,6 +21,53 @@ Literature discovery and reviewer integration reuse [ARIS](https://github.com/wa
 
 The distributed app bundles its backend; Python and Node.js are not required to open it. Model tasks use the authenticated CLIs and their account usage. The app is ad-hoc signed and is not notarized. GPU frameworks, models and datasets must exist on the selected execution target; selecting a device does not reserve it against other software.
 
+## Terminal / CLI
+
+Install the terminal command from the macOS app, then start it:
+
+```sh
+"/Applications/BrainDance.app/Contents/Resources/BrainDanceServer" --install-cli
+~/.local/bin/braindance
+```
+
+If `~/.local/bin` is already on your `PATH`, use `braindance` directly. The installer does not change your shell settings or overwrite an unrelated existing command. Python is bundled in the app.
+
+The interactive terminal opens with a muted green, bar-letter **BrainDance** ASCII logo, scaled to the terminal width. Use `--no-banner`, `--no-color`, or `NO_COLOR=1` to simplify it; `--banner` previews the logo without starting a server. There is no flashing animation.
+
+Choose a project with `/projects` and `/use 1`, then write naturally. The CLI uses the app's existing local API, conversation stream, project Codex session, target selection, and budgets. GUI and CLI messages and research reports are shared; there is no separate CLI research engine or model session. Reports appear while the input is waiting. Enter sends; Alt+Enter inserts a newline. `/quit` disconnects the terminal without cancelling research.
+
+```text
+/status
+/ask 지금 진행 중인 실험과 막힌 부분을 알려줘
+선택한 서버와 기존 코드를 탐색하고 남은 예산 안에서 계속해줘
+/history --full
+/tree
+/auto pause
+/limits --calls 60 --tokens 2000000
+/auto resume
+```
+
+`/reply session:ID message` (also `job:ID` or `run:ID`) links a reply to a particular problem in the same main conversation. `/logs job ID` or `/logs run ID` retrieves retained progress/logs. `/help` lists commands. Model-backed replies consume the same connected account usage and existing session budget.
+
+Commands also work without an interactive terminal; `--json` produces plain machine-readable output without a logo or colors:
+
+```sh
+braindance projects
+braindance --project "My project" status
+braindance --project "My project" chat "Summarize the blockers" --mode ask
+braindance --project "My project" history --full --json
+braindance new "CPU pilot" --goal "Compare two small classifiers" --target local --devices cpu --minutes 10
+braindance connections
+braindance connection my-ssh-alias
+braindance devices my-ssh-alias
+braindance --project "My project" target my-ssh-alias --devices GPU-UUID --minutes 30
+braindance --project "My project" auto start --context /path/on/target --calls 40 --tokens 1500000 --cycles 3
+```
+
+Creating a project does not start model calls or experiments. `devices` actually checks the selected connection; remote/GPU assignments require a recent successful discovery. `auto start` explicitly authorizes the reviewed pipeline on the selected devices within the specified limits, just like the app button. Raising limits preserves used amounts and does not resume work by itself. `chat --no-wait` returns immediately; subsequent `history` shows the reply. Supply the same `--request-id` and exact message/mode to check an uncertain send without duplicating it.
+
+By default, the CLI attaches to `http://127.0.0.1:8766` or starts one detached local backend when none is running. It checks the workspace identity before connecting and refuses a different workspace. Start the CLI first if you want a backend independent of the GUI's lifetime; an already-running GUI-owned backend remains owned by that app. The private backend log is `~/Library/Application Support/BrainDance/cli-backend.log`. `--no-start` requires an existing server. For a separate workspace, use `--db /absolute/path/tree.sqlite3 --port 8770`; for an existing alternate port, use `--db ... --server http://127.0.0.1:8770`. Remote HTTP servers are not supported; SSH execution is handled by the same local backend.
+
 ## One conversation for each project
 
 The **대화** (Conversation) tab contains the project’s shared stream of reports, your messages, and real Codex replies. One input stays pinned to the bottom while you switch between Research Overview, Progress, Research Notes, Council transcripts, and Experiments. Sending from any tab continues this same project conversation.
@@ -69,10 +116,12 @@ Use Python 3.12 or later and the authenticated CLIs. Node.js is optional for the
 ```sh
 git clone https://github.com/Voyager466920/BrainDance.git
 cd BrainDance
-python3 braindance.py --db "$HOME/Library/Application Support/BrainDance/tree.sqlite3" --port 8766
+python3 -m venv .venv
+.venv/bin/pip install -r requirements-cli.txt
+.venv/bin/python braindance.py
 ```
 
-Stop the native app before opening the same workspace from source. To use a different engine checkout, set `BRAINDANCE_ENGINE_DIR` to its absolute path before launching the backend. Legacy engine settings remain supported.
+One-shot CLI commands use the standard library; interactive input uses `prompt-toolkit`. To install a source-based `braindance` command, run `.venv/bin/python braindance.py install-cli`. To run the service in the foreground, use `.venv/bin/python braindance.py serve --db "$HOME/Library/Application Support/BrainDance/tree.sqlite3" --port 8766`. Stop an existing backend before starting another service on the same workspace; ordinary CLI commands attach to the current one. To use a different engine checkout, set `BRAINDANCE_ENGINE_DIR` to its absolute path before launching the backend. Legacy engine settings remain supported.
 
 Build the native app on macOS:
 
@@ -80,6 +129,7 @@ Build the native app on macOS:
 python3 -m venv .venv
 .venv/bin/pip install -r desktop/requirements-build.txt
 .venv/bin/python desktop/build.py
+.venv/bin/python desktop/check_cli_bundle.py dist/BrainDance.app
 ```
 
 Run the offline automated checks:

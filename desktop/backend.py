@@ -25,6 +25,13 @@ def main():
     if getattr(sys, 'frozen', False):
         import certifi
         os.environ.setdefault('SSL_CERT_FILE', certifi.where())
+    if sys.argv[1:2]==['--cli']:
+        from terminal import main as cli_main
+        raise SystemExit(cli_main(sys.argv[2:]))
+    if sys.argv[1:]==['--install-cli']:
+        from terminal import install_launcher
+        print(install_launcher())
+        return
     if sys.argv[1:2]==['--research-worker']:
         from research_worker import run
         raise SystemExit(run(sys.argv[2]))
@@ -43,19 +50,21 @@ def main():
         return
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--data-dir', type=Path, default=data_directory())
+    parser.add_argument('--db', type=Path)
     parser.add_argument('--port', type=int, default=8766)
     args = parser.parse_args()
     def terminate(*_):raise KeyboardInterrupt()
     signal.signal(signal.SIGTERM,terminate)
-    directory = args.data_dir.expanduser().resolve()
+    database = args.db.expanduser().resolve() if args.db else args.data_dir.expanduser().resolve()/'tree.sqlite3'
+    directory = database.parent
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
     from viewer import create_server
     try:
-        server = create_server(directory/'tree.sqlite3', args.port, max_depth=3)
+        server = create_server(database, args.port, max_depth=3)
     except OSError as error:
         if error.errno != errno.EADDRINUSE or args.port == 0:
             raise
-        server = create_server(directory/'tree.sqlite3', 0, max_depth=3)
+        server = create_server(database, 0, max_depth=3)
     with server:
         print(json.dumps({'app': 'BrainDance', 'url': 'http://127.0.0.1:'+str(server.server_address[1])+'/'}), flush=True)
         try:

@@ -1,5 +1,7 @@
 """Loopback-only research tree viewer, with explicit CSRF/origin checks."""
 import argparse
+import hashlib
+import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 from pathlib import Path
@@ -103,7 +105,8 @@ class ViewerHandler(BaseHTTPRequestHandler):
             return
         path = urlsplit(self.path).path
         if path == '/api/health':
-            self._reply(200, {'app': 'BrainDance', 'version': '0.8.1'})
+            self._reply(200, {'app': 'BrainDance', 'version': '0.9.0', 'pid': os.getpid(),
+                             'workspace_id': hashlib.sha256(str(Path(self.server.store.db_path).resolve()).encode()).hexdigest()})
         elif path=='/api/chat':
             try:self._reply(200,self.server.chat.messages(parse_qs(urlsplit(self.path).query).get('project_id',[''])[0]))
             except (KeyError,ValueError) as error:self._reply(400,{'error':str(error)})

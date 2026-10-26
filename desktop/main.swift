@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import CryptoKit
 import WebKit
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNavigationDelegate, WKUIDelegate, WKDownloadDelegate {
@@ -10,6 +11,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
     var serverURL: URL?
     var quitting = false
     var startupTimer: Timer?
+
+    var workspaceID: String {
+        let root = ProcessInfo.processInfo.environment["BRAINDANCE_DATA_DIR"] ??
+            FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/BrainDance").path
+        let path = URL(fileURLWithPath: NSString(string: root).expandingTildeInPath)
+            .appendingPathComponent("tree.sqlite3").resolvingSymlinksInPath().standardizedFileURL.path
+        return SHA256.hash(data: Data(path.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         makeMenu()
@@ -36,7 +45,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
             DispatchQueue.main.async {
                 if result?["app"] as? String == "BrainDance" {
                     if result?["version"] as? String == Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String {
-                        self.showWorkspace(URL(string: "http://127.0.0.1:8766/")!)
+                        if result?["workspace_id"] as? String == self.workspaceID {
+                            self.showWorkspace(URL(string: "http://127.0.0.1:8766/")!)
+                        } else { self.fail("다른 작업공간의 서버가 8766 포트를 사용하고 있습니다. 해당 서버를 종료하거나 다른 포트를 선택하세요.") }
                     } else { self.fail("다른 버전의 BrainDance 서버가 실행 중입니다. 기존 앱 또는 서버를 종료하고 다시 실행하세요.") }
                 } else { self.startBackend() }
             }

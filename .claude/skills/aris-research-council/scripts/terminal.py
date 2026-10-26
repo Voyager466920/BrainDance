@@ -1,0 +1,457 @@
+"""Terminal client for the same loopback service, projects and model sessions as the app."""
+import argparse
+import asyncio
+import contextlib
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import shlex
+import shutil
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+import uuid
+
+
+FONT={
+ 'B':['11110','10001','10001','11110','10001','10001','11110'],
+ 'R':['11110','10001','10001','11110','10100','10010','10001'],
+ 'A':['01110','10001','10001','11111','10001','10001','10001'],
+ 'I':['11111','00100','00100','00100','00100','00100','11111'],
+ 'N':['10001','11001','11001','10101','10011','10011','10001'],
+ 'D':['11110','10001','10001','10001','10001','10001','11110'],
+ 'C':['01111','10000','10000','10000','10000','10000','01111'],
+ 'E':['11111','10000','10000','11110','10000','10000','11111'],
+}
+PHASES={'preflight':'준비','environment':'환경 확인','exploration':'서버·코드 탐색','inspected':'탐색 완료',
+ 'literature':'논문 탐색','verification':'논문 확인','generation':'가설 생성','peer-review':'교차 평가',
+ 'chairman':'종합','coding':'실험 코드 작성','code-review':'코드 검토','registering':'계획 등록',
+ 'experiment_approval':'실행 코드 준비','blocked':'확인 필요','analysis':'결과 분석','analyzed':'분석 완료'}
+
+
+def safe_text(value):
+    text=str(value).replace('\r','\n')
+    text=re.sub(r'\x1b(?:\][^\x07]*(?:\x07|\x1b\\)|\[[0-?]*[ -/]*[@-~]|.)','',text)
+    return re.sub(r'[\x00-\x08\x0b-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]','',text)
+
+
+def banner(width=80,color=False):
+    if width<65:return ('\x1b[38;2;123;181;148m' if color else '')+'  [ BrainDance ]'+('\x1b[0m' if color else '')
+    scale=2 if width>=130 else 1;gap='  ' if scale==2 else ' '
+    rows=[]
+    for row in range(7):
+        rows.append('  '+gap.join('   ' if letter==' ' else ''.join('|'*scale if pixel=='1' else ' '*scale for pixel in FONT[letter][row]) for letter in 'BRAIN DANCE').rstrip())
+    n=max(map(len,rows));rule='  '+'.'*(n-2)
+    result='\n'.join([rule,*rows,rule,'  BrainDance',''])
+    return '\x1b[38;2;123;181;148m'+result+'\x1b[0m' if color else result
+
+
+def default_db():
+    root=Path(os.environ.get('BRAINDANCE_DATA_DIR',Path.home()/'Library/Application Support/BrainDance'))
+    return (root/'tree.sqlite3').expanduser().resolve()
+
+
+def workspace_id(db):return hashlib.sha256(str(Path(db).expanduser().resolve()).encode()).hexdigest()
+
+
+def install_launcher(directory=None):
+    directory=Path(directory) if directory else Path.home()/'.local/bin'
+    directory.mkdir(parents=True,exist_ok=True)
+    target=directory/'braindance';marker='# BrainDance CLI launcher'
+    if target.exists() or target.is_symlink():
+        if target.is_symlink() or marker not in target.read_text():raise ClientError('기존 braindance 명령이 있습니다. '+str(target)+'를 먼저 확인하세요.')
+    if getattr(sys,'frozen',False):command=[sys.executable,'--cli']
+    else:command=[sys.executable,str(Path(__file__).resolve().parents[4]/'braindance.py')]
+    body='#!/bin/sh\n'+marker+'\nexec '+shlex.join(command)+' "$@"\n'
+    temporary=target.with_name('.braindance-'+uuid.uuid4().hex)
+    try:
+        temporary.write_text(body);temporary.chmod(0o755);os.replace(temporary,target)
+    finally:temporary.unlink(missing_ok=True)
+    return str(target)
+
+
+class ClientError(RuntimeError):pass
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self,*args,**kwargs):return None
+
+
+def backend_environment():
+    environment=os.environ.copy()
+    if getattr(sys,'frozen',False):
+        # The detached backend must own its one-file assets and bundled CA path;
+        # the CLI bootloader removes the client's extraction directory on exit.
+        environment['PYINSTALLER_RESET_ENVIRONMENT']='1'
+        certificate=environment.get('SSL_CERT_FILE')
+        if certificate and Path(certificate).is_relative_to(Path(sys._MEIPASS)):
+            environment.pop('SSL_CERT_FILE')
+    return environment
+
+
+class Client:
+    def __init__(self,url,db):
+        parsed=urllib.parse.urlsplit(url)
+        if parsed.scheme!='http' or parsed.hostname not in {'127.0.0.1','localhost'} or parsed.username or parsed.password or parsed.path not in {'','/'} or parsed.query or parsed.fragment:
+            raise ClientError('같은 컴퓨터의 BrainDance 주소만 사용할 수 있습니다.')
+        try:port=parsed.port if parsed.port is not None else 80
+        except ValueError:raise ClientError('서버 포트를 확인하세요.')
+        if not 1<=port<=65535:raise ClientError('서버 포트는 1–65535여야 합니다.')
+        self.url='http://'+parsed.hostname+':'+str(port);self.db=Path(db).expanduser().resolve();self.csrf=None
+        self.opener=urllib.request.build_opener(urllib.request.ProxyHandler({}),NoRedirect())
+
+    def request(self,path,payload=None,_refreshed=False):
+        headers={};body=None
+        if payload is not None:
+            if not self.csrf:
+                html=self.request('/')
+                match=re.search(r"const csrf='([^']+)'",html)
+                if not match:raise ClientError('서버의 요청 보호 토큰을 확인할 수 없습니다.')
+                self.csrf=match.group(1)
+            headers={'Content-Type':'application/json','Origin':self.url,'X-CSRF-Token':self.csrf}
+            body=json.dumps(payload,ensure_ascii=False).encode()
+        request=urllib.request.Request(self.url+path,data=body,headers=headers)
+        try:
+            with self.opener.open(request,timeout=45 if path=='/api/compute/probe' else 8) as response:
+                data=response.read().decode('utf-8')
+                return json.loads(data) if 'application/json' in response.headers.get('Content-Type','') else data
+        except urllib.error.HTTPError as error:
+            text=error.read().decode('utf-8',errors='replace')
+            try:text=json.loads(text).get('error',text)
+            except ValueError:pass
+            if payload is not None and error.code==403 and text=='Same-origin request and CSRF token required' and not _refreshed:
+                self.health();self.csrf=None
+                return self.request(path,payload,_refreshed=True)
+            raise ClientError(safe_text(text)[:2000]) from error
+
+    def health(self):
+        health=self.request('/api/health')
+        if not isinstance(health,dict) or health.get('app')!='BrainDance':raise ClientError('해당 주소는 BrainDance 서버가 아닙니다.')
+        if health.get('workspace_id')!=workspace_id(self.db):raise ClientError('실행 중인 서버의 작업공간이 다릅니다. --db와 --server를 확인하거나 앱을 최신 버전으로 다시 여세요.')
+        return health
+
+    def projects(self):
+        return [p for p in self.request('/api/tree')['projects'] if not p.get('deleted_at')]
+
+    def project(self,selector=None):
+        projects=self.projects()
+        if selector is None:
+            if len(projects)==1:return projects[0]
+            raise ClientError('프로젝트를 선택하세요. /projects 다음 /use 번호 또는 --project 이름을 사용하세요.')
+        text=str(selector)
+        exact=[p for p in projects if p['id']==text or p['title'].casefold()==text.casefold()]
+        if len(exact)==1:return exact[0]
+        if text.isdigit() and 1<=int(text)<=len(projects):return projects[int(text)-1]
+        matches=[p for p in projects if p['id'].startswith(text)]
+        if len(matches)!=1:raise ClientError('프로젝트를 하나로 특정할 수 없습니다. /projects로 확인하세요.')
+        return matches[0]
+
+    def root(self,project):
+        return next(n for n in self.request('/api/tree')['nodes'] if n['project_id']==project['id'] and not n['parent_id'])
+
+    def control(self,project):return self.request('/api/control?'+urllib.parse.urlencode(dict(project_id=project['id'])))
+    def messages(self,project):return self.request('/api/chat?'+urllib.parse.urlencode(dict(project_id=project['id'])))['messages']
+
+    def send(self,project,text,mode='auto',request_id=None,reply_to=None):
+        payload=dict(node_id=self.root(project)['id'],content=text,mode=mode,request_id=request_id or str(uuid.uuid4()))
+        if reply_to:payload['reply_to']=reply_to
+        try:return self.request('/api/chat/send',payload)
+        except (urllib.error.URLError,TimeoutError) as error:
+            raise ClientError('전송 결과를 확인하지 못했습니다. /history로 확인하세요. 같은 요청을 재확인할 ID: '+payload['request_id']) from error
+
+
+def connect(args):
+    db=Path(getattr(args,'db',default_db())).expanduser().resolve()
+    port=getattr(args,'port',8766);url=getattr(args,'server',None) or 'http://127.0.0.1:'+str(port)
+    client=Client(url,db)
+    try:client.health();return client
+    except (urllib.error.URLError,ConnectionError,TimeoutError):
+        if getattr(args,'no_start',False) or getattr(args,'server',None):raise ClientError('BrainDance 서버에 연결할 수 없습니다.')
+    db.parent.mkdir(parents=True,exist_ok=True,mode=0o700)
+    import fcntl
+    with (db.parent/'.cli-launch.lock').open('a') as lock:
+        fcntl.flock(lock,fcntl.LOCK_EX)
+        try:client.health();return client
+        except (urllib.error.URLError,ConnectionError,TimeoutError):pass
+        if getattr(sys,'frozen',False):command=[sys.executable,'--db',str(db),'--port',str(port)]
+        else:command=[sys.executable,str(Path(__file__).resolve().parents[4]/'braindance.py'),'serve','--db',str(db),'--port',str(port)]
+        log_path=db.parent/'cli-backend.log'
+        fd=os.open(log_path,os.O_CREAT|os.O_APPEND|os.O_WRONLY,0o600)
+        with os.fdopen(fd,'ab') as log:process=subprocess.Popen(command,stdin=subprocess.DEVNULL,stdout=log,stderr=log,start_new_session=True,close_fds=True,env=backend_environment())
+        deadline=time.monotonic()+25
+        while time.monotonic()<deadline:
+            if process.poll() is not None:raise ClientError('연구 서버를 시작하지 못했습니다. '+str(log_path)+'를 확인하세요.')
+            try:client.health();return client
+            except (urllib.error.URLError,ConnectionError,TimeoutError):time.sleep(.2)
+        raise ClientError('서버 시작을 기다리고 있습니다. 잠시 후 같은 명령으로 다시 연결하세요.')
+
+
+def display_message(message,full=False):
+    role=message['role'];label={'user':'나','assistant':'Codex','report':'연구 보고','status':'진행'}[role]
+    if role=='status':text=PHASES.get(message.get('phase'),message.get('phase',''))+' · '+message['content']
+    else:text=(message.get('title','')+'\n' if message.get('title') else '')+message['content']
+    if not full and role in {'report','status'} and len(text)>900:text=text[:900]+'\n… /history --full 로 전체 기록을 볼 수 있습니다.'
+    if role=='assistant' and message['state'] in {'queued','preparing','running'}:text='답변 작성 중…'
+    ref=message.get('metadata',{}).get('reply_to')
+    return '\n'+label+(' · 답글: '+ref['title'] if ref else '')+'\n'+safe_text(text)+'\n'
+
+
+def status_text(project,state):
+    usage=state.get('usage');session=state.get('session');lines=[project['title']]
+    if session:lines.append({'running':'자동모드 ON','paused':'일시정지','blocked':'확인 필요','completed':'완료','stopped':'중지'}.get(session['status'],session['status'])+' · '+session['message'])
+    if usage:lines.append('모델 호출 '+str(usage['calls'])+' / '+str(usage['max_calls'])+' · 남은 '+str(max(0,usage['max_calls']-usage['calls']))+'회 · 토큰 예상·예약 '+str(usage['charged_tokens'])+' / '+str(usage['token_budget']))
+    for job in state.get('jobs',[]):
+        lines.append('연구 '+job['state']+' · '+PHASES.get(job['phase'],job['phase'])+' · job:'+job['id'])
+    if session and session['status']=='blocked':lines.append('답글 대상: session:'+session['id'])
+    for run in state['runs']:lines.append('실험 '+run['state']+' · '+run['title']+' · '+run['id'])
+    return safe_text('\n'.join(lines))
+
+
+def parser():
+    common=argparse.ArgumentParser(add_help=False)
+    for name,kw in [('db',dict(type=Path)),('server',{}),('port',dict(type=int)),('project',{})]:common.add_argument('--'+name,default=argparse.SUPPRESS,**kw)
+    for name in ['json','no-start','no-banner','no-color']:common.add_argument('--'+name,action='store_true',default=argparse.SUPPRESS)
+    p=argparse.ArgumentParser(prog='braindance',description='BrainDance 프로젝트 대화·연구 터미널',parents=[common])
+    p.add_argument('--banner',action='store_true',help='ASCII 로고만 표시하고 종료')
+    sub=p.add_subparsers(dest='command')
+    sub.add_parser('install-cli',parents=[common])
+    for name in ['projects','status','tree','connections','devices']:
+        q=sub.add_parser(name,parents=[common]);
+        if name=='devices':q.add_argument('profile')
+    q=sub.add_parser('history',parents=[common]);q.add_argument('--full',action='store_true');q.add_argument('--last',type=int,default=10)
+    q=sub.add_parser('chat',parents=[common]);q.add_argument('message');q.add_argument('--mode',choices=['auto','ask','next','restart'],default='auto');q.add_argument('--no-wait',action='store_true');q.add_argument('--timeout',type=int,default=300);q.add_argument('--request-id');q.add_argument('--reply-to',help='job:ID, session:ID 또는 run:ID')
+    q=sub.add_parser('limits',parents=[common]);q.add_argument('--calls',type=int);q.add_argument('--tokens',type=int)
+    q=sub.add_parser('auto',parents=[common]);q.add_argument('action',choices=['start','pause','resume','stop']);q.add_argument('--cycles',type=int,default=3);q.add_argument('--calls',type=int,default=40);q.add_argument('--tokens',type=int,default=1500000);q.add_argument('--context',default='');q.add_argument('--mode',choices=['lite','balanced','deep'],default='balanced')
+    q=sub.add_parser('new',parents=[common]);q.add_argument('name');q.add_argument('--goal',required=True);q.add_argument('--target',default='local');q.add_argument('--devices',default='cpu');q.add_argument('--minutes',type=int,default=30)
+    q=sub.add_parser('target',parents=[common]);q.add_argument('profile');q.add_argument('--devices',required=True);q.add_argument('--minutes',type=int,default=30)
+    q=sub.add_parser('connection',parents=[common]);q.add_argument('alias');q.add_argument('--name')
+    q=sub.add_parser('logs',parents=[common]);q.add_argument('kind',choices=['job','run']);q.add_argument('id')
+    return p
+
+
+def profile_for(client,selector):
+    profiles=client.request('/api/compute')['profiles'];matches=[p for p in profiles if selector in {p['id'],p['name'],p.get('host')}]
+    if len(matches)!=1:raise ClientError('연결을 하나로 특정할 수 없습니다. connections로 확인하세요.')
+    return matches[0]
+
+
+def dispatch(client,args,project=None):
+    command=args.command
+    if command=='projects':return client.projects()
+    if command=='connections':return client.request('/api/compute')['profiles']
+    if command=='connection':return client.request('/api/compute/profile',dict(name=args.name or args.alias,kind='ssh',host=args.alias,user='',port=None,identity_file=''))
+    if command=='devices':return client.request('/api/compute/probe',dict(profile_id=profile_for(client,args.profile)['id']))
+    if command=='new':
+        return client.request('/api/project',dict(name=args.name,goal=args.goal,compute=dict(profile_id=profile_for(client,args.target)['id'],device_ids=args.devices.split(','),max_parallel_runs=1,time_budget_minutes=args.minutes,auto_run=False)))
+    project=client.project(args.project) if hasattr(args,'project') else project or client.project()
+    if command=='status':
+        state=client.control(project)
+        jobs=client.request('/api/research?'+urllib.parse.urlencode(dict(project_id=project['id'])))['jobs']
+        state['jobs']=[{k:j[k] for k in ['id','state','phase','message']} for j in jobs[:1]]
+        return state
+    if command=='history':return client.messages(project)[-max(1,min(120,args.last)):]
+    if command=='tree':return [n for n in client.request('/api/tree')['nodes'] if n['project_id']==project['id']]
+    if command=='target':
+        return client.request('/api/compute/assignment',dict(project_id=project['id'],profile_id=profile_for(client,args.profile)['id'],device_ids=args.devices.split(','),max_parallel_runs=1,time_budget_minutes=args.minutes,auto_run=False))
+    if command=='logs':
+        if args.kind=='run':value=client.request('/api/run?'+urllib.parse.urlencode(dict(id=args.id)))
+        else:value=client.request('/api/research/job?'+urllib.parse.urlencode(dict(id=args.id)))
+        if value['project_id']!=project['id']:raise ClientError('다른 프로젝트의 실행 기록입니다.')
+        return value
+    if command=='limits':
+        state=client.control(project)
+        if args.calls is None and args.tokens is None:return state.get('usage')
+        if not state.get('session') or not state.get('usage'):raise ClientError('자동모드 실행 한도를 먼저 설정하세요.')
+        return client.request('/api/control/automatic',dict(project_id=project['id'],action='limits',session_id=state['session']['id'],max_model_calls=args.calls if args.calls is not None else state['usage']['max_calls'],token_budget=args.tokens if args.tokens is not None else state['usage']['token_budget']))
+    if command=='auto':
+        payload=dict(project_id=project['id'],action=args.action)
+        if args.action=='start':payload.update(max_cycles=args.cycles,max_model_calls=args.calls,token_budget=args.tokens,context_path=args.context,mode=args.mode)
+        return client.request('/api/control/automatic',payload)
+    if command=='chat':
+        text=sys.stdin.read() if args.message=='-' else args.message;reference=None
+        if args.reply_to:
+            kind,sep,identity=args.reply_to.partition(':')
+            if not sep or kind not in {'job','run','session'} or not identity:raise ClientError('답글 대상은 job:ID, run:ID 또는 session:ID여야 합니다.')
+            reference=dict(type=kind,id=identity)
+        reply=client.send(project,text,args.mode,args.request_id,reference)
+        if args.no_wait:return reply
+        deadline=time.monotonic()+args.timeout
+        while reply['state'] in {'queued','preparing','running'}:
+            if time.monotonic()>deadline:raise ClientError('답변 대기를 종료했습니다. 작업은 계속됩니다. history로 확인하세요. 요청 ID: '+reply['request_id'])
+            time.sleep(.5)
+            reply=next((m for m in client.messages(project) if m['id']==reply['id']),reply)
+        return reply
+    raise ClientError('지원하지 않는 명령입니다.')
+
+
+def output(value,args,project=None):
+    if getattr(args,'json',False):print(json.dumps(value,ensure_ascii=False,allow_nan=False));return
+    if args.command=='projects':
+        for i,p in enumerate(value,1):print(str(i)+'. '+safe_text(p['title'])+'  '+p['id'])
+        if not value:print('프로젝트가 없습니다. new 명령으로 추가하세요.')
+    elif args.command=='status':print(status_text(project,value))
+    elif args.command=='chat':print(display_message(value,True))
+    elif args.command=='history':
+        for message in value:print(display_message(message,args.full))
+    elif args.command=='tree':
+        for n in value:print('  '*n['depth']+('- ' if n['status']!='discarded' else 'x ')+safe_text(n['title'])+'  ['+n['status']+']')
+    elif args.command in {'auto','limits'}:
+        usage=value.get('usage',value) if value else None
+        if args.command=='auto':print(status_text(project,value))
+        elif usage:print('모델 호출 '+str(usage['calls'])+' / '+str(usage['max_calls'])+' · 토큰 예상·예약 '+str(usage['charged_tokens'])+' / '+str(usage['token_budget']))
+        else:print('자동모드 실행 한도가 아직 없습니다.')
+    elif args.command=='connections':
+        for profile in value:print(safe_text(profile['name'])+' · '+profile['kind']+' · '+profile['id'])
+    elif args.command=='devices':
+        print('연결됨' if value.get('connected') else '연결 실패')
+        if value.get('error'):print(safe_text(value['error']))
+        for device in value.get('devices',[]):print(safe_text(device.get('name',device['id']))+' · '+safe_text(device['id']))
+    elif args.command=='new':print('프로젝트 생성: '+safe_text(value['node']['metadata']['project_name'])+' · '+value['project_id'])
+    elif args.command=='connection':print('연결 등록: '+safe_text(value['name'])+' · '+value['id'])
+    elif args.command=='target':print('실행 환경 저장: '+safe_text(value['profile_id'])+' · '+safe_text(', '.join(value['device_ids'])))
+    elif args.command=='logs':
+        print(safe_text(value.get('state',''))+' · '+safe_text(value.get('message',value.get('error') or '')))
+        for key in ['progress','events','stdout_tail','stderr_tail','files']:
+            if value.get(key):print(safe_text(json.dumps(value[key],ensure_ascii=False,indent=2) if not isinstance(value[key],str) else value[key]))
+    else:print(safe_text(json.dumps(value,ensure_ascii=False,indent=2)))
+
+
+HELP='''/projects · /use 번호 또는 이름 · /new 이름 --goal "연구 목표"
+/status · /history [--full] · /tree · /connections · /devices 연결
+/auto start --context "연구 폴더" · /auto pause|resume|stop
+/limits --calls 총횟수 · /limits --tokens 총토큰
+/ask 질문 · /next 다음 단계 지시 · /restart 중지 후 재준비 지시
+/reply job:ID 메시지 · /logs job|run ID · /quit
+그냥 입력하면 같은 프로젝트 대화로 전송됩니다. Enter 전송 · Alt+Enter 줄바꿈.'''
+
+
+class Console:
+    def __init__(self,client,args):
+        self.client=client;self.args=args;self.project=None;self.seen={};self.sent=set();self.toolbar='프로젝트 선택';self.error=None
+
+    def select(self,selector):
+        self.project=self.client.project(selector);messages=self.client.messages(self.project)
+        self.seen={m['id']:self.signature(m) for m in messages}
+        self.toolbar=self.project['title']
+        print('\n'+safe_text(self.project['title']))
+        if messages:print('최근 기록 '+str(len(messages))+'개 · /history 로 확인')
+
+    @staticmethod
+    def signature(m):return json.dumps([m['state'],m['content'],m.get('phase')],ensure_ascii=False)
+
+    async def monitor(self):
+        while True:
+            try:
+                if self.project:
+                    project=self.project;messages=await asyncio.to_thread(self.client.messages,project)
+                    if not self.project or project['id']!=self.project['id']:continue
+                    for message in messages:
+                        signature=self.signature(message)
+                        if self.seen.get(message['id'])==signature:continue
+                        self.seen[message['id']]=signature
+                        if message['role']=='user' and message.get('request_id') in self.sent:continue
+                        print(display_message(message),flush=True)
+                    state=await asyncio.to_thread(self.client.control,project)
+                    if not self.project or project['id']!=self.project['id']:continue
+                    usage=state.get('usage');session=state.get('session')
+                    self.toolbar=project['title']+' · '+(session['status'] if session else '수동')+(' · 호출 '+str(usage['calls'])+'/'+str(usage['max_calls']) if usage else '')
+                    self.error=None
+            except (ClientError,urllib.error.URLError,TimeoutError,OSError) as error:
+                text=safe_text(error)
+                if text!=self.error:print('\n연결 확인: '+text);self.error=text
+            await asyncio.sleep(2)
+
+    async def handle(self,line):
+        if not line.strip():return True
+        if not line.startswith('/'):
+            if not self.project:raise ClientError('/use로 프로젝트를 선택하세요.')
+            request_id=str(uuid.uuid4());self.sent.add(request_id)
+            await asyncio.to_thread(self.client.send,self.project,line,'auto',request_id)
+            return True
+        words=shlex.split(line[1:]);command=words[0] if words else 'help'
+        if command in {'quit','exit'}:return False
+        if command=='help':print(HELP);return True
+        if command=='use':
+            if len(words)<2:raise ClientError('/use 프로젝트 번호 또는 이름')
+            await asyncio.to_thread(self.select,' '.join(words[1:]));return True
+        if command in {'ask','next','restart','reply'}:
+            if not self.project:raise ClientError('/use로 프로젝트를 선택하세요.')
+            mode={'ask':'ask','next':'next','restart':'restart','reply':'auto'}[command]
+            text=line[1+len(command):].strip();reference=None
+            if command=='reply':
+                ref,_,text=text.partition(' ');kind,sep,identity=ref.partition(':')
+                if not sep or kind not in {'job','session','run'}:raise ClientError('/reply job:ID 메시지')
+                reference=dict(type=kind,id=identity)
+            request_id=str(uuid.uuid4());self.sent.add(request_id)
+            await asyncio.to_thread(self.client.send,self.project,text,mode,request_id,reference);return True
+        try:args=parser().parse_args(words)
+        except SystemExit:return True
+        if args.command is None:print(HELP);return True
+        value=await asyncio.to_thread(dispatch,self.client,args,self.project)
+        selected=self.client.project(args.project) if hasattr(args,'project') else self.project
+        output(value,args,selected)
+        if command=='new':await asyncio.to_thread(self.select,value['project_id'])
+        return True
+
+    async def run(self):
+        from prompt_toolkit import PromptSession
+        from prompt_toolkit.key_binding import KeyBindings
+        from prompt_toolkit.patch_stdout import patch_stdout
+        from prompt_toolkit.styles import Style
+        from prompt_toolkit.completion import WordCompleter
+        kb=KeyBindings()
+        @kb.add('escape','enter')
+        def newline(event):event.current_buffer.insert_text('\n')
+        colored=not getattr(self.args,'no_color',False) and 'NO_COLOR' not in os.environ and os.environ.get('TERM')!='dumb'
+        style=Style.from_dict({'prompt':'#7bb594','toolbar':'#899c91'}) if colored else Style.from_dict({})
+        session=PromptSession(key_bindings=kb,completer=WordCompleter(['/projects','/use','/new','/status','/history','/tree','/connections','/devices','/target','/auto','/limits','/ask','/next','/restart','/reply','/logs','/quit','/help']),complete_while_typing=False,style=style)
+        if not getattr(self.args,'no_banner',False):print(banner(shutil.get_terminal_size((80,24)).columns,colored))
+        print('/help 도움말 · /quit 연결 종료 (연구 작업은 유지)')
+        selector=getattr(self.args,'project',None)
+        projects=await asyncio.to_thread(self.client.projects)
+        if selector or len(projects)==1:await asyncio.to_thread(self.select,selector)
+        else:output(projects,argparse.Namespace(command='projects'))
+        with patch_stdout():
+            task=asyncio.create_task(self.monitor())
+            try:
+                while True:
+                    try:
+                        text=await session.prompt_async([('class:prompt','BrainDance > ')],bottom_toolbar=lambda:[('class:toolbar',safe_text(self.toolbar))])
+                        if not await self.handle(text):break
+                    except KeyboardInterrupt:continue
+                    except EOFError:break
+                    except (ClientError,urllib.error.URLError,TimeoutError,OSError,ValueError) as error:print('\n'+safe_text(error))
+            finally:
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):await task
+
+
+def main(argv=None):
+    args=parser().parse_args(argv)
+    if args.command=='install-cli':
+        try:print(install_launcher());return 0
+        except (ClientError,OSError) as error:print('BrainDance: '+safe_text(error),file=sys.stderr);return 1
+    if args.banner:
+        color=sys.stdout.isatty() and not getattr(args,'no_color',False) and 'NO_COLOR' not in os.environ and os.environ.get('TERM')!='dumb'
+        print(banner(shutil.get_terminal_size((80,24)).columns,color));return 0
+    if args.command is None and not sys.stdin.isatty():parser().print_help();return 0
+    try:
+        client=connect(args)
+        if args.command is None:
+            try:asyncio.run(Console(client,args).run())
+            except ImportError:raise ClientError('대화형 CLI에는 prompt-toolkit이 필요합니다. requirements-cli.txt를 설치하거나 패키지 앱의 braindance 명령을 사용하세요.')
+            return 0
+        project=None if args.command in {'projects','connections','connection','devices','new'} else client.project(getattr(args,'project',None))
+        result=dispatch(client,args,project);output(result,args,project)
+        return 1 if args.command=='chat' and result['state'] in {'failed','interrupted'} else 0
+    except KeyboardInterrupt:
+        print('\n연결을 종료했습니다. 서버의 연구 작업은 계속됩니다.',file=sys.stderr);return 130
+    except (ClientError,urllib.error.URLError,TimeoutError,OSError,ValueError) as error:
+        if getattr(args,'json',False):print(json.dumps(dict(error=safe_text(error)),ensure_ascii=False),file=sys.stderr)
+        else:print('BrainDance: '+safe_text(error),file=sys.stderr)
+        return 1

@@ -44,7 +44,7 @@ def main():
     for notice in (ROOT/'desktop/licenses').glob('*'):
         shutil.copy2(notice,notices/notice.name)
     shutil.copy2(Path(sys.base_prefix)/'lib'/('python'+str(sys.version_info.major)+'.'+str(sys.version_info.minor))/'LICENSE.txt',notices/'Python-LICENSE.txt')
-    for package, filename in [('certifi','LICENSE'),('pyinstaller','COPYING.txt')]:
+    for package, filename in [('certifi','LICENSE'),('pyinstaller','COPYING.txt'),('prompt-toolkit','LICENSE'),('wcwidth','LICENSE')]:
         distribution=metadata.distribution(package)
         source=next(distribution.locate_file(f) for f in distribution.files if f.name==filename and 'licenses' in f.parts)
         shutil.copy2(source,notices/(package+'-'+filename))
