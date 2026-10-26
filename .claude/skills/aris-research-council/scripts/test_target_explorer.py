@@ -85,7 +85,7 @@ class ExplorerTests(unittest.TestCase):
         self.assertTrue((self.out/'context-discovery.json').exists())
         inventory=query(self.profile,found,dict(op='inventory'),self.out)
         self.assertTrue(inventory['context_exists'])
-        self.assertEqual(folder_hints('juyu서버의 joonha_vla 아래 실험들을 참고해.'),['joonha_vla'])
+        self.assertEqual(folder_hints('연구서버의 sample_vla 아래 실험들을 참고해.'),['sample_vla'])
 
     def test_latest_human_folder_overrides_old_goal_but_model_results_do_not(self):
         from tree_store import TreeStore
@@ -107,7 +107,7 @@ class ExplorerTests(unittest.TestCase):
         self.assertEqual(result['candidates'],[]);self.assertNotIn('PRIVATE',json.dumps(result))
         with self.assertRaises(ValueError):query(self.profile,'',dict(op='discover',hints=['../escape']),self.out)
 
-    def test_context_recovery_preserves_budget_and_session_and_cannot_expand_a_hypothesis_path(self):
+    def test_context_recovery_preserves_budget_and_session(self):
         from tree_store import TreeStore
         store=TreeStore(self.root/'tree.sqlite3');node=store.add_node(None,'Research',metadata=dict(research_goal=str(self.code)+' 폴더'))
         config=dict(context_path='',max_model_calls=40,token_budget=1500000,session_budget='unchanged-ledger')
