@@ -181,7 +181,10 @@ class ResearchEngine:
     def can_retry(self,record):
         root=Path(record['run_dir']);folder=root/'council'
         if record['state'] not in {'failed','interrupted'} or record['config'].get('task')!='research':return False
-        if 'Token admission budget exhausted before dispatch' not in (record.get('error') or record.get('message','')):return False
+        failure=record.get('error') or record.get('message','')
+        known='Token admission budget exhausted before dispatch' in failure
+        recovered_input=record['config'].get('resume_existing') and 'Cannot resume Codex with changed input' in failure
+        if not (known or recovered_input):return False
         if not all((folder/name).is_file() for name in ['config.json','run-inputs.json','run-state.json','usage.json','status.json']):return False
         return not json.loads((folder/'run-state.json').read_text()).get('tree_commit_started') and json.loads((folder/'status.json').read_text()).get('status')!='completed'
 

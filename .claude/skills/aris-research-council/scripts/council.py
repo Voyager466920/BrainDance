@@ -655,6 +655,29 @@ def load_config(args):
     return cfg
 
 
+def frozen_parent(folder,parent,resuming):
+    """Retain the exact parent input while rejecting substantive research edits."""
+    folder=Path(folder);snapshot=folder/'parent-snapshot.json'
+    if snapshot.exists():saved=read_json(snapshot)
+    elif resuming:
+        request=folder/'generation/codex/request.json'
+        marker='\nExpand this parent hypothesis: '
+        if request.exists():
+            prompt=read_json(request)['params']['arguments']['prompt']
+            if marker not in prompt:raise ValueError('Cannot recover original parent input for resume')
+            saved=json.JSONDecoder().raw_decode(prompt.split(marker,1)[1])[0]
+        else:
+            # With no completed participant input there is nothing stale to reuse.
+            if list((folder/'generation').glob('**/parsed.json')):raise ValueError('Original parent snapshot is missing; inspect prior participant inputs')
+            saved=parent
+    else:saved=parent
+    if not isinstance(saved,dict):raise ValueError('Invalid original parent input')
+    substantive=lambda value:{k:v for k,v in value.items() if k!='updated_at'}
+    if substantive(saved)!=substantive(parent):raise ValueError('Research parent changed; cannot reuse completed Council calls')
+    dump(snapshot,saved)
+    return saved
+
+
 def run(args, progress=None):
     progress=progress or (lambda phase,message:None)
     cfg = load_config(args)
@@ -704,7 +727,8 @@ def run(args, progress=None):
         for iteration in range(cfg["rounds"]):
             rdir = output / ("round-" + str(iteration + 1))
             rdir.mkdir(exist_ok=True)
-            topic = args.topic + ("\nExpand this parent hypothesis: " + json.dumps(parent, ensure_ascii=False) if args.node_id or iteration else "")
+            original_parent=frozen_parent(rdir,parent,args.resume) if args.node_id or iteration else parent
+            topic = args.topic + ("\nExpand this parent hypothesis: " + json.dumps(original_parent, ensure_ascii=False) if args.node_id or iteration else "")
             progress('generation','Claude 전문가 3명과 Codex가 독립 가설을 생성합니다.')
             proposals = phase(rdir / "generation", "generation", topic, context, cfg, budget, args.aris_repo, pack["full_evidence_path"])
             validate_proposals(proposals, pack["selected_ids"])

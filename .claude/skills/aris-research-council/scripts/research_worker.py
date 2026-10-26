@@ -204,9 +204,10 @@ def run(spec_path):
             work=literature(job,root,progress)
             evidence=verify(job,root,work,progress)
         store=TreeStore(job['db']);node=store.get_node(job['node_id'])
-        store.update_node(node['id'],metadata={'research_job':job['id'],'research_literature':str(work/'LITERATURE.md')})
-        with store._connect() as conn:
-            conn.execute('UPDATE nodes SET evidence=? WHERE id=?',(json.dumps(council.read_json(evidence)['papers'],ensure_ascii=False),node['id']))
+        if not resuming:
+            store.update_node(node['id'],metadata={'research_job':job['id'],'research_literature':str(work/'LITERATURE.md')})
+            with store._connect() as conn:
+                conn.execute('UPDATE nodes SET evidence=? WHERE id=?',(json.dumps(council.read_json(evidence)['papers'],ensure_ascii=False),node['id']))
         if not resuming:store.add_note(node['id'],'analysis','논문 탐색 결과',(work/'LITERATURE.md').read_text()[:99000])
         cfg={**council.DEFAULTS,**council.MODES[job['mode']], 'mode':job['mode'],'coordinator_model':'haiku'}
         cfg.update(job['council_overrides']);council.dump(root/'council-config.json',cfg)

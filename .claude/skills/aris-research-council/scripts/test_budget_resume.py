@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from council import Budget
+from council import Budget,frozen_parent
 import test_research as fixtures
 
 
@@ -66,6 +66,32 @@ class ResearchRetryTests(unittest.TestCase):
         self.assertEqual(finished['id'],job['id']);self.assertEqual(finished['state'],'completed')
         self.assertEqual(finished['config']['project_session'],old_session);self.assertEqual(ledger.read_bytes(),before)
         self.assertTrue((root/'attempts/1/job.json').exists());self.assertIn('ORIGINAL_PARTIAL_RUN_LOG',(root/'attempts/1/worker.stdout.log').read_text())
+
+
+class FrozenParentTests(unittest.TestCase):
+    def test_retry_uses_original_timestamp_but_rejects_actual_research_changes(self):
+        with tempfile.TemporaryDirectory() as temp:
+            folder=Path(temp);original=dict(id='same',title='Original question',metadata=dict(metric='nll'),updated_at='before')
+            self.assertEqual(frozen_parent(folder,original,False),original)
+            later={**original,'updated_at':'after'}
+            self.assertEqual(frozen_parent(folder,later,True),original)
+            before=(folder/'parent-snapshot.json').read_bytes()
+            with self.assertRaises(ValueError):frozen_parent(folder,{**later,'title':'Different question'},True)
+            self.assertEqual((folder/'parent-snapshot.json').read_bytes(),before)
+
+    def test_legacy_snapshot_is_recovered_from_an_actual_prior_request(self):
+        with tempfile.TemporaryDirectory() as temp:
+            folder=Path(temp);request=folder/'generation/codex/request.json';request.parent.mkdir(parents=True)
+            original=dict(id='original',title='Same research',updated_at='first')
+            serialized=json.dumps(original,ensure_ascii=False)
+            request.write_text(json.dumps(dict(params=dict(arguments=dict(prompt='Goal\nExpand this parent hypothesis: '+serialized+'\nEvidence')))))
+            recovered=frozen_parent(folder,{**original,'updated_at':'later'},True)
+            self.assertEqual(json.dumps(recovered,ensure_ascii=False),serialized)
+
+    def test_missing_input_does_not_silently_reuse_unverifiable_participant_output(self):
+        with tempfile.TemporaryDirectory() as temp:
+            folder=Path(temp);cached=folder/'generation/claude/parsed.json';cached.parent.mkdir(parents=True);cached.write_text('{}')
+            with self.assertRaises(ValueError):frozen_parent(folder,dict(id='same',updated_at='now'),True)
 
 
 if __name__=='__main__':unittest.main()
