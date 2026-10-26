@@ -92,6 +92,26 @@ def wrap_cells(text,width):
     return '\n'.join(rows)
 
 
+def report_view(state):
+    link=state.get('link');lines=['결과 · Notion','']
+    lines.append(('연결 확인됨' if state.get('connected') and link else 'Notion 연결 설정 필요')+(' · 자동 동기화 ON' if link and link['auto_sync'] else ''))
+    if link:lines.append('상위 페이지 https://www.notion.so/'+link['parent_id'].replace('-',''))
+    jobs=state.get('jobs',[])
+    for job in jobs[:3]:
+        lines.extend(['',('Notion' if job['kind']=='notion' else '로컬 보고서')+' · '+job['message']])
+        if job.get('page_url'):lines.append(job['page_url'])
+    record=state.get('report')
+    if not record:return '\n'.join(lines+['','보고서를 만들면 논문 근거·가설·평가·실험 결과를 함께 정리합니다.'])
+    lines.extend(['','시각화 '+str(len(record['charts']))+'개 · '+clock(record['created_at'])])
+    for chart in record['charts']:
+        lines.extend(['',chart['title']])
+        for row in chart['rows']:
+            lines.append(row['label']+' · '+row['title'])
+            for kind,value in row['values']:lines.append('  '+kind+': '+format(value,'.6g'))
+    for title,body in record['sections']:lines.extend(['',title,body])
+    return '\n'.join(lines)
+
+
 def clock(value):
     try:return datetime.fromisoformat(str(value).replace('Z','+00:00')).astimezone().strftime('%m/%d %H:%M')
     except (ValueError,TypeError):return '—'

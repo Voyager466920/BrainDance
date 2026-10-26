@@ -61,7 +61,18 @@ def main():
                 time.sleep(.1)
             assert receipt['state']=='succeeded',receipt
             assert 'BUNDLE_CPU_AND_CA_OK' in receipt['stdout_tail']
-            print('PASS: packaged logo, detached GUI assets/CA after CLI exit, shared backend, project/status, actual stdlib CPU execution; no model/GPU calls.')
+            run('report','build','--project',project['project_id'],'--json','--db',str(database),'--server',address)
+            deadline=time.monotonic()+30
+            while time.monotonic()<deadline:
+                reports=json.loads(get('/api/reports?project_id='+project['project_id']))
+                if reports['report'] or any(j['state']=='failed' for j in reports['jobs']):break
+                time.sleep(.1)
+            assert reports['report'],reports['jobs']
+            chart=reports['report']['charts'][0]
+            with urllib.request.urlopen(address+'/api/reports/file?project_id='+project['project_id']+'&digest='+reports['report']['digest']+'&file='+chart['file']) as response:
+                assert response.read().startswith(b'\x89PNG')
+            assert 'observed' in get('/api/reports/preview?project_id='+project['project_id']) or 'img' in get('/api/reports/preview?project_id='+project['project_id'])
+            print('PASS: packaged logo, detached assets/CA, shared backend, actual CPU execution and measured PNG reporting; no model/GPU/Notion account calls.')
         finally:
             if pid:
                 os.kill(pid,signal.SIGTERM)

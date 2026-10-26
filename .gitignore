@@ -25,4 +25,7 @@ council-implementation/
 credentials*
 auth.json
 compute.json
+notion-credentials.json
+/integrations/
+/reports/
 node_modules/

@@ -34,9 +34,9 @@ If `~/.local/bin` is already on your `PATH`, use `braindance` directly. The inst
 
 Running `braindance` immediately displays a muted green **BrainDance** wordmark with broad oblique strokes, cut corners, and a static scanline texture. Normal and narrow terminals stack the words; wide terminals show one line. Use `--no-banner`, `--no-color`, or `NO_COLOR=1` to simplify it. The separate `--banner` command has been removed. There is no flashing animation. The original lettering is shipped as text assets and can be regenerated with `python3 desktop/make_terminal_logo.py`; no font or image library is needed at runtime.
 
-The default terminal is a mouse-enabled workspace with six bottom tabs: **대화** (Conversation), **진행** (Progress), **아이디어** (Ideas), **계획** (Plans), **실험** (Experiments), and **설정** (Settings). The project input stays in place across tabs. Structured reports are rendered as labelled prose; the original JSON, code, evidence and error logs remain stored unchanged.
+The default terminal is a mouse-enabled workspace with seven bottom tabs: **대화** (Conversation), **진행** (Progress), **아이디어** (Ideas), **계획** (Plans), **실험** (Experiments), **설정** (Settings), and **결과** (Results). The project input stays in place across tabs. Structured reports are rendered as labelled prose; the original JSON, code, evidence and error logs remain stored unchanged.
 
-- Click a tab, use **Alt+1–6**, or press **Ctrl+B** followed by **1–6**, **N** (next), or **P** (previous). **Ctrl+P** opens the project selector. Mouse/trackpad wheel and PageUp/PageDown scroll records, including long wrapped Korean paragraphs. Reading older messages suspends automatic scrolling when reports arrive; Ctrl+B then G or **최신** returns to the newest entry.
+- Click a tab, use **Alt+1–7**, or press **Ctrl+B** followed by **1–7**, **N** (next), or **P** (previous). **Ctrl+P** opens the project selector. Mouse/trackpad wheel and PageUp/PageDown scroll records, including long wrapped Korean paragraphs. Reading older messages suspends automatic scrolling when reports arrive; Ctrl+B then G or **최신** returns to the newest entry.
 - Write naturally from any tab. Enter sends, Alt+Enter adds a newline, and Ctrl+O cycles between conversation, question only, next-step direction, and stop-and-reprepare. Drafts are preserved across tabs and kept separately for each project.
 - The header shows the actual pipeline stage, automatic state, model-call usage, selected local/SSH target and devices. The stage bar indicates position in the pipeline, not an estimated training completion percentage. Experiment views show observed elapsed time, retained output, measured results and remaining runtime budget.
 - GPU discovery records the server hostname, physical NVIDIA GPU index and UUID. GPU indexes start at **0**, exactly as reported by `nvidia-smi`; the CPU entry does not change GPU numbering. The selected target is checked in the background at most once per minute while this terminal is open. Receipts are timestamped; an unavailable GPU index is shown as unknown rather than guessed from list order. Settings also shows the latest GPU memory/utilization receipt.
@@ -66,6 +66,34 @@ braindance --project "My project" auto start --context /path/on/target --calls 4
 Creating a project does not start model calls or experiments. `devices` actually checks the selected connection; remote/GPU assignments require a recent successful discovery. `auto start` explicitly authorizes the reviewed pipeline on the selected devices within the specified limits, just like the app button. Raising limits preserves used amounts and does not resume work by itself. `chat --no-wait` returns immediately; subsequent `history` shows the reply. Supply the same `--request-id` and exact message/mode to check an uncertain send without duplicating it.
 
 By default, the CLI attaches to `http://127.0.0.1:8766` or starts one detached local backend when none is running. It checks the workspace identity before connecting and refuses a different workspace. Start the CLI first if you want a backend independent of the GUI's lifetime; an already-running GUI-owned backend remains owned by that app. The private backend log is `~/Library/Application Support/BrainDance/cli-backend.log`. `--no-start` requires an existing server. For a separate workspace, use `--db /absolute/path/tree.sqlite3 --port 8770`; for an existing alternate port, use `--db ... --server http://127.0.0.1:8770`. Remote HTTP servers are not supported; SSH execution is handled by the same local backend.
+
+## Results, visualization, and Notion
+
+The app and CLI share a **결과 / Results** view and one publication queue per workspace. Build a report locally or publish it to a project-specific Notion parent page. Papers, hypotheses, Council evaluations, research analysis, and completed experiment receipts are grouped into a readable report. Successful runs with numeric primary metrics get labelled baseline/candidate or measured-value PNG charts. Failed runs remain in the report and are excluded from successful-comparison plots. A project with no measurements explicitly shows that no measured results are available.
+
+The charts use retained values without inventing missing observations or statistical significance. Metrics with different names or optimization directions stay in separate plots. Reports include Markdown, the exact selected measurement/evidence data as JSON, PNGs, and run IDs for tracing the source. Original local code, receipts and error logs remain unchanged. Raw chat, runtime configuration, SSH credentials, device UUIDs, and connection tokens are excluded from the export.
+
+**App:** open **Settings → Notion**, choose a project, enter its parent page URL and a Notion token, then select **연결 확인 · 저장** (Check and save). A blank token preserves an existing credential; without a saved credential it saves only the destination. Use a personal access token or internal connection with read/insert access; for an internal connection, add it to the parent page using the page's Connections menu. See Notion's [official quickstart](https://developers.notion.com/guides/get-started/quick-start) and [file upload guide](https://developers.notion.com/guides/data-apis/uploading-small-files).
+
+**CLI:** `/notion` opens the same masked settings form. `/reports`, **Alt+7**, or **Ctrl+B then 7** opens Results. Use **시각화 열기** (Open visualization) to view the full PNG report in a browser. Commands also work outside the terminal workspace:
+
+```sh
+braindance notion setup --project "My research" --parent "https://www.notion.so/PAGE_ID"
+# The token is requested through hidden terminal input, never a command argument.
+braindance report build --project "My research"
+braindance report status --project "My research"
+braindance report open --project "My research"
+braindance notion sync --project "My research"
+braindance notion status --project "My research"
+# Opt into automatic publication of this project's changed reports:
+braindance notion setup --project "My research" --auto
+```
+
+You can also ask in the shared project conversation, for example **“결과를 시각화해서 보고서로 정리해줘”** or **“연구 결과를 노션에 정리해줘”**. The host queues the requested report, and completion receipts return to the same project stream. Question-only mode does not publish. Report generation and synchronization do not call additional models or start experiments; an ordinary model-backed conversation reply uses the existing project budget.
+
+Enable **이 프로젝트 결과 자동 동기화** to publish changed project results in the background. It is off until enabled, and disabling it stops future automatic queueing. Disconnecting removes the saved token and stops queued Notion publications. Each project gets a managed child page; each distinct report gets an immutable snapshot. Unchanged reports reuse the existing job and page. The durable queue exposes pending/processing/completed/error states and reconciles previously written pages and blocks before retrying an interrupted upload. It never overwrites manually edited report content. Rate limits use Notion's Retry-After header. The direct uploader supports files up to 5 MiB each; larger originals remain local with an explicit error.
+
+Connection credentials live in the workspace's private `integrations/notion-credentials.json` (mode 0600); they never appear in the research database export or API responses. Local reports live under `reports/PROJECT_ID/DIGEST/`. Permanently deleting a project removes its local reports and publication queue, freeing storage; reports already published to Notion remain there. Only the selected project's report content and chart files are sent to the configured Notion page.
 
 ## One conversation for each project
 

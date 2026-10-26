@@ -119,12 +119,13 @@ class ProjectCleanup:
             path = Path(ref)
             if path.is_absolute() and path.parent.resolve() == self.workspace/'council-runs' and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,120}', path.name):
                 paths.append('council-runs/'+path.name)
+        if re.fullmatch(r'[a-f0-9-]{36}',project_id):paths.append('reports/'+project_id)
         return dict(project_id=project_id, title=project['title'], paths=sorted(set(paths)),
                     counts=counts, cleanup_pending=False, exclusive_refs=exclusive)
 
     def _path(self, relative):
         path = Path(relative)
-        if len(path.parts) != 2 or path.parts[0] not in {'experiment-runs', 'council-runs'} or path.name in {'.', '..'} or path.is_absolute():
+        if len(path.parts) != 2 or path.parts[0] not in {'experiment-runs', 'council-runs','reports'} or path.name in {'.', '..'} or path.is_absolute():
             raise ValueError('관리 폴더 경로가 올바르지 않습니다.')
         parent = self.workspace/path.parts[0]
         if parent.is_symlink():

@@ -17,6 +17,7 @@ def run(*args):
 
 
 def main():
+    os.environ['MPLBACKEND']='Agg'
     if platform.system() != 'Darwin':
         raise SystemExit('Build the desktop app on macOS.')
     build, dist = ROOT/'build', ROOT/'dist'
@@ -28,6 +29,7 @@ def main():
         '--add-data', str(SCRIPTS/'experiment_worker.py')+':worker',
         '--add-data', str(ROOT/'.claude/agents')+':agents',
         '--hidden-import', 'csv', '--hidden-import', 'statistics', '--hidden-import', 'xml.etree.ElementTree',
+        '--hidden-import', 'matplotlib.backends.backend_agg',
         '--distpath', build/'server', '--workpath', build/'pyinstaller', '--specpath', build,
         '--target-architecture', architecture, ROOT/'desktop/backend.py')
     app = dist/'BrainDance.app'
@@ -44,10 +46,14 @@ def main():
     for notice in (ROOT/'desktop/licenses').glob('*'):
         shutil.copy2(notice,notices/notice.name)
     shutil.copy2(Path(sys.base_prefix)/'lib'/('python'+str(sys.version_info.major)+'.'+str(sys.version_info.minor))/'LICENSE.txt',notices/'Python-LICENSE.txt')
-    for package, filename in [('certifi','LICENSE'),('pyinstaller','COPYING.txt'),('prompt-toolkit','LICENSE'),('wcwidth','LICENSE')]:
+    for package in ['certifi','pyinstaller','prompt-toolkit','wcwidth','matplotlib','numpy','pillow','contourpy','cycler','fonttools','kiwisolver','packaging','pyparsing','python-dateutil','six','tzdata']:
         distribution=metadata.distribution(package)
-        source=next(distribution.locate_file(f) for f in distribution.files if f.name==filename and 'licenses' in f.parts)
-        shutil.copy2(source,notices/(package+'-'+filename))
+        selected=[f for f in distribution.files if f.name.upper().startswith(('LICENSE','COPYING','NOTICE')) and f.suffix not in {'.py','.pyc'}]
+        if not selected:raise RuntimeError('Missing dependency license: '+package)
+        for file in selected:
+            destination=notices/package/str(file)
+            destination.parent.mkdir(parents=True,exist_ok=True)
+            shutil.copy2(distribution.locate_file(file),destination)
     env = os.environ.copy(); env['MACOSX_DEPLOYMENT_TARGET'] = '13.0'
     subprocess.run(['swiftc', '-swift-version', '5', '-O', '-gnone', '-target', architecture+'-apple-macosx13.0',
                     '-framework', 'AppKit', '-framework', 'WebKit', str(ROOT/'desktop/main.swift'),

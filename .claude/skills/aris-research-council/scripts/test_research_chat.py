@@ -23,7 +23,7 @@ from unittest.mock import patch
 import research_worker
 def reply(folder,prompt,*args):
  job=json.loads(Path(sys.argv[1]).read_text());ctx=job['chat_context'];message=ctx['user_message']
- intent='direction' if message.startswith('Direction') else 'pause' if message.startswith('Pause') else 'stop' if message.startswith('Stop') else 'question'
+ intent='publish' if message.startswith('Publish') else 'report' if message.startswith('Report') else 'direction' if message.startswith('Direction') else 'pause' if message.startswith('Pause') else 'stop' if message.startswith('Stop') else 'question'
  return dict(reply='OFFLINE fixture reply based on actual captured project state.',intent=intent)
 with patch('lab_worker.council.codex_call',side_effect=reply):sys.exit(research_worker.run(sys.argv[1]))
 '''
@@ -47,6 +47,20 @@ class ChatTests(unittest.TestCase):
 
     def complete(self,message):
         self.chat.execute(message);actual=self.chat.get(message['id']);self.assertEqual(actual['state'],'completed',actual['content']);return actual
+
+    def test_report_and_notion_intents_use_the_same_project_without_starting_experiments(self):
+        from unittest.mock import Mock
+        self.chat.publications=Mock();self.chat.publications.state.return_value=dict(connected=True,link=None,jobs=[],report=None);self.chat.publications.enqueue.return_value=dict(id='publication-fixture',state='queued')
+        reply=self.complete(self.send('Publish results in Notion'))
+        self.chat.publications.enqueue.assert_called_once_with(self.node['project_id'],publish=True)
+        self.assertEqual(reply['metadata']['publication_job'],'publication-fixture')
+        self.chat.publications.reset_mock()
+        self.complete(self.send('Report retained measurements',request_id='report-fixture-0002'))
+        self.chat.publications.enqueue.assert_called_once_with(self.node['project_id'],publish=False)
+        self.chat.publications.reset_mock()
+        self.complete(self.send('Publish question-only fixture',mode='ask',request_id='report-fixture-0003'))
+        self.chat.publications.enqueue.assert_not_called()
+        self.assertEqual(self.control.state(self.node['project_id'])['runs'],[])
 
     def test_reply_runs_independently_while_research_slot_and_cpu_experiment_are_busy(self):
         plan=self.experiments.create(dict(node_id=self.node['id'],title='Live CPU fixture',timeout_seconds=8,code="import time\nprint('ACTUAL_CPU_PROGRESS',flush=True)\ntime.sleep(5)"))

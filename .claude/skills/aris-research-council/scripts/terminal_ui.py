@@ -23,15 +23,15 @@ from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.layout.menus import CompletionsMenu
 from prompt_toolkit.mouse_events import MouseEventType
 from prompt_toolkit.styles import Style
-from prompt_toolkit.widgets import TextArea,Label,Button,Dialog,RadioList,CheckboxList,Box,Frame
+from prompt_toolkit.widgets import TextArea,Label,Button,Dialog,RadioList,CheckboxList,Checkbox,Box,Frame
 
 from terminal import LOGO_ASSETS,ClientError,parser,dispatch,safe_text
 from terminal_presenter import (STATES,readable,short,clock,duration,provider_line,device_label,
-    resource_info,phase_status,conversation,progress_view,idea_view,plan_view,run_view,clip_cells,wrap_cells,connection_error)
+    resource_info,phase_status,conversation,progress_view,idea_view,plan_view,run_view,report_view,clip_cells,wrap_cells,connection_error)
 
-TABS=['대화','진행','아이디어','계획','실험','설정']
+TABS=['대화','진행','아이디어','계획','실험','설정','결과']
 MODES=[('auto','대화'),('ask','질문만'),('next','다음 방향'),('restart','중지 후 재준비')]
-SLASH=['/settings','/gpt','/claude','/ssh','/gpu','/projects','/new','/help','/exit','/quit']
+SLASH=['/settings','/gpt','/claude','/ssh','/gpu','/notion','/reports','/projects','/new','/help','/exit','/quit']
 
 
 class ResearchTerminal:
@@ -44,6 +44,7 @@ class ResearchTerminal:
     def __init__(self,client,args,*,input=None,output=None):
         self.client,self.args=client,args
         self.project=None;self.epoch=0;self.tab=0;self.body_key=None;self.mode=0;self.reply_to=None;self.scope=None
+        self.reports={}
         self.tree={};self.compute={};self.providers={};self.state={};self.messages=[];self.experiments={};self.jobs=[];self.job_info=None;self.run_info=None
         self.projects=[];self.drafts={};self.pending={};self.welcome=not getattr(args,'no_banner',False);self.follow=True;self.unread=False;self.initialized=False;self.error='';self.transport_error='';self.notice=''
         self.sending=False;self.probing=set();self.modals=[];self.modal_buttons=[];self.modal_task=None;self.resource_form=None;self.last_probe={};self.wakeup=asyncio.Event()
@@ -58,7 +59,7 @@ class ResearchTerminal:
         self.editor=TextArea(height=3,multiline=True,wrap_lines=True,prompt=' › ',style='class:input',
             completer=WordCompleter(SLASH),complete_while_typing=Condition(lambda:self.editor.text.startswith('/')),scrollbar=True,name='project-input')
         self.editor.buffer.on_text_changed+=self._typing
-        self.help_text='Ctrl+B→1–6 탭 · 휠/PgUp·PgDn 스크롤 · Enter 전송 · Alt+Enter 줄바꿈'
+        self.help_text='Ctrl+B→1–7 탭 · 휠/PgUp·PgDn 스크롤 · Enter 전송 · Alt+Enter 줄바꿈'
         self._build(input,output)
 
     def _typing(self,_):
@@ -98,7 +99,8 @@ class ResearchTerminal:
             ConditionalContainer(self.buttons([('가설에 지시',self.direct_idea),('활성',lambda:self.spawn(self.node_status('active'))),('보류',lambda:self.spawn(self.node_status('held'))),('폐기',lambda:self.spawn(self.node_status('discarded')))]),Condition(lambda:self.tab==2)),
             ConditionalContainer(self.buttons([('계획에 지시',self.direct_plan),('코드 보기',self.code_dialog)]),Condition(lambda:self.tab==3)),
             ConditionalContainer(self.buttons([('실험에 지시',self.direct_run),('이 실험 중지',lambda:self.spawn(self.cancel_run()))]),Condition(lambda:self.tab==4)),
-            ConditionalContainer(HSplit([self.buttons([('GPT 연결',lambda:self.provider_dialog('GPT')),('Claude 연결',lambda:self.provider_dialog('Claude')),('SSH 추가',self.ssh_dialog),('서버·GPU',self.resource_dialog)]),self.buttons([('연결 갱신',lambda:self.spawn(self.refresh_providers(True))),('장치 조회',lambda:self.spawn(self.probe_selected())),('한도',self.limits_dialog),('새 프로젝트',self.new_project_dialog)])]),Condition(lambda:self.tab==5))]
+            ConditionalContainer(HSplit([self.buttons([('GPT 연결',lambda:self.provider_dialog('GPT')),('Claude 연결',lambda:self.provider_dialog('Claude')),('SSH 추가',self.ssh_dialog),('서버·GPU',self.resource_dialog)]),self.buttons([('연결 갱신',lambda:self.spawn(self.refresh_providers(True))),('장치 조회',lambda:self.spawn(self.probe_selected())),('한도',self.limits_dialog),('새 프로젝트',self.new_project_dialog),('Notion',lambda:self.spawn(self.notion_dialog()))])]),Condition(lambda:self.tab==5)),
+            ConditionalContainer(self.buttons([('보고서 만들기',lambda:self.spawn(self.report_action(False))),('시각화 열기',lambda:self.spawn(self.open_report())),('Notion 동기화',lambda:self.spawn(self.report_action(True))),('Notion 설정',lambda:self.spawn(self.notion_dialog()))]),Condition(lambda:self.tab==6))]
         lists=HSplit([
             ConditionalContainer(Box(self.idea_list,padding=0),Condition(lambda:self.tab==2)),
             ConditionalContainer(Box(self.plan_list,padding=0),Condition(lambda:self.tab==3)),
@@ -150,7 +152,7 @@ class ResearchTerminal:
     def header(self):return ' BrainDance  /  '+safe_text(self.project['title'] if self.project else '프로젝트 선택')
 
     def detail_title(self):
-        title={0:'대화',1:'진행 상황',2:'아이디어 상세',3:'계획 상세',4:'실험 상세',5:'설정'}.get(self.tab,'')
+        title={0:'대화',1:'진행 상황',2:'아이디어 상세',3:'계획 상세',4:'실험 상세',5:'설정',6:'결과 · 시각화'}.get(self.tab,'')
         result=[('class:header',title+' '),('class:button',' ↑ ',self.click(lambda:self.scroll(-6))),('class:button',' ↓ ',self.click(lambda:self.scroll(6)))]
         if self.tab==0:result.append(('class:button',' 최신 ',self.click(self.bottom)))
         return result
@@ -305,6 +307,7 @@ class ResearchTerminal:
         elif self.tab==4:
             selected=self.selected_run();details=self.run_info if selected and self.run_info and selected['id']==self.run_info['id'] else None
             text=run_view(selected,details)
+        elif self.tab==6:text=report_view(self.reports)
         else:text=self.settings_text()
         self.update_body(text,follow=self.tab==0 and self.follow and not self.welcome and not has_focus(self.body)())
 
@@ -323,8 +326,9 @@ class ResearchTerminal:
                 lines.extend(['',device_label(d),'장치 ID '+d['id']])
                 if d.get('memory_total_mb') is not None:lines.append(f"최근 GPU 메모리 {d.get('memory_used_mb','?')} / {d['memory_total_mb']} MB · 사용률 {d.get('utilization_percent','?')}%")
             a=resource['assignment'];lines.extend(['','시간 예산 '+str(a['time_budget_minutes'])+'분 · 동시 실험 '+str(a['max_parallel_runs'])+'개'])
-        lines.extend(['','조작','탭 클릭 / Alt+1–6 / Ctrl+B 다음 1–6 또는 N·P','Ctrl+P 프로젝트 · Ctrl+O 입력 방식 · PageUp/Down 기록 스크롤',
-            '모든 탭의 입력은 같은 프로젝트 대화에 기록됩니다.','/settings · /gpt · /claude · /ssh · /gpu · /projects · /new · /help · /exit'])
+        link=self.reports.get('link');lines.extend(['','Notion · '+('연결됨' if self.reports.get('connected') and link else '설정 필요')+(' · 자동 동기화 ON' if link and link['auto_sync'] else ''),'결과 탭에서 보고서와 그래프를 확인할 수 있습니다.'])
+        lines.extend(['','조작','탭 클릭 / Alt+1–7 / Ctrl+B 다음 1–7 또는 N·P','Ctrl+P 프로젝트 · Ctrl+O 입력 방식 · PageUp/Down 기록 스크롤',
+            '모든 탭의 입력은 같은 프로젝트 대화에 기록됩니다.','/settings · /gpt · /claude · /ssh · /gpu · /notion · /reports · /projects · /new · /help · /exit'])
         return '\n'.join(lines)
 
     async def call(self,fn,*args):
@@ -350,7 +354,7 @@ class ResearchTerminal:
 
     async def select_project(self,project):
         if self.project:self.drafts[self.project['id']]=(self.editor.text,self.mode,self.reply_to,self.scope)
-        self.epoch+=1;self.project=project;self.state={};self.messages=[];self.jobs=[];self.experiments={};self.job_info=None;self.run_info=None
+        self.epoch+=1;self.project=project;self.state={};self.messages=[];self.jobs=[];self.experiments={};self.job_info=None;self.run_info=None;self.reports={}
         self.editor.text,self.mode,self.reply_to,self.scope=self.drafts.get(project['id'],('',0,None,None))
         self.welcome=not getattr(self.args,'no_banner',False);self.follow=True;self.unread=False;self.error='';self.notice='';self.wakeup.set();self.app.layout.focus(self.editor)
 
@@ -370,13 +374,14 @@ class ResearchTerminal:
         project=self.project;pid=project['id'];root=next((n for n in tree['nodes'] if n.get('project_id')==pid and n['parent_id'] is None),None)
         if not root:return
         query='?'+urllib.parse.urlencode(dict(project_id=pid))
-        state,chat,experiments=await asyncio.gather(self.call(self.client.request,'/api/control'+query),self.call(self.client.request,'/api/chat'+query),self.call(self.client.request,'/api/experiments?'+urllib.parse.urlencode(dict(node_id=root['id']))))
+        state,chat,experiments,reports=await asyncio.gather(self.call(self.client.request,'/api/control'+query),self.call(self.client.request,'/api/chat'+query),self.call(self.client.request,'/api/experiments?'+urllib.parse.urlencode(dict(node_id=root['id']))),self.call(self.client.request,'/api/reports'+query))
         if epoch!=self.epoch:return
         before={m['id']:(m['state'],m['content']) for m in self.messages}
         if before and any(m['id'] not in before or before[m['id']]!=(m['state'],m['content']) for m in chat['messages']):
             self.welcome=False
             if self.tab!=0 or not self.follow:self.unread=True
         self.state,self.messages,self.experiments=state,chat['messages'],experiments
+        self.reports=reports
         self.jobs=sorted([j for j in tree.get('research_jobs',[]) if j['project_id']==pid],key=lambda j:j['created_at'],reverse=True)
         selected=self.selected_run();chosen=selected or next((r for r in self.runs() if r['state'] in {'running','queued'}),None) or next(iter(self.runs()),None)
         info_tasks=[]
@@ -460,6 +465,10 @@ class ResearchTerminal:
         elif command in {'gpt','claude'}:self.provider_dialog('GPT' if command=='gpt' else 'Claude')
         elif command=='ssh':self.ssh_dialog()
         elif command=='gpu':self.resource_dialog()
+        elif command=='notion':
+            if len(words)>1 and words[1]=='sync':await self.report_action(True)
+            else:await self.notion_dialog()
+        elif command in {'reports','report'}:self.select_tab(6)
         elif command in {'projects','project'}:self.project_dialog()
         elif command=='new':self.new_project_dialog()
         elif command=='help':self.text_dialog('도움말',self.settings_text().split('조작\n')[-1]+'\n\n입력 방식은 Ctrl+O로 바꿉니다. 질문만 / 다음 방향 / 중지 후 재준비를 구분할 수 있습니다.')
@@ -552,6 +561,29 @@ class ResearchTerminal:
             await self.call(self.client.request,'/api/compute/profile',dict(name=name.text.strip() or host.text.strip(),kind='ssh',host=host.text.strip(),user=user.text.strip(),port=int(port.text) if port.text.strip() else None,identity_file=key.text.strip()))
             self.compute=await self.call(self.client.request,'/api/compute');self.close_dialog();self.notice='SSH 연결을 등록했습니다. 서버·GPU에서 장치를 선택하세요.'
         self.dialog('SSH 추가',HSplit([Label('표시 이름'),name,Label('SSH Host 별칭 또는 주소'),host,Label('사용자 · 비우면 SSH 설정 사용'),user,Label('포트 · 비우면 SSH 설정 사용'),port,Label('기존 개인키 경로 · 선택'),key]),[('등록',lambda:self.spawn(save())),('취소',self.close_dialog)],host)
+
+    async def report_action(self,publish):
+        if not self.project:raise ClientError('프로젝트를 먼저 선택하세요.')
+        await self.call(self.client.request,'/api/notion/sync' if publish else '/api/reports/build',dict(project_id=self.project['id']))
+        self.select_tab(6);self.notice='Notion 동기화를 시작했습니다.' if publish else '보고서와 시각화를 만듭니다.';self.wakeup.set()
+
+    async def open_report(self):
+        if not self.project or not self.reports.get('report'):raise ClientError('먼저 보고서를 만들어 주세요.')
+        import webbrowser
+        url=self.client.url+'/api/reports/preview?'+urllib.parse.urlencode(dict(project_id=self.project['id']))
+        await self.call(webbrowser.open,url);self.notice='시각화 보고서: '+url
+
+    async def notion_dialog(self):
+        if not self.project:raise ClientError('프로젝트를 먼저 선택하세요.')
+        project=dict(self.project);state=await self.call(self.client.request,'/api/notion?'+urllib.parse.urlencode(dict(project_id=project['id'])))
+        link=state.get('link') or {};parent=TextArea(text=link.get('parent_id',''),multiline=False)
+        token=TextArea(password=True,multiline=False);automatic=Checkbox('이 프로젝트 결과 자동 동기화',checked=bool(link.get('auto_sync')))
+        async def save():
+            await self.call(self.client.request,'/api/notion/configure',dict(project_id=project['id'],parent=parent.text.strip(),token=token.text.strip(),auto_sync=automatic.checked))
+            token.text='';self.close_dialog();self.notice='Notion 연결을 확인하고 저장했습니다.';self.wakeup.set()
+        async def disconnect():
+            await self.call(self.client.request,'/api/notion/disconnect',{});token.text='';self.close_dialog();self.notice='Notion 연결을 해제했습니다.';self.wakeup.set()
+        self.dialog('Notion · '+project['title'],HSplit([Label('상위 페이지 URL 또는 ID'),parent,Label('연결 토큰 · 숨김 입력 / 기존 토큰 유지 시 비우기'),token,automatic,Label('토큰은 이 Mac에만 저장합니다. 연구 대화에 전송하지 않습니다.')]),[('저장',lambda:self.spawn(save())),('연결 해제',lambda:self.spawn(disconnect())),('닫기',self.close_dialog)],parent)
 
     def provider_dialog(self,name):
         item=next((p for p in self.providers.get('providers',[]) if p['name']==name),{})

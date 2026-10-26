@@ -35,7 +35,7 @@ class ResearchChat:
         root=self.control.root(project_id);self.store.get_node(root['id'])
         with self.store._connect() as conn:
             rows=[self.decode(r) for r in conn.execute('SELECT * FROM research_chat WHERE project_id=? ORDER BY seq DESC LIMIT 120',(project_id,))]
-            for note in conn.execute("SELECT n.* FROM notes n JOIN node_projects p ON p.node_id=n.node_id WHERE p.project_id=? AND (n.kind IN ('result','analysis') OR n.title LIKE '%필요한 항목%' OR n.title='실행 한도 변경') ORDER BY n.created_at DESC,n.rowid DESC LIMIT 30",(project_id,)):
+            for note in conn.execute("SELECT n.* FROM notes n JOIN node_projects p ON p.node_id=n.node_id WHERE p.project_id=? AND (n.kind IN ('result','analysis','publication') OR n.title LIKE '%필요한 항목%' OR n.title='실행 한도 변경') ORDER BY n.created_at DESC,n.rowid DESC LIMIT 30",(project_id,)):
                 rows.append(dict(id='report:'+note['id'],project_id=project_id,node_id=note['node_id'],role='report',state='completed',title=note['title'],content=note['content'][:24000],created_at=note['created_at'],metadata=dict(note_id=note['id'])))
         jobs=self.research.list(project_id)['jobs'][:8]
         for job in jobs:
@@ -113,9 +113,13 @@ class ResearchChat:
         runs=[]
         for run in state['runs'][:2]:
             actual=self.control.experiments.run_info(run['id']);runs.append({**run,'stdout_tail':actual['stdout_tail'][-5000:],'stderr_tail':actual['stderr_tail'][-3000:]})
+        publication=None;service=getattr(self,'publications',None)
+        if service:
+            publication_state=service.state(project_id)
+            publication=dict(connected=publication_state['connected'],auto_sync=bool((publication_state['link'] or {}).get('auto_sync')),jobs=[{k:j.get(k) for k in ['state','message','page_url','updated_at']} for j in publication_state['jobs'][:3]],chart_count=len((publication_state['report'] or {}).get('charts',[])))
         from project_session import context
         return dict(as_of=now(),shared_project_session=context(self.store,project_id),project_goal=root['metadata'].get('research_goal',root['title']),selected_node={k:selected[k] for k in ['id','title','kind','metadata','evidence']},
-            actual_session=state['session'],model_usage=state.get('usage'),current_runs=runs,recent_reports=[{**n,'content':n['content'][:6000]} for n in state['reports'][:3]],
+            actual_session=state['session'],model_usage=state.get('usage'),current_runs=runs,publication_status=publication,recent_reports=[{**n,'content':n['content'][:6000]} for n in state['reports'][:3]],
             actual_jobs=[{k:j[k] for k in ['id','state','phase','message']} for j in jobs],human_directions=state['directions'][:6],
             conversation=list(reversed(history)),user_message=user,reply_to=message['metadata'].get('reply_to'),mode=message['metadata']['mode'],direction_already_applied=message['metadata'].get('direction_applied'))
 
@@ -146,7 +150,7 @@ class ResearchChat:
                 error=(root/'progress.json')
                 raise ValueError(json.loads(error.read_text()).get('message','답변을 완료하지 못했습니다.') if error.exists() else '답변을 완료하지 못했습니다.')
             result=json.loads((root/'chat-response.json').read_text());reply=result['reply'];intent=result['intent']
-            if not isinstance(reply,str) or not reply.strip() or len(reply)>18000 or intent not in {'question','direction','pause','stop','investigate','execute'}:raise ValueError('대화 응답 형식이 올바르지 않습니다. 원본 로그를 보존했습니다.')
+            if not isinstance(reply,str) or not reply.strip() or len(reply)>18000 or intent not in {'question','direction','pause','stop','investigate','execute','report','publish'}:raise ValueError('대화 응답 형식이 올바르지 않습니다. 원본 로그를 보존했습니다.')
             if metadata['mode']=='auto' and intent!='question':
                 if intent=='direction':
                     revision=steering.snapshot(self.store,message['project_id'])['revision']
@@ -155,6 +159,14 @@ class ResearchChat:
                     else:
                         action=self.control.intervene(dict(node_id=message['node_id'],content=context['user_message'],apply_mode='next'))
                         metadata['direction_applied']=action['revision'];reply+='\n\n다음 작업에 반영할 방향 지시로 저장했습니다.'
+                elif intent in {'report','publish'}:
+                    service=getattr(self,'publications',None)
+                    try:
+                        if service is None:raise ValueError('결과 정리 서비스를 사용할 수 없습니다.')
+                        receipt=service.enqueue(message['project_id'],publish=intent=='publish')
+                        metadata['publication_job']=receipt['id']
+                        reply+='\n\n'+('Notion 정리를 요청했습니다.' if intent=='publish' else '보고서와 시각화 생성을 요청했습니다.')+' 결과 탭과 같은 프로젝트 대화에서 완료 여부를 확인할 수 있습니다.'
+                    except ValueError as error:reply+='\n\n'+str(error)
                 elif intent in {'investigate','execute'}:
                     try:
                         action=self.control.conversation_action(message['id'],message['node_id'],intent,context['user_message'],metadata['direction_revision_at_send'])

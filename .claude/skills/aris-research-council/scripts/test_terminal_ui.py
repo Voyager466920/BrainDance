@@ -198,7 +198,7 @@ class TerminalUITests(unittest.TestCase):
     def test_exit_leaves_every_tab_even_while_sending_without_posting_to_chat(self):
         from terminal_ui import SLASH
         self.assertIn('/exit',SLASH)
-        for tab in range(6):
+        for tab in range(7):
             async def exercise(ui,pipe):
                 ui.select_tab(tab);ui.sending=True
                 pipe.send_text('/exit\r')
@@ -244,12 +244,34 @@ class TerminalUITests(unittest.TestCase):
         async def exercise(ui,pipe):
             await self.wait_until(lambda:ui.editor.window.render_info is not None)
             start=ui.editor.window.render_info._y_offset
-            for index in range(6):
+            for index in range(7):
                 ui.select_tab(index);await asyncio.sleep(.04)
                 info=ui.editor.window.render_info
                 self.assertEqual(info._y_offset,start)
                 self.assertEqual(info._y_offset+info.window_height+1,ui.app.output.get_size().rows)
         self.scenario(exercise)
+
+    def test_notion_masked_setup_and_results_preserve_the_shared_input(self):
+        from notion_reports import NotionAPI
+        from test_notion_reports import RemoteFixture,PARENT,TOKEN
+        from prompt_toolkit.layout.processors import PasswordProcessor
+        remote=RemoteFixture()
+        async def exercise(ui,pipe):
+            draft='기존 연구 방향 유지';ui.editor.text=draft
+            await ui.notion_dialog()
+            fields=self.editable_fields(ui);self.assertEqual(len(fields),2)
+            fields[0].text=PARENT;fields[1].text=TOKEN
+            controls=[c for c in ui.app.layout.find_all_controls() if isinstance(c,BufferControl) and c.buffer is fields[1]]
+            self.assertTrue(any(isinstance(getattr(p,'processor',p),PasswordProcessor) for c in controls for p in c.input_processors))
+            next(b for b in ui.modal_buttons[-1] if b.text=='저장').handler()
+            await self.wait_until(lambda:not ui.modals)
+            await ui.report_action(False)
+            await self.wait_until(lambda:bool(self.server.publications.state(self.project['id'])['report']))
+            await ui.refresh();ui.render()
+            self.assertEqual(ui.tab,6);self.assertIn('결과 · Notion',ui.body.text)
+            self.assertEqual(ui.editor.text,draft)
+            self.assertTrue(all(m['role']!='user' for m in self.client.messages(self.project)))
+        with patch.object(NotionAPI,'request',autospec=True,side_effect=remote.request):self.scenario(exercise)
 
 
 if __name__=='__main__':unittest.main()

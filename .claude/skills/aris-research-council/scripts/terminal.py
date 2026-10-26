@@ -107,7 +107,7 @@ class Client:
             body=json.dumps(payload,ensure_ascii=False).encode()
         request=urllib.request.Request(self.url+path,data=body,headers=headers)
         try:
-            with self.opener.open(request,timeout=45 if path in {'/api/compute/probe','/api/providers','/api/providers/refresh'} else 8) as response:
+            with self.opener.open(request,timeout=45 if path in {'/api/compute/probe','/api/providers','/api/providers/refresh','/api/notion/configure'} else 8) as response:
                 data=response.read().decode('utf-8')
                 return json.loads(data) if 'application/json' in response.headers.get('Content-Type','') else data
         except urllib.error.HTTPError as error:
@@ -220,6 +220,8 @@ def parser():
     q=sub.add_parser('target',parents=[common]);q.add_argument('profile');q.add_argument('--devices',required=True);q.add_argument('--minutes',type=int,default=30)
     q=sub.add_parser('connection',parents=[common]);q.add_argument('alias');q.add_argument('--name')
     q=sub.add_parser('logs',parents=[common]);q.add_argument('kind',choices=['job','run']);q.add_argument('id')
+    q=sub.add_parser('report',parents=[common]);q.add_argument('action',choices=['status','build','open'],default='status',nargs='?')
+    q=sub.add_parser('notion',parents=[common]);q.add_argument('action',choices=['status','setup','sync','disconnect'],default='status',nargs='?');q.add_argument('--parent');q.add_argument('--auto',action=argparse.BooleanOptionalAction,default=None)
     return p
 
 
@@ -238,6 +240,25 @@ def dispatch(client,args,project=None):
     if command=='new':
         return client.request('/api/project',dict(name=args.name,goal=args.goal,compute=dict(profile_id=profile_for(client,args.target)['id'],device_ids=args.devices.split(','),max_parallel_runs=1,time_budget_minutes=args.minutes,auto_run=False)))
     project=client.project(args.project) if hasattr(args,'project') else project or client.project()
+    if command in {'report','notion'}:
+        query='?'+urllib.parse.urlencode(dict(project_id=project['id']))
+        if command=='report' and args.action=='build':return client.request('/api/reports/build',dict(project_id=project['id']))
+        if command=='notion' and args.action=='sync':return client.request('/api/notion/sync',dict(project_id=project['id']))
+        if command=='notion' and args.action=='disconnect':return client.request('/api/notion/disconnect',{})
+        if command=='notion' and args.action=='setup':
+            import getpass
+            state=client.request('/api/notion'+query);link=state.get('link') or {}
+            parent=args.parent or link.get('parent_id')
+            if not parent:raise ClientError('--parent에 결과를 저장할 Notion 페이지 URL을 입력하세요.')
+            if not sys.stdin.isatty():raise ClientError('Notion 토큰은 대화형 터미널의 숨김 입력이나 앱 설정에서 등록하세요.')
+            token=getpass.getpass('Notion 토큰 (입력 숨김, 기존 연결 유지 시 Enter): ')
+            return client.request('/api/notion/configure',dict(project_id=project['id'],parent=parent,token=token,auto_sync=args.auto if args.auto is not None else bool(link.get('auto_sync'))))
+        state=client.request('/api/reports'+query)
+        if command=='report' and args.action=='open':
+            if not state.get('report'):raise ClientError('먼저 report build로 보고서를 만들어 주세요.')
+            import webbrowser
+            webbrowser.open(client.url+'/api/reports/preview'+query)
+        return state
     if command=='status':
         state=client.control(project)
         jobs=client.request('/api/research?'+urllib.parse.urlencode(dict(project_id=project['id'])))['jobs']
@@ -280,7 +301,13 @@ def dispatch(client,args,project=None):
 
 def output(value,args,project=None):
     if getattr(args,'json',False):print(json.dumps(value,ensure_ascii=False,allow_nan=False));return
-    if args.command=='projects':
+    if args.command in {'report','notion'}:
+        if 'id' in value and 'state' in value:print('처리 대기 · 결과 탭 또는 report status로 확인하세요.')
+        elif value=={'connected':False}:print('Notion 연결을 해제했습니다.')
+        else:
+            from terminal_presenter import report_view
+            print(safe_text(report_view(value)))
+    elif args.command=='projects':
         for i,p in enumerate(value,1):print(str(i)+'. '+safe_text(p['title'])+'  '+p['id'])
         if not value:print('프로젝트가 없습니다. new 명령으로 추가하세요.')
     elif args.command=='status':print(status_text(project,value))
@@ -318,6 +345,7 @@ HELP='''/projects · /use 번호 또는 이름 · /new 이름 --goal "연구 목
 /limits --calls 총횟수 · /limits --tokens 총토큰
 /ask 질문 · /next 다음 단계 지시 · /restart 중지 후 재준비 지시
 /reply job:ID 메시지 · /logs job|run ID · /exit (종료)
+/report status|build|open · /notion status|setup|sync|disconnect
 그냥 입력하면 같은 프로젝트 대화로 전송됩니다. Enter 전송 · Alt+Enter 줄바꿈.'''
 
 
@@ -401,7 +429,7 @@ class Console:
         def newline(event):event.current_buffer.insert_text('\n')
         colored=not getattr(self.args,'no_color',False) and 'NO_COLOR' not in os.environ and os.environ.get('TERM')!='dumb'
         style=Style.from_dict({'prompt':'#7bb594','toolbar':'#899c91'}) if colored else Style.from_dict({})
-        session=PromptSession(key_bindings=kb,completer=WordCompleter(['/projects','/use','/new','/status','/history','/tree','/connections','/devices','/target','/auto','/limits','/ask','/next','/restart','/reply','/logs','/exit','/quit','/help']),complete_while_typing=False,style=style)
+        session=PromptSession(key_bindings=kb,completer=WordCompleter(['/projects','/use','/new','/status','/history','/tree','/connections','/devices','/target','/auto','/limits','/ask','/next','/restart','/reply','/logs','/report','/notion','/exit','/quit','/help']),complete_while_typing=False,style=style)
         self.prompt_session=session
         print('/help 도움말 · /exit 종료 (연구 작업은 유지)')
         selector=getattr(self.args,'project',None)
