@@ -178,6 +178,39 @@ class ResearchEngine:
         self.thread.start()
         return record
 
+    def can_retry(self,record):
+        root=Path(record['run_dir']);folder=root/'council'
+        if record['state'] not in {'failed','interrupted'} or record['config'].get('task')!='research':return False
+        if 'Token admission budget exhausted before dispatch' not in (record.get('error') or record.get('message','')):return False
+        if not all((folder/name).is_file() for name in ['config.json','run-inputs.json','run-state.json','usage.json','status.json']):return False
+        return not json.loads((folder/'run-state.json').read_text()).get('tree_commit_started') and json.loads((folder/'status.json').read_text()).get('status')!='completed'
+
+    def retry(self,job_id):
+        """Resume an uncommitted Council admission stop, retaining calls and evidence."""
+        with self.lock:
+            record=self.get(job_id);self.store.get_node(record['node_id'])
+            if self.closed.is_set() or self.active_id is not None or not self.can_retry(record):raise ValueError('이 작업은 기존 Council 호출을 안전하게 재개할 수 없습니다.')
+            root=Path(record['run_dir'])
+            if root.is_symlink() or root.absolute()!=self.root/record['id']:raise ValueError('관리되는 연구 폴더가 아닙니다.')
+            config=dict(record['config'])
+            if config.get('session_budget'):
+                from session_budget import update
+                update(config['session_budget'],'check')
+            attempt=int(config.get('resume_attempt',0))+1;archive=root/'attempts'/str(attempt);archive.mkdir(parents=True)
+            for name in ['job.json','progress.json','worker.stdout.log','worker.stderr.log','error.log','council/error.log']:
+                source=root/name
+                if source.is_file():
+                    target=archive/name;target.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(source,target)
+            config.update(resume_existing=True,resume_attempt=attempt)
+            from council import dump
+            dump(root/'job.json',config);(root/'progress.json').unlink(missing_ok=True)
+            record.update(config=config,state='queued',phase='preflight',message='완료된 Council 호출을 재사용해 중단 지점부터 이어갑니다.',finished_at=None,error=None)
+            with self.store._connect() as conn:
+                conn.execute('UPDATE research_jobs SET config=?,state=?,phase=?,message=?,finished_at=NULL,error=NULL,updated_at=? WHERE id=?',(json.dumps(config,ensure_ascii=False),record['state'],record['phase'],record['message'],now(),job_id))
+                self.store._event(conn,record['node_id'],'research_retry',dict(job_id=job_id,attempt=attempt))
+            self.active_id=job_id;self.cancel=threading.Event();self.thread=threading.Thread(target=self._execute,args=(record,),daemon=True)
+        self.thread.start();return record
+
     def _update(self,job_id,data):
         state=data.get('state','running')
         if state not in {'queued','running',*TERMINAL}:return

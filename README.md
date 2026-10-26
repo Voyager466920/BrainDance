@@ -138,6 +138,8 @@ Use the project header **한도** (Limits) button to increase an existing run’
 
 ## Project automatic mode
 
+Automatic research uses one shared project token ledger across literature, Council, code generation, review and analysis; standalone mode presets do not impose a second independent token stop inside that session. The configured project limit and recorded usage are retained. Admission uses estimates, so an in-flight provider response can exceed its reservation; subsequent calls stop at the shared limit. Resuming a pre-commit Council admission stop reuses the same verified evidence and completed model receipts instead of rerunning them. The original job ID, model session, charges and prior failure logs are preserved; ambiguous partial calls and already-committed trees are not automatically replayed.
+
 Each project tile has its own **자동모드** control, visible even when collapsed. Every new session starts paper discovery and hypothesis review at the project root, even when hypotheses already exist, then continues through experiment design, code authoring/review, self-tests, execution, analysis and a next-experiment decision.
 
 Starting a session authorizes reviewed LLM-generated code on the selected project devices within the existing runtime budget; per-experiment human approval is unnecessary. Later iterations reuse the discovery evidence and actual result reports. Configure maximum experiments, model invocations, token admission budget, research mode and an optional target-side reference directory.

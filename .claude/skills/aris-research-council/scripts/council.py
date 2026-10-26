@@ -166,7 +166,7 @@ class Budget:
         with self.lock:
             if self.calls + calls > self.config["max_model_calls"]:
                 raise RuntimeError("Model invocation budget exhausted before dispatch")
-            if self.observed_tokens + estimated_tokens > self.config["token_budget"]:
+            if not self.config.get('session_budget') and self.observed_tokens + estimated_tokens > self.config["token_budget"]:
                 raise RuntimeError("Token admission budget exhausted before dispatch")
             if self.config.get('session_budget'):
                 from session_budget import update
@@ -185,9 +185,12 @@ class Budget:
             self.save()
 
     def save(self):
+        shared=self.config.get('session_budget')
+        limit=read_json(shared)['token_budget'] if shared else self.config['token_budget']
         dump(self.path, dict(model_invocations_reserved=self.calls,
                              observed_tokens=self.observed_tokens,
-                             token_budget=self.config["token_budget"],
+                             token_budget=limit,stage_default_token_budget=self.config['token_budget'],
+                             budget_scope='project_session' if shared else 'standalone',
                              budget_semantics="Admission estimate and stop between stages; in-flight calls may exceed token budget. Not a provider hard token or spend cap.",
                              records=self.records))
 

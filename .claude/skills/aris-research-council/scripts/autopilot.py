@@ -113,12 +113,15 @@ class Autopilot:
             else:
                 if item['status'] not in {'paused','blocked'}:raise ValueError('일시정지 또는 필요한 항목을 해결한 실행을 재개하세요.')
                 p=item['progress']
+                if p.get('job_id'):
+                    prior=self.research.get(p['job_id'])
+                    if self.research.can_retry(prior):self.research.retry(prior['id']);p.update(phase='job',run_id=None)
                 # A resume is explicit permission to prepare a replacement for an interrupted/blocked job.
                 if p.get('job_id') and self.research.get(p['job_id'])['state'] in {'interrupted','cancelled','failed'}:p.update(phase='prepare',job_id=None)
                 if p.get('run_id') and self.experiments.run_info(p['run_id'])['state'] in {'interrupted','blocked','cancelled'}:p.update(phase='prepare',run_id=None)
                 if item['status']=='blocked' and p.get('job_id'):
                     prior=self.research.get(p['job_id'])
-                    reusable=prior['state']=='completed' and prior['phase'] in {'experiment_approval','analyzed'}
+                    reusable=prior['state'] in {'queued','running'} or (prior['state']=='completed' and prior['phase'] in {'experiment_approval','analyzed'})
                     if not reusable:p.update(phase='prepare',job_id=None,run_id=None)
                 self.save(item,'running','남은 예산에서 자동모드를 재개합니다.')
             return self.state(project_id)
