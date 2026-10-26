@@ -82,6 +82,31 @@ class AutomaticTests(unittest.TestCase):
         first=tree['research_jobs'][0];self.assertIsNone(first['config']['reuse_literature'])
         self.assertEqual(first['node_id'],self.node['id'])
 
+    def test_research_reuse_requires_project_receipts_and_active_hypotheses(self):
+        for value in [True,'yes']:
+            with self.assertRaises(ValueError):self.start(reuse_research=value)
+        self.assertEqual(self.automatic.sessions(self.node['project_id']),[])
+        self.start();self.drive()
+        self.store.update_node(self.hyp['id'],status='held')
+        with self.assertRaisesRegex(ValueError,'활성 가설'):self.start(reuse_research=True)
+        self.assertEqual(len(self.automatic.sessions(self.node['project_id'])),1)
+
+    def test_research_reuse_skips_discovery_but_reauthors_and_preserves_prior_costs(self):
+        original=self.start();self.drive()
+        old_ledger=Path(original['config']['session_budget']);before=old_ledger.read_bytes()
+        old_jobs=self.research.list(self.node['project_id'])['jobs'];original_research=next(j for j in old_jobs if j['config']['task']=='research')
+        assignment=dict(self.compute.state()['assignments'][self.node['project_id']])
+        second=self.start(reuse_research=True)
+        self.assertEqual(second['progress']['research_job_id'],original_research['id'])
+        self.assertTrue(second['progress']['discovery_completed'])
+        final=self.drive();self.assertEqual(final['status'],'completed')
+        new_jobs=[j for j in self.research.list(self.node['project_id'])['jobs'] if j['config'].get('auto_session_id')==second['id']]
+        self.assertEqual(sorted(j['config']['task'] for j in new_jobs),['analyze','analyze','draft','draft'])
+        self.assertEqual(old_ledger.read_bytes(),before)
+        self.assertEqual(self.compute.state()['assignments'][self.node['project_id']],assignment)
+        self.assertNotEqual(original['id'],second['id'])
+        self.assertEqual(len(self.store.export_json()['experiment_runs']),4)
+
     def test_direction_reaches_real_job_context_and_old_plan_is_rejected(self):
         plan=self.experiments.create(dict(node_id=self.hyp['id'],title='old plan',code='print(1)',timeout_seconds=1),provenance=dict(direction_revision=0))
         self.automatic.intervene(dict(node_id=self.hyp['id'],content='Use a new control and report p95.',apply_mode='next'))

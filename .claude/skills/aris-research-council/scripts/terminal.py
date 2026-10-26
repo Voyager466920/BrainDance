@@ -215,7 +215,7 @@ def parser():
     q=sub.add_parser('history',parents=[common]);q.add_argument('--full',action='store_true');q.add_argument('--last',type=int,default=10)
     q=sub.add_parser('chat',parents=[common]);q.add_argument('message');q.add_argument('--mode',choices=['auto','ask','next','restart'],default='auto');q.add_argument('--no-wait',action='store_true');q.add_argument('--timeout',type=int,default=300);q.add_argument('--request-id');q.add_argument('--reply-to',help='job:ID, session:ID 또는 run:ID')
     q=sub.add_parser('limits',parents=[common]);q.add_argument('--calls',type=int);q.add_argument('--tokens',type=int)
-    q=sub.add_parser('auto',parents=[common]);q.add_argument('action',choices=['start','pause','resume','stop']);q.add_argument('--cycles',type=int,default=3);q.add_argument('--calls',type=int,default=40);q.add_argument('--tokens',type=int,default=1500000);q.add_argument('--context',default='');q.add_argument('--mode',choices=['lite','balanced','deep'],default='balanced')
+    q=sub.add_parser('auto',parents=[common]);q.add_argument('action',choices=['start','pause','resume','stop']);q.add_argument('--cycles',type=int,default=3);q.add_argument('--calls',type=int,default=40);q.add_argument('--tokens',type=int,default=1500000);q.add_argument('--context',default='');q.add_argument('--mode',choices=['lite','balanced','deep'],default='balanced');q.add_argument('--reuse-research',action='store_true',help='Reuse this project\'s completed Council and verified literature; re-author and review the next experiment')
     q=sub.add_parser('new',parents=[common]);q.add_argument('name');q.add_argument('--goal',required=True);q.add_argument('--target',default='local');q.add_argument('--devices',default='cpu');q.add_argument('--minutes',type=int,default=30)
     q=sub.add_parser('target',parents=[common]);q.add_argument('profile');q.add_argument('--devices',required=True);q.add_argument('--minutes',type=int,default=30)
     q=sub.add_parser('connection',parents=[common]);q.add_argument('alias');q.add_argument('--name')
@@ -280,7 +280,9 @@ def dispatch(client,args,project=None):
         return client.request('/api/control/automatic',dict(project_id=project['id'],action='limits',session_id=state['session']['id'],max_model_calls=args.calls if args.calls is not None else state['usage']['max_calls'],token_budget=args.tokens if args.tokens is not None else state['usage']['token_budget']))
     if command=='auto':
         payload=dict(project_id=project['id'],action=args.action)
-        if args.action=='start':payload.update(max_cycles=args.cycles,max_model_calls=args.calls,token_budget=args.tokens,context_path=args.context,mode=args.mode)
+        if args.action=='start':
+            payload.update(max_cycles=args.cycles,max_model_calls=args.calls,token_budget=args.tokens,context_path=args.context,mode=args.mode)
+            if args.reuse_research:payload['reuse_research']=True
         return client.request('/api/control/automatic',payload)
     if command=='chat':
         text=sys.stdin.read() if args.message=='-' else args.message;reference=None

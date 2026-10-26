@@ -74,7 +74,7 @@ class Autopilot:
                 (item['status'],item['message'],json.dumps(item['progress']),now(),item['id']))
 
     def control(self,payload):
-        if set(payload)-{'project_id','action','max_cycles','max_model_calls','token_budget','context_path','mode','session_id'}:raise ValueError('지원하지 않는 자동모드 설정입니다.')
+        if set(payload)-{'project_id','action','max_cycles','max_model_calls','token_budget','context_path','mode','session_id','reuse_research'}:raise ValueError('지원하지 않는 자동모드 설정입니다.')
         project_id=payload['project_id'];action=payload['action'];root=self.root(project_id);self.store.get_node(root['id'])
         if action not in {'start','pause','resume','stop','limits'}:raise ValueError('자동모드 동작을 확인하세요.')
         with self.lock:
@@ -96,16 +96,28 @@ class Autopilot:
                     if type(value) is not int or not low<=value<=high:raise ValueError('자동모드 한도 범위를 확인하세요.')
                 context=payload.get('context_path','');mode=payload.get('mode','balanced')
                 if not isinstance(context,str) or len(context)>2048 or '\x00' in context or '\n' in context or mode not in {'lite','balanced','deep'}:raise ValueError('참고 폴더·연구 모드를 확인하세요.')
+                reuse=payload.get('reuse_research',False)
+                if type(reuse) is not bool:raise ValueError('연구 재사용 설정은 true 또는 false여야 합니다.')
+                previous=None
+                if reuse:
+                    for candidate in self.research.list(project_id)['jobs']:
+                        folder=Path(candidate['run_dir'])
+                        status=folder/'council/status.json';evidence=folder/'literature/verified-evidence.json';receipt=folder/'literature-usage.json'
+                        if candidate['config'].get('task')=='research' and status.is_file() and evidence.is_file() and receipt.is_file() and json.loads(status.read_text()).get('status')=='completed' and json.loads(receipt.read_text()).get('skill_invoked'):
+                            previous=candidate;break
+                    if not previous or not self.has_hypotheses(project_id):raise ValueError('재사용할 완료된 Council·검증된 논문 근거와 활성 가설이 없습니다.')
                 profile,assignment=self.experiments._resources(root)
                 sid=str(uuid.uuid4());path=self.research.root/('automatic-'+sid);path.mkdir(mode=0o700)
                 ledger=path/'session-budget.json';ledger.write_text(json.dumps(dict(calls=0,max_calls=calls,token_budget=tokens,charges={})))
                 item=dict(id=sid,project_id=project_id,node_id=root['id'],status='running',message='자동 연구를 시작합니다.',
-                    config=dict(scope='project',pipeline='discovery-to-results',max_cycles=cycles,mode=mode,context_path=context,resource_signature=resource_signature(profile,assignment),
+                    config=dict(scope='project',pipeline='discovery-to-results',max_cycles=cycles,mode=mode,context_path=context,resource_signature=resource_signature(profile,assignment),reuse_research=reuse,
                                 session_budget=str(ledger)),progress=dict(phase='prepare',discovery_completed=False,cycles=0,revision=steering.snapshot(self.store,project_id)['revision'],code_hashes=[],failures=0),created_at=now(),updated_at=now())
+                if previous:item['progress'].update(discovery_completed=True,research_job_id=previous['id'])
                 with self.store._connect() as conn:
                     conn.execute('INSERT INTO automatic_sessions VALUES(?,?,?,?,?,?,?,?,?)',tuple(json.dumps(v) if k in {'config','progress'} else v for k,v in item.items()))
                     self.store._event(conn,root['id'],'automatic_authorized',dict(session_id=sid,limits=item['config'],scope='reviewed LLM-generated code on the selected project resources'))
                 self.store.add_note(root['id'],'memo','자동모드 시작','설정한 장치·시간·모델 한도 내에서 검토된 LLM 실험을 매번 승인하지 않고 실행합니다. 세션: '+sid)
+                if previous:self.store.add_note(root['id'],'memo','완료된 연구 재사용','논문·Council 결과를 재사용하고 현재 지시·장치로 실행 코드를 다시 작성·검토합니다. 이전 사용량과 실행 기록은 보존됩니다. 연구: '+previous['id'])
             elif not item:raise ValueError('자동모드를 먼저 시작하세요.')
             elif action=='pause':self.save(item,'paused','현재 작업 뒤 대기합니다. 새 실험은 시작하지 않습니다.')
             elif action=='stop':
