@@ -299,7 +299,9 @@ def output(value,args,project=None):
     elif args.command=='devices':
         print('연결됨' if value.get('connected') else '연결 실패')
         if value.get('error'):print(safe_text(value['error']))
-        for device in value.get('devices',[]):print(safe_text(device.get('name',device['id']))+' · '+safe_text(device['id']))
+        for device in value.get('devices',[]):
+            prefix='GPU '+str(device['index'])+' · ' if type(device.get('index')) is int else ''
+            print(prefix+safe_text(device.get('name',device['id']))+' · '+safe_text(device['id']))
     elif args.command=='new':print('프로젝트 생성: '+safe_text(value['node']['metadata']['project_name'])+' · '+value['project_id'])
     elif args.command=='connection':print('연결 등록: '+safe_text(value['name'])+' · '+value['id'])
     elif args.command=='target':print('실행 환경 저장: '+safe_text(value['profile_id'])+' · '+safe_text(', '.join(value['device_ids'])))

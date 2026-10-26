@@ -78,6 +78,20 @@ def clip_cells(value,width):
     return result+'…' if width>0 else ''
 
 
+def wrap_cells(text,width):
+    """Physical terminal rows, including CJK, so scrolling is independent of wrapping."""
+    width=max(2,width);rows=[]
+    for line in text.expandtabs(4).split('\n'):
+        row='';used=0
+        for char in line:
+            size=get_cwidth(char)
+            if used+size>width:
+                rows.append(row);row='';used=0
+            row+=char;used+=size
+        rows.append(row)
+    return '\n'.join(rows)
+
+
 def clock(value):
     try:return datetime.fromisoformat(str(value).replace('Z','+00:00')).astimezone().strftime('%m/%d %H:%M')
     except (ValueError,TypeError):return '—'

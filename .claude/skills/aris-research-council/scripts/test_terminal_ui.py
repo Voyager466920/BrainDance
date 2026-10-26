@@ -30,6 +30,8 @@ class TerminalPresentationTests(unittest.TestCase):
         compute=dict(profiles=[dict(id='remote',name='Test SSH',kind='ssh')],assignments={'p':dict(profile_id='remote',device_ids=['GPU-test'])},
             inventories={'remote':dict(connected=True,hostname='fixture-node',checked_at='2026-10-26T00:00:00+00:00',devices=[dict(id='cpu',name='CPU'),dict(id='GPU-test',name='Test GPU',kind='cuda',index=4)])})
         self.assertIn('GPU 4',resource_info(compute,'p')['text']);self.assertIn('fixture-node',resource_info(compute,'p')['text'])
+        compute['inventories']['remote']['devices'][1]['index']=0
+        self.assertIn('GPU 0',resource_info(compute,'p')['text']);self.assertNotIn('GPU 1',resource_info(compute,'p')['text'])
         del compute['inventories']['remote']['devices'][1]['index']
         self.assertIn('번호 미확인',resource_info(compute,'p')['text']);self.assertNotIn('GPU 0',resource_info(compute,'p')['text'])
 
@@ -200,6 +202,42 @@ class TerminalUITests(unittest.TestCase):
             ui.select_tab(3);ui.render();ui.code_dialog()
             buffers=[c.buffer for c in ui.app.layout.find_all_controls() if isinstance(c,BufferControl)]
             self.assertTrue(any(b.text==code for b in buffers))
+        self.scenario(exercise)
+
+    def test_wheel_scrolls_wrapped_korean_history_without_moving_input_or_jumping_on_reports(self):
+        message=self.server.chat.send(dict(node_id=self.client.root(self.project)['id'],content='Scroll history fixture',mode='ask',request_id='scroll-history-fixture-001'))
+        paragraph='관측 신선도와 비동기 추론 지연을 측정한 기록입니다. ' * 220
+        self.server.chat.finish(message['id'],paragraph,'completed',message['metadata'])
+        async def exercise(ui,pipe):
+            await self.wait_until(lambda:ui.body.window.render_info is not None and ui.body.window.vertical_scroll>0)
+            old=ui.body.window.vertical_scroll;input_y=ui.editor.window.render_info._y_offset
+            draft='새 실험 방향을 작성 중';ui.editor.text=draft
+            event=MouseEvent(Point(10,3),MouseEventType.SCROLL_UP,MouseButton.NONE,frozenset())
+            ui.body.control.mouse_handler(event)
+            await self.wait_until(lambda:ui.body.window.render_info.vertical_scroll<old)
+            stopped=ui.body.window.vertical_scroll
+            pipe.send_text('\x1b[5~')
+            await self.wait_until(lambda:ui.body.window.render_info.vertical_scroll<stopped)
+            stopped=ui.body.window.vertical_scroll
+            self.assertFalse(ui.follow);self.assertEqual(ui.editor.text,draft)
+            self.assertIs(ui.app.layout.current_control,ui.editor.control)
+            self.server.store.add_note(self.client.root(self.project)['id'],'analysis','New report during scroll','REPORT_WHILE_READING')
+            await ui.refresh();ui.app.invalidate();await asyncio.sleep(.05)
+            self.assertEqual(ui.body.window.vertical_scroll,stopped);self.assertEqual(ui.editor.window.render_info._y_offset,input_y)
+            self.assertTrue(ui.unread)
+            ui.bottom();await self.wait_until(lambda:ui.body.window.render_info.bottom_visible)
+            self.assertTrue(ui.follow);self.assertEqual(ui.editor.text,draft)
+        self.scenario(exercise)
+
+    def test_input_remains_at_terminal_bottom_across_every_tab(self):
+        async def exercise(ui,pipe):
+            await self.wait_until(lambda:ui.editor.window.render_info is not None)
+            start=ui.editor.window.render_info._y_offset
+            for index in range(6):
+                ui.select_tab(index);await asyncio.sleep(.04)
+                info=ui.editor.window.render_info
+                self.assertEqual(info._y_offset,start)
+                self.assertEqual(info._y_offset+info.window_height+1,ui.app.output.get_size().rows)
         self.scenario(exercise)
 
 

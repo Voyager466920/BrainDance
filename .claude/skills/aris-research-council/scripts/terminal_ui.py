@@ -17,17 +17,17 @@ from prompt_toolkit.document import Document
 from prompt_toolkit.filters import Condition,has_focus,has_completions
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.key_binding.bindings.focus import focus_next,focus_previous
-from prompt_toolkit.layout import Layout,HSplit,VSplit,Window,Float,FloatContainer,ConditionalContainer
+from prompt_toolkit.layout import Layout,HSplit,VSplit,Window,Float,FloatContainer,ConditionalContainer,DynamicContainer
 from prompt_toolkit.layout.controls import FormattedTextControl
 from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.layout.menus import CompletionsMenu
 from prompt_toolkit.mouse_events import MouseEventType
 from prompt_toolkit.styles import Style
-from prompt_toolkit.widgets import TextArea,Label,Button,Dialog,RadioList,CheckboxList,Box
+from prompt_toolkit.widgets import TextArea,Label,Button,Dialog,RadioList,CheckboxList,Box,Frame
 
 from terminal import LOGO_ASSETS,ClientError,parser,dispatch,safe_text
 from terminal_presenter import (STATES,readable,short,clock,duration,provider_line,device_label,
-    resource_info,phase_status,conversation,progress_view,idea_view,plan_view,run_view,clip_cells,connection_error)
+    resource_info,phase_status,conversation,progress_view,idea_view,plan_view,run_view,clip_cells,wrap_cells,connection_error)
 
 TABS=['대화','진행','아이디어','계획','실험','설정']
 MODES=[('auto','대화'),('ask','질문만'),('next','다음 방향'),('restart','중지 후 재준비')]
@@ -47,14 +47,18 @@ class ResearchTerminal:
         self.tree={};self.compute={};self.providers={};self.state={};self.messages=[];self.experiments={};self.jobs=[];self.job_info=None;self.run_info=None
         self.projects=[];self.drafts={};self.pending={};self.welcome=not getattr(args,'no_banner',False);self.follow=True;self.unread=False;self.initialized=False;self.error='';self.transport_error='';self.notice=''
         self.sending=False;self.probing=set();self.modals=[];self.modal_buttons=[];self.modal_task=None;self.resource_form=None;self.last_probe={};self.wakeup=asyncio.Event()
-        self.body=TextArea(read_only=True,scrollbar=True,wrap_lines=True,focusable=True,style='class:body')
+        self.body=TextArea(read_only=True,scrollbar=True,wrap_lines=False,focusable=True,focus_on_click=True,style='class:body')
+        self._original_body_mouse=self.body.control.mouse_handler
+        self.body.control.mouse_handler=self.body_mouse
         self.idea_list=RadioList([('','아이디어 없음')],show_scrollbar=True,select_on_focus=True)
         self.plan_list=RadioList([('','계획 없음')],show_scrollbar=True,select_on_focus=True)
         self.run_list=RadioList([('','실험 없음')],show_scrollbar=True,select_on_focus=True)
+        for listing in (self.idea_list,self.plan_list,self.run_list):
+            listing.window.dont_extend_height=lambda:False
         self.editor=TextArea(height=3,multiline=True,wrap_lines=True,prompt=' › ',style='class:input',
             completer=WordCompleter(SLASH),complete_while_typing=Condition(lambda:self.editor.text.startswith('/')),scrollbar=True,name='project-input')
         self.editor.buffer.on_text_changed+=self._typing
-        self.help_text='탭: Ctrl+B → 1–6 / N·P  ·  프로젝트: Ctrl+P  ·  Enter 전송 / Alt+Enter 줄바꿈'
+        self.help_text='Ctrl+B→1–6 탭 · 휠/PgUp·PgDn 스크롤 · Enter 전송 · Alt+Enter 줄바꿈'
         self._build(input,output)
 
     def _typing(self,_):
@@ -77,8 +81,8 @@ class ResearchTerminal:
         kb.add('enter',filter=normal & has_focus(self.editor))(lambda event:self.accept())
         for keys in [('escape','enter'),('c-j',)]:
             kb.add(*keys,filter=normal & has_focus(self.editor))(lambda event:self.editor.buffer.insert_text('\n'))
-        kb.add('pageup',filter=normal)(lambda event:self.scroll(-12))
-        kb.add('pagedown',filter=normal)(lambda event:self.scroll(12))
+        kb.add('pageup',filter=normal)(lambda event:self.scroll_page(-1))
+        kb.add('pagedown',filter=normal)(lambda event:self.scroll_page(1))
         kb.add('c-b','g',filter=normal)(lambda event:self.bottom())
         kb.add('c-b','G',filter=normal)(lambda event:self.bottom())
         @kb.add('c-c')
@@ -99,8 +103,15 @@ class ResearchTerminal:
             ConditionalContainer(Box(self.idea_list,padding=0),Condition(lambda:self.tab==2)),
             ConditionalContainer(Box(self.plan_list,padding=0),Condition(lambda:self.tab==3)),
             ConditionalContainer(Box(self.run_list,padding=0),Condition(lambda:self.tab==4)),
-        ],width=Dimension(min=16,preferred=25,max=32))
-        content=VSplit([ConditionalContainer(lists,Condition(lambda:self.tab in {2,3,4})),self.body],padding=1)
+        ])
+        sidebar=Frame(Box(lists,padding=0,style='class:sidebar'),title=lambda:{2:'아이디어 목록',3:'계획 목록',4:'실험 목록'}.get(self.tab,''),width=28,style='class:sidebar-frame')
+        detail=Frame(Box(self.body,padding=0,style='class:detail'),title=self.detail_title,style='class:detail-frame')
+        split=VSplit([sidebar,detail],padding=1)
+        content=DynamicContainer(lambda:split if self.tab in {2,3,4} else detail)
+        composer=Frame(HSplit([
+            Window(FormattedTextControl(self.composer_fragments),height=1,style='class:composer-mode'),
+            VSplit([self.editor,Button('전송',handler=self.accept,width=8)],padding=1),
+        ]),title='프로젝트 대화',height=6,style='class:composer-frame')
         root=HSplit([
             Window(FormattedTextControl(self.header),height=1,style='class:header'),
             Window(FormattedTextControl(lambda:provider_line(self.providers,compact=True)),height=1,style='class:muted'),
@@ -109,19 +120,21 @@ class ResearchTerminal:
             Window(FormattedTextControl(self.issue_fragments),height=1,style='class:notice'),
             content,*self.controls,
             Window(FormattedTextControl(self.tab_fragments,focusable=True,show_cursor=False),height=1,style='class:tabs'),
-            Window(FormattedTextControl(self.composer_fragments),height=1,style='class:muted'),
-            VSplit([self.editor,Button('전송',handler=self.accept,width=8)],padding=1),
             Window(FormattedTextControl(lambda:self.notice or self.help_text),height=1,style='class:muted'),
+            composer,
         ])
         self.container=FloatContainer(root,[Float(xcursor=True,ycursor=True,content=CompletionsMenu(max_height=8,scroll_offset=0,extra_filter=has_focus(self.editor)))])
         colored=not getattr(self.args,'no_color',False) and 'NO_COLOR' not in os.environ
         style=Style.from_dict({
-            '':'bg:#101715 #d1d8d5',
-            'header':'bold #b8cfc0','body':'#d1d8d5','input':'bg:#17241f #d1d8d5',
+            '':'bg:#0c141b #d1d8d5',
+            'header':'bold bg:#13232c #b8cfc0','body':'bg:#101b24 #d1d8d5','input':'bg:#172e25 #d6e4db',
+            'sidebar':'bg:#003f5f #b4cbd7','sidebar-frame':'bg:#003f5f #6fa7c5',
+            'detail':'bg:#101b24 #d1d8d5','detail-frame':'bg:#101b24 #537886',
+            'composer-frame':'bg:#14291f #75a98d','composer-mode':'bg:#14291f #9fc7ae',
             'progress':'#8fbc9c','muted':'#87998e','notice':'#d3bd82','tabs':'#83978a',
             'tab.active':'bold bg:#304638 #c9ddce','button':'#a8c5b0','button.focused':'bold bg:#304638 #e3ece5',
             'dialog':'bg:#17241f','dialog.body':'bg:#17241f #d1d8d5','dialog shadow':'bg:#101715',
-            'radio-selected':'bold #c1d8c8','checkbox-selected':'bold #c1d8c8',
+            'radio-selected':'bold bg:#315f83 #e1edf2','radio-checked':'bg:#214d66 #bfd6e2','checkbox-selected':'bold #c1d8c8',
             'completion-menu.completion':'bg:#17241f #a8c5b0','completion-menu.completion.current':'bold bg:#304638 #e3ece5',
         }) if colored else Style.from_dict({})
         self.app=Application(layout=Layout(self.container,focused_element=self.editor),key_bindings=kb,
@@ -135,6 +148,12 @@ class ResearchTerminal:
     def buttons(self,items):return VSplit([Button(text,handler=lambda f=handler:self.invoke(f),width=max(10,len(text)*2+2)) for text,handler in items],padding=1,height=1)
 
     def header(self):return ' BrainDance  /  '+safe_text(self.project['title'] if self.project else '프로젝트 선택')
+
+    def detail_title(self):
+        title={0:'대화',1:'진행 상황',2:'아이디어 상세',3:'계획 상세',4:'실험 상세',5:'설정'}.get(self.tab,'')
+        result=[('class:header',title+' '),('class:button',' ↑ ',self.click(lambda:self.scroll(-6))),('class:button',' ↓ ',self.click(lambda:self.scroll(6)))]
+        if self.tab==0:result.append(('class:button',' 최신 ',self.click(self.bottom)))
+        return result
 
     def progress_header(self):
         if not self.project:return ' 대화에서 연구를 시작하고 아래 탭으로 기록을 확인하세요.'
@@ -188,17 +207,41 @@ class ResearchTerminal:
     def cycle_mode(self):self.mode=(self.mode+1)%len(MODES);self.app.invalidate()
     def clear_scope(self):self.scope=None;self.reply_to=None;self.app.invalidate()
 
+    def scroll_page(self,direction):
+        info=self.body.window.render_info
+        self.scroll(direction*max(1,(info.window_height if info else 8)-1))
+
     def scroll(self,delta):
-        if self.tab==0:self.follow=False
-        buffer=self.body.buffer;row=buffer.document.cursor_position_row
-        row=max(0,min(buffer.document.line_count-1,row+delta))
+        buffer=self.body.buffer;window=self.body.window;info=window.render_info
+        height=max(1,info.window_height if info else 8)
+        if self.tab==0:
+            self.follow=False
+            if self.welcome:
+                self.welcome=False;self.render()
+                window.vertical_scroll=max(0,buffer.document.line_count-height)
+        maximum=max(0,buffer.document.line_count-height)
+        top=max(0,min(maximum,window.vertical_scroll+delta))
+        row=top if delta<0 else min(buffer.document.line_count-1,top+height-1)
         buffer.cursor_position=buffer.document.translate_row_col_to_index(row,0)
+        window.vertical_scroll=top
+        if self.tab==0 and delta>0 and top==maximum:self.follow=True;self.unread=False
+        self.app.invalidate()
+
+    def body_mouse(self,event):
+        if event.event_type in {MouseEventType.SCROLL_UP,MouseEventType.SCROLL_DOWN}:
+            self.scroll(-3 if event.event_type==MouseEventType.SCROLL_UP else 3)
+            return None
+        if self.tab==0 and event.event_type==MouseEventType.MOUSE_DOWN:self.follow=False
+        return self._original_body_mouse(event)
 
     def bottom(self):
-        self.follow=True;self.unread=False;self.body.buffer.cursor_position=len(self.body.text)
+        self.follow=True;self.unread=False
+        if self.tab==0 and self.welcome:self.welcome=False;self.render()
+        self.body.buffer.cursor_position=len(self.body.text);self.app.invalidate()
 
     def update_body(self,text,follow=False):
-        text=safe_text(text)
+        width=self.app.output.get_size().columns-3-(29 if self.tab in {2,3,4} else 0)
+        text=wrap_cells(safe_text(text),width)
         if text==self.body.text:return
         cursor=len(text) if follow else min(self.body.buffer.cursor_position,len(text))
         self.body.buffer.set_document(Document(text,cursor_position=cursor),bypass_readonly=True)
