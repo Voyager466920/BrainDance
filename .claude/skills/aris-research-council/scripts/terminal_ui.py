@@ -185,10 +185,28 @@ class ResearchTerminal:
             'composer-frame':'bg:#14291f #75a98d','composer-mode':'bg:#14291f #9fc7ae',
             'progress':'#8fbc9c','muted':'#87998e','notice':'#d3bd82','tabs':'#83978a',
             'tab.active':'bold bg:#304638 #c9ddce','button':'#a8c5b0','button.focused':'bold bg:#304638 #e3ece5',
-            'dialog':'bg:#17241f','dialog.body':'bg:#17241f #d1d8d5','dialog shadow':'bg:#101715',
+            'dialog':'bg:#17241f #d1d8d5','dialog.body':'bg:#17241f #d1d8d5','dialog shadow':'bg:#101715',
+            # Override widget defaults too: their gray background otherwise wins
+            # over the dialog color and leaves inherited light text unreadable.
+            'dialog.body text-area':'bg:#0c191f #e4eee9',
+            'dialog.body text-area last-line':'nounderline',
+            'dialog frame.label':'bold #b8d6c4',
+            'dialog.body scrollbar.background':'bg:#172e34',
+            'dialog.body scrollbar.button':'bg:#61847c',
+            'selected':'noreverse bg:#365c67 #ffffff',
             'radio-selected':'bold bg:#315f83 #e1edf2','radio-checked':'bg:#214d66 #bfd6e2','checkbox-selected':'bold #c1d8c8',
             'completion-menu.completion':'bg:#17241f #a8c5b0','completion-menu.completion.current':'bold bg:#304638 #e3ece5',
-        }) if colored else Style.from_dict({})
+        }) if colored else Style.from_dict({
+            # Honor --no-color/NO_COLOR without falling back to colored dialogs.
+            'dialog':'bg:default default','dialog.body':'bg:default default',
+            'dialog.body text-area':'bg:default default',
+            'dialog.body text-area last-line':'nounderline',
+            'dialog frame.label':'bold default',
+            'dialog shadow':'bg:default','dialog.body shadow':'bg:default',
+            'dialog.body scrollbar.button':'bg:default reverse',
+            'button.focused':'bg:default default reverse bold',
+            'radio-selected':'reverse bold','checkbox-selected':'reverse bold',
+        })
         self.app=Application(layout=Layout(self.container,focused_element=self.editor),key_bindings=kb,
             full_screen=True,mouse_support=True,style=style,input=input,output=output,erase_when_done=True,
             before_render=lambda app:self.render())

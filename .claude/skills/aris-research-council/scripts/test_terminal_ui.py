@@ -86,6 +86,30 @@ class TerminalUITests(unittest.TestCase):
     def editable_fields(self,ui):
         return [c.buffer for c in ui.app.layout.find_all_controls() if isinstance(c,BufferControl) and c.buffer is not ui.editor.buffer and not c.buffer.read_only()]
 
+    def test_dialog_input_render_has_readable_colors_in_color_and_no_color_modes(self):
+        async def exercise(ui,pipe):
+            ui.new_project_dialog();fields=self.editable_fields(ui)
+            fields[0].text='입력 확인';fields[1].text='목표 확인'
+            for colored in (True,False):
+                with patch.dict('os.environ',{},clear=True):
+                    theme=ResearchTerminal(self.client,argparse.Namespace(no_color=not colored,no_banner=True),input=DummyInput(),output=DummyOutput()).app.style
+                ui.app.style=theme;ui.app._redraw()
+                screen=ui.app.renderer._last_screen
+                cells=[cell for row in screen.data_buffer.values() for cell in row.values() if cell.char in {'입','목'} and 'text-area' in cell.style]
+                self.assertGreaterEqual(len(cells),2)
+                for cell in cells:
+                    attrs=ui.app.renderer.style.get_attrs_for_style_str(cell.style)
+                    self.assertFalse(attrs.underline)
+                    self.assertFalse(attrs.reverse)
+                    if colored:
+                        self.assertEqual(attrs.color,'e4eee9');self.assertEqual(attrs.bgcolor,'0c191f')
+                    else:
+                        self.assertEqual(attrs.color,'default');self.assertEqual(attrs.bgcolor,'default')
+                title=ui.app.renderer.style.get_attrs_for_style_str('class:dialog class:dialog.body class:frame.label')
+                self.assertNotEqual(title.color,'ff0000')
+            self.assertEqual(self.client.messages(self.project),[])
+        self.scenario(exercise)
+
     def test_keyboard_tabs_preserve_draft_and_send_one_shared_direction(self):
         async def exercise(ui,pipe):
             text='기준선은 보존하고 꼬리 지연을 비교해줘';ui.editor.text=text
