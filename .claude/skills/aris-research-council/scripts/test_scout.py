@@ -70,6 +70,7 @@ class ScoutIntegrationTests(unittest.TestCase):
         self.assertEqual((source/'stdout.json').read_text(),result.stdout);self.assertEqual((source/'stderr.log').read_text(),result.stderr)
     def test_scout_start_snapshots_bounds_and_uses_the_native_main(self):
         self.server.research._execute=lambda record:None
+        self.server.research.availability=lambda:dict(available=True,missing=[],aris_repo='/offline-fixture')
         state=self.fixture.call('scout','start','--calls','80','--tokens','3000000')['session']
         self.assertEqual(state['config']['research_style'],'scout');self.assertEqual(state['config']['max_cycles'],1)
         self.server.autopilot.tick(state)
