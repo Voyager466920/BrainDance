@@ -436,6 +436,7 @@ def _codex_call(folder, prompt, config, budget, aris_repo):
     tool='codex-reply' if resumed else 'codex'
     args = dict(prompt=prompt,threadId=resumed) if resumed else dict(prompt=prompt, model=config["codex_model"], config=cfg,
                 sandbox="read-only", cwd=config.get('_project_cwd',str(folder.resolve())))
+    if args.get('model') is None:args.pop('model',None)  # Native Reviewer may inherit the official CLI configuration.
     dump(folder / "request.json", dict(method="tools/call", params=dict(name=tool, arguments=args)))
     usage, thread, model_evidence = {}, None, None
     with open(folder / "stderr.log", "w") as err, open(folder / "mcp.stdout.jsonl", "w") as raw:

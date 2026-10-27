@@ -88,8 +88,11 @@ class ResearchEngine:
             'council/usage.json','council/round-1/COUNCIL_REPORT.md','error.log',
             'worker.stderr.log','literature.stderr.log','verification.stderr.log','arxiv-fetch.stderr.log',
             'generated-experiment.py','generated-experiment.json','generated-proposal.json','environment.json','environment.stderr.log','context-discovery.json','resolved-context.json',
-            'registered-experiment.json','analysis.json','lab-usage.json','explored-environment.json',
+            'native-request.txt','native.stdout.jsonl','native.stderr.log','native-usage.json','native-skill-receipts.json','native-completion.json','native-summary.md','advisory-ideas.md','advisory-results.md','registered-experiment.json','analysis.json','lab-usage.json','explored-environment.json',
             'exploration-1.json','exploration-2.json'] if (root/name).is_file()]
+        for prefix in ['native-helpers','native-reviewer','native-code-review']:
+            folder=root/prefix
+            if folder.is_dir():item['files'].extend(str(p.relative_to(root)) for p in folder.glob('*/*') if p.is_file() and not p.is_symlink() and p.suffix in {'.json','.log','.txt'})
         reads=root/'target-reads'
         if reads.is_dir():item['files'].extend(str(p.relative_to(root)) for p in reads.iterdir() if p.is_file() and not p.is_symlink() and p.suffix in {'.json','.log'})
         # Bounded, known phase paths expose error diagnostics without arbitrary files.
@@ -108,7 +111,7 @@ class ResearchEngine:
         if set(payload)-{'node_id','mode','confirm','token_budget','phase_timeout_seconds','reuse_literature','task','run_id','context_path'} or payload.get('confirm') is not True:
             raise ValueError('연구 시작과 모델 사용량 발생을 확인하세요.')
         task=payload.get('task','research')
-        if task not in {'research','draft','analyze','inspect'}:raise ValueError('지원하지 않는 연구 작업입니다.')
+        if task not in {'research','draft','analyze','inspect','native'}:raise ValueError('지원하지 않는 연구 작업입니다.')
         context_path=payload.get('context_path','')
         if not isinstance(context_path,str) or len(context_path)>2048 or '\x00' in context_path or '\n' in context_path:raise ValueError('참고 폴더 경로를 확인하세요.')
         mode=payload.get('mode','balanced')
@@ -157,6 +160,9 @@ class ResearchEngine:
                 reuse_literature=reusable,
                 council_overrides=dict(rounds=1,max_councils=1,token_budget=token_budget,timeout_seconds=timeout,output_tokens=6000))
             from steering import prompt_context
+            if task=='native':
+                if not internal or not internal.get('auto_session_id'):raise ValueError('자율 파이프라인은 프로젝트 자동모드 권한이 필요합니다.')
+                config['run_dir']=str(root);config['native_api']=self.api_url
             config['steering']=prompt_context(self.store,node['project_id'])
             from project_session import identity
             config['project_session']=identity(self.store,node['project_id'])
@@ -311,6 +317,9 @@ class ResearchEngine:
                 try:
                     run=self.experiments.run_info(entry['run_id']);exp=self.experiments.experiment(run['experiment_id'])
                     if not exp['spec'].get('generation'):raise KeyError('Not an LLM-managed experiment')
+                    if exp['spec']['generation'].get('native_session_id'):
+                        with self.store._connect() as conn:conn.execute("UPDATE research_analysis_queue SET state='managed_native',error=NULL WHERE run_id=?",(run['id'],))
+                        continue
                     if exp['spec']['generation'].get('auto_session_id'):raise KeyError('Automatic session owns this analysis')
                     job=self.start(dict(node_id=exp['node_id'],task='analyze',run_id=run['id'],confirm=True))
                     with self.store._connect() as conn:conn.execute("UPDATE research_analysis_queue SET state='dispatched',job_id=? WHERE run_id=?",(job['id'],run['id']))

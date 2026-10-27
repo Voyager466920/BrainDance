@@ -50,7 +50,7 @@ class AutomaticTests(unittest.TestCase):
         self.compute=ComputeSettings(self.root/'compute.json');self.compute.assign(self.node['project_id'],dict(profile_id='local',device_ids=['cpu'],time_budget_minutes=1))
         self.experiments=ExperimentEngine(self.store,self.compute,self.compute.state);self.addCleanup(self.experiments.close)
         self.research=ResearchEngine(self.store,self.experiments);self.addCleanup(self.research.close)
-        self.automatic=Autopilot(self.store,self.research,self.experiments,autostart=False);self.addCleanup(self.automatic.close)
+        self.automatic=Autopilot(self.store,self.research,self.experiments,autostart=False);self.automatic.default_pipeline='discovery-to-results';self.addCleanup(self.automatic.close)
         self.script=self.root/'fixture.py'
         self.script.write_text('import sys\nsys.path.insert(0,'+repr(str(Path(__file__).parent))+')\n'+FIXTURE)
         self.research.command=lambda:[sys.executable,'-u',str(self.script)]

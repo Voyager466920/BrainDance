@@ -19,7 +19,7 @@ import uuid
 
 
 LOGO_ASSETS=Path(getattr(sys,'_MEIPASS',Path(__file__).resolve().parent.parent))/'assets'
-PHASES={'preflight':'준비','environment':'환경 확인','exploration':'서버·코드 탐색','inspected':'탐색 완료',
+PHASES={'native-pipeline':'자율 연구','native-discovery':'아이디어 탐색','native-implementation':'자율 구현·실험','native-review':'Reviewer 검토·개선','native-council':'Council 추가 평가','native-completed':'자율 연구 완료','preflight':'준비','environment':'환경 확인','exploration':'서버·코드 탐색','inspected':'탐색 완료',
  'literature':'논문 탐색','verification':'논문 확인','generation':'가설 생성','peer-review':'교차 평가',
  'chairman':'종합','coding':'실험 코드 작성','code-review':'코드 검토','registering':'계획 등록',
  'experiment_approval':'실행 코드 준비','blocked':'확인 필요','analysis':'결과 분석','analyzed':'분석 완료'}

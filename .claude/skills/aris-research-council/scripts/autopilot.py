@@ -15,6 +15,7 @@ class Autopilot:
     def __init__(self,store,research,experiments,autostart=True):
         self.store,self.research,self.experiments=store,research,experiments
         self.lock=threading.RLock();self.closed=threading.Event()
+        self.default_pipeline='aris-native'
         steering.initialize(store)
         with store._connect() as conn:
             conn.execute('''CREATE TABLE IF NOT EXISTS conversation_actions (
@@ -108,10 +109,12 @@ class Autopilot:
                     if not previous or not self.has_hypotheses(project_id):raise ValueError('재사용할 완료된 Council·검증된 논문 근거와 활성 가설이 없습니다.')
                 profile,assignment=self.experiments._resources(root)
                 sid=str(uuid.uuid4());path=self.research.root/('automatic-'+sid);path.mkdir(mode=0o700)
+                from project_session import identity
+                native_workspace=Path(identity(self.store,project_id)['path'])/'native'
                 ledger=path/'session-budget.json';ledger.write_text(json.dumps(dict(calls=0,max_calls=calls,token_budget=tokens,charges={})))
                 item=dict(id=sid,project_id=project_id,node_id=root['id'],status='running',message='자동 연구를 시작합니다.',
-                    config=dict(scope='project',pipeline='discovery-to-results',max_cycles=cycles,mode=mode,context_path=context,resource_signature=resource_signature(profile,assignment),reuse_research=reuse,
-                                session_budget=str(ledger)),progress=dict(phase='prepare',discovery_completed=False,cycles=0,revision=steering.snapshot(self.store,project_id)['revision'],code_hashes=[],failures=0),created_at=now(),updated_at=now())
+                    config=dict(scope='project',pipeline=self.default_pipeline,max_cycles=cycles,mode=mode,context_path=context,resource_signature=resource_signature(profile,assignment),reuse_research=reuse,
+                                session_budget=str(ledger),native_workspace=str(native_workspace)),progress=dict(phase='prepare',discovery_completed=False,cycles=0,revision=steering.snapshot(self.store,project_id)['revision'],code_hashes=[],failures=0),created_at=now(),updated_at=now())
                 if previous:item['progress'].update(discovery_completed=True,research_job_id=previous['id'])
                 with self.store._connect() as conn:
                     conn.execute('INSERT INTO automatic_sessions VALUES(?,?,?,?,?,?,?,?,?)',tuple(json.dumps(v) if k in {'config','progress'} else v for k,v in item.items()))
@@ -125,6 +128,20 @@ class Autopilot:
             else:
                 if item['status'] not in {'paused','blocked'}:raise ValueError('일시정지 또는 필요한 항목을 해결한 실행을 재개하세요.')
                 p=item['progress']
+                if self.default_pipeline=='aris-native' and item['config'].get('pipeline')!='aris-native':
+                    if self.busy(project_id):raise ValueError('실행 중인 실험이 끝난 뒤 새 자율 흐름으로 재개하세요.')
+                    with self.store._connect() as conn:
+                        if conn.execute("SELECT 1 FROM research_jobs WHERE project_id=? AND state IN ('queued','running')",(project_id,)).fetchone():raise ValueError('진행 중인 연구 작업이 끝난 뒤 재개하세요.')
+                    from project_session import identity
+                    item['config'].update(previous_pipeline=item['config'].get('pipeline'),legacy_progress=dict(p),pipeline='aris-native',native_workspace=str(Path(identity(self.store,project_id)['path'])/'native'))
+                    with self.store._connect() as conn:
+                        conn.execute('UPDATE automatic_sessions SET config=? WHERE id=?',(json.dumps(item['config']),item['id']))
+                        self.store._event(conn,root['id'],'native_pipeline_resumed',dict(session_id=item['id'],previous_pipeline=item['config']['previous_pipeline'],usage_preserved=True))
+                    self.store.add_note(root['id'],'memo','자율 연구 흐름 전환','기존 결과·대화·사용량·장치·예산을 보존하고 공식 자율 파이프라인으로 재개합니다. 이전 진행 기록도 세션 설정에 보존했습니다.')
+                if item['config'].get('pipeline')=='aris-native':
+                    current=self.research.get(p['job_id']) if p.get('job_id') else None
+                    if current and current['state'] in {'queued','running'}:p['phase']='native'
+                    else:p.update(phase='prepare',job_id=None)
                 if p.get('job_id'):
                     prior=self.research.get(p['job_id'])
                     if self.research.can_retry(prior):self.research.retry(prior['id']);p.update(phase='job',run_id=None)
@@ -247,6 +264,8 @@ class Autopilot:
         if node['status'] not in {'active','expanded'}:raise ValueError('프로젝트가 보류 또는 폐기되었습니다.')
         profile,assignment=self.experiments._resources(node)
         if resource_signature(profile,assignment)!=item['config']['resource_signature']:raise ValueError('실행 환경·장치·예산이 변경되어 자동모드를 멈췄습니다.')
+        if item['config'].get('pipeline')=='aris-native':
+            return self.native_tick(item)
         p=item['progress'];phase=p['phase'];revision=steering.snapshot(self.store,item['project_id'])['revision']
         if phase=='prepare':
             if self.research.active_id is not None or self.busy(item['project_id']):return
@@ -302,6 +321,20 @@ class Autopilot:
             run=self.experiments.run_info(p['run_id'])
             failures=p['failures']+(1 if result['outcome']!='measured' and run['state']=='succeeded' else 0)
             self.save(item,message='결과 보고를 저장했습니다. LLM이 제안한 다음 실험으로 이어갑니다.',phase='prepare',failures=failures)
+
+    def native_tick(self,item):
+        p=item['progress']
+        if p.get('job_id'):
+            job=self.research.get(p['job_id'])
+            if job['state'] in {'queued','running'}:return
+            if job['state']=='completed' and job['phase']=='native-completed':
+                self.save(item,'completed','자율 연구의 실험·Reviewer·Council 평가와 최종 보고를 완료했습니다.')
+                return
+            if p.get('phase')=='native':raise ValueError(job.get('error') or job['message'])
+        if self.research.active_id is not None or self.busy(item['project_id']):return
+        job=self.research.start(dict(node_id=item['node_id'],task='native',confirm=True,mode=item['config']['mode'],context_path=item['config']['context_path']),
+            internal=dict(auto_session_id=item['id'],session_budget=item['config']['session_budget'],native_workspace=item['config']['native_workspace']))
+        self.save(item,message='메인 자율 연구 세션이 탐색·구현·실험·리뷰를 이어갑니다.',phase='native',job_id=job['id'])
 
     def _loop(self):
         while not self.closed.wait(.5):

@@ -31,7 +31,7 @@ A local research workspace that explores papers, develops and reviews hypotheses
 
 4. Set up the research engine and its documented prerequisites. Existing checkouts and Claude/Codex configuration are preserved.
 
-Literature discovery and reviewer integration reuse [ARIS](https://github.com/wanshuiyin/Auto-claude-code-research-in-sleep); follow its official prerequisite instructions and install the checkout at `~/.local/share/BrainDance/research-engine`.
+The main autonomous pipeline, its nested research Skills, and its original independent Reviewer reuse [ARIS](https://github.com/wanshuiyin/Auto-claude-code-research-in-sleep); Council adds advice after idea discovery and after measured results while the official pipeline drives implementation, experiments and review iterations. Follow its official prerequisite instructions and install the checkout at `~/.local/share/BrainDance/research-engine`.
 
 5. Open BrainDance, add a project, and select its local or SSH execution environment, devices and runtime budget.
 

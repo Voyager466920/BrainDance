@@ -42,6 +42,7 @@ class ViewerServer(ThreadingHTTPServer):
         try:
             self.experiments=ExperimentEngine(store,self.compute,self.compute_state)
             self.research=ResearchEngine(store,self.experiments)
+            self.research.api_url="http://127.0.0.1:"+str(actual_port)
             self.autopilot=Autopilot(store,self.research,self.experiments)
             self.chat=ResearchChat(store,self.research,self.autopilot)
             self.publications=PublicationService(store)
@@ -111,7 +112,7 @@ class ViewerHandler(BaseHTTPRequestHandler):
             return
         path = urlsplit(self.path).path
         if path == '/api/health':
-            self._reply(200, {'app': 'BrainDance', 'version': '0.11.6', 'pid': os.getpid(),
+            self._reply(200, {'app': 'BrainDance', 'version': '0.12.0', 'pid': os.getpid(),
                              'workspace_id': hashlib.sha256(str(Path(self.server.store.db_path).resolve()).encode()).hexdigest()})
         elif path=='/api/chat':
             try:self._reply(200,self.server.chat.messages(parse_qs(urlsplit(self.path).query).get('project_id',[''])[0]))
@@ -248,6 +249,10 @@ class ViewerHandler(BaseHTTPRequestHandler):
             path = urlsplit(self.path).path
             if path in {'/api/notion/configure','/api/notion/disconnect','/api/notion/sync','/api/reports/build'}:
                 self._publication_mutate(path,payload)
+                return
+            if path=='/api/native/action':
+                from native_pipeline import action
+                self._reply(200,action(self.server,payload))
                 return
             with self.server.mutation_lock:
                 self._mutate(path, payload)

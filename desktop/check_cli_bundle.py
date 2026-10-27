@@ -34,6 +34,14 @@ def main():
         pid=None
         try:
             assert json.loads(run('projects','--json','--db',str(database),'--port',str(port)))==[]
+            # Prove the packaged native host can load and speak real MCP framing.
+            native_job=Path(folder)/'native-job.json'
+            native_job.write_text(json.dumps(dict(native_workspace=str(Path(folder)/'native'),run_dir=folder,db=str(database),mode='lite',council_overrides={},project_session={},session_budget=str(Path(folder)/'budget.json'))))
+            messages=''.join(json.dumps(dict(jsonrpc='2.0',id=i,method=m,params={}))+'\n' for i,m in enumerate(['initialize','tools/list']))
+            native=subprocess.run([str(executable),'--native-host',str(native_job)],input=messages,capture_output=True,text=True,timeout=20)
+            assert native.returncode==0,native.stderr
+            replies=[json.loads(line) for line in native.stdout.splitlines()]
+            assert {'codex','council','experiment','context','finish'}<={tool['name'] for tool in replies[1]['result']['tools']}
             health=json.loads(get('/api/health'))
             assert health['workspace_id']==hashlib.sha256(str(database).encode()).hexdigest()
             pid=health['pid']

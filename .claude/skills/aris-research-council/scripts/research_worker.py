@@ -168,6 +168,10 @@ def run(spec_path):
         cancelled.set();council.stop_children();raise KeyboardInterrupt()
     signal.signal(signal.SIGTERM,stop);signal.signal(signal.SIGINT,stop)
     try:
+        if job.get('task')=='native':
+            from native_pipeline import run as native_run
+            native_run(job,root,progress)
+            return 0
         if job.get('task')=='chat':
             from lab_worker import chat
             chat(job,root,progress)

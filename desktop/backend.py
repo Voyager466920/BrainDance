@@ -32,6 +32,10 @@ def main():
         from terminal import install_launcher
         print(install_launcher())
         return
+    if sys.argv[1:2]==['--native-host']:
+        from native_pipeline import serve
+        serve(sys.argv[2])
+        return
     if sys.argv[1:2]==['--research-worker']:
         from research_worker import run
         raise SystemExit(run(sys.argv[2]))
