@@ -58,6 +58,35 @@ class ForwardTest(unittest.TestCase):
         self.assertEqual(len(snapshot['nodes']),17)
         self.assertEqual(max(n['depth'] for n in snapshot['nodes']),4)
         self.assertTrue((self.root/'out/round-3/COUNCIL_REPORT.md').exists())
+    def test_only_declared_source_aliases_are_canonicalized(self):
+        raw=json.loads(self.evidence.read_text());raw[0]['id']='p1';self.evidence.write_text(json.dumps(raw))
+        pack,_=c.prepare(self.lit,self.evidence,self.root/'aliases',self.cfg,self.root/'cache')
+        review={'evaluations':[{'evidence_ids':['p1','INVENTED-SOURCE']} ]}
+        c.normalize_evidence_ids(review,pack)
+        self.assertEqual(review['evaluations'][0]['evidence_ids'],[self.pid,'INVENTED-SOURCE'])
+        self.assertEqual((self.root/'aliases/evidence/source-evidence.json').read_bytes(),self.evidence.read_bytes())
+
+    def test_actual_run_evidence_is_kept_distinct_from_paper_citations(self):
+        run_id='123e4567-e89b-12d3-a456-426614174000'
+        config=self.root/'results.json';config.write_text(json.dumps(dict(result_evidence_ids=[run_id])));self.args.config=str(config)
+        def phases(folder,name,*args):
+            result=self.phases(folder,name,*args)
+            if name=='peer-review':
+                for review in result.values():
+                    for item in review['evaluations']:item['evidence_ids'].append(run_id)
+            return result
+        def chair(*args):
+            result=self.chair(*args)
+            for item in result['assessments']:item['evidence_ids'].append(run_id)
+            return result
+        self.execute(phase=phases,chair=chair)
+        snapshot=TreeStore(self.args.db).export_json()
+        self.assertIn(run_id,json.dumps(snapshot['evaluations']))
+        for node in snapshot['nodes']:
+            if node['kind']=='hypothesis':self.assertNotIn(run_id,node['evidence'])
+        index=json.loads((self.root/'out/result-evidence-index.json').read_text())
+        self.assertEqual(index['experiment_run_ids'],[run_id]);self.assertNotIn(run_id,index['paper_ids'])
+
     def test_review_unknown_evidence_and_invalid_score_rejected_before_chairman(self):
         def broken(folder,name,*args):
             out=self.phases(folder,name,*args)

@@ -75,7 +75,7 @@ class Autopilot:
                 (item['status'],item['message'],json.dumps(item['progress']),now(),item['id']))
 
     def control(self,payload):
-        if set(payload)-{'project_id','action','max_cycles','max_model_calls','token_budget','context_path','mode','session_id','reuse_research'}:raise ValueError('지원하지 않는 자동모드 설정입니다.')
+        if set(payload)-{'project_id','action','max_cycles','max_model_calls','token_budget','context_path','mode','session_id','reuse_research','research_style'}:raise ValueError('지원하지 않는 자동모드 설정입니다.')
         project_id=payload['project_id'];action=payload['action'];root=self.root(project_id);self.store.get_node(root['id'])
         if action not in {'start','pause','resume','stop','limits'}:raise ValueError('자동모드 동작을 확인하세요.')
         with self.lock:
@@ -92,13 +92,18 @@ class Autopilot:
                 return self.state(project_id)
             if action=='start':
                 if item and item['status'] in {'running','paused'}:raise ValueError('기존 자동모드를 재개하거나 중지하세요.')
-                cycles=payload.get('max_cycles',3);calls=payload.get('max_model_calls',40);tokens=payload.get('token_budget',1500000)
+                from scout import settings
+                preferences=settings(self.store,project_id);style=payload.get('research_style',preferences['style'])
+                if style not in {'focused','scout'}:raise ValueError('연구 방식을 확인하세요.')
+                if style=='scout' and not preferences['interests']:raise ValueError('탐색 모드에는 프로젝트 관심 분야가 필요합니다.')
+                cycles=payload.get('max_cycles',preferences['max_pilots'] if style=='scout' else 3);calls=payload.get('max_model_calls',40);tokens=payload.get('token_budget',1500000)
                 for value,low,high in [(cycles,1,30),(calls,2,300),(tokens,100000,10000000)]:
                     if type(value) is not int or not low<=value<=high:raise ValueError('자동모드 한도 범위를 확인하세요.')
                 context=payload.get('context_path','');mode=payload.get('mode','balanced')
                 if not isinstance(context,str) or len(context)>2048 or '\x00' in context or '\n' in context or mode not in {'lite','balanced','deep'}:raise ValueError('참고 폴더·연구 모드를 확인하세요.')
                 reuse=payload.get('reuse_research',False)
                 if type(reuse) is not bool:raise ValueError('연구 재사용 설정은 true 또는 false여야 합니다.')
+                if style=='scout':cycles=min(cycles,preferences['max_pilots'])
                 previous=None
                 if reuse:
                     for candidate in self.research.list(project_id)['jobs']:
@@ -113,7 +118,7 @@ class Autopilot:
                 native_workspace=Path(identity(self.store,project_id)['path'])/'native'
                 ledger=path/'session-budget.json';ledger.write_text(json.dumps(dict(calls=0,max_calls=calls,token_budget=tokens,charges={})))
                 item=dict(id=sid,project_id=project_id,node_id=root['id'],status='running',message='자동 연구를 시작합니다.',
-                    config=dict(scope='project',pipeline=self.default_pipeline,max_cycles=cycles,mode=mode,context_path=context,resource_signature=resource_signature(profile,assignment),reuse_research=reuse,
+                    config=dict(scope='project',pipeline=self.default_pipeline,research_style=style,scout_preferences=preferences,max_cycles=cycles,mode=mode,context_path=context,resource_signature=resource_signature(profile,assignment),reuse_research=reuse,
                                 session_budget=str(ledger),native_workspace=str(native_workspace)),progress=dict(phase='prepare',discovery_completed=False,cycles=0,revision=steering.snapshot(self.store,project_id)['revision'],code_hashes=[],failures=0),created_at=now(),updated_at=now())
                 if previous:item['progress'].update(discovery_completed=True,research_job_id=previous['id'])
                 with self.store._connect() as conn:
@@ -328,12 +333,15 @@ class Autopilot:
             job=self.research.get(p['job_id'])
             if job['state'] in {'queued','running'}:return
             if job['state']=='completed' and job['phase']=='native-completed':
-                self.save(item,'completed','자율 연구의 실험·Reviewer·Council 평가와 최종 보고를 완료했습니다.')
+                message='자율 연구의 실험·Reviewer·Council 평가와 최종 보고를 완료했습니다.'
+                if item['config'].get('research_style')=='scout':
+                    done=json.loads((Path(job['run_dir'])/'native-completion.json').read_text());message='탐색 완료 · 유망 후보 '+str(done.get('promising_count',0))+'개 · 실험 '+str(len(done.get('run_ids',[])))+'회'
+                self.save(item,'completed',message)
                 return
             if p.get('phase')=='native':raise ValueError(job.get('error') or job['message'])
         if self.research.active_id is not None or self.busy(item['project_id']):return
         job=self.research.start(dict(node_id=item['node_id'],task='native',confirm=True,mode=item['config']['mode'],context_path=item['config']['context_path']),
-            internal=dict(auto_session_id=item['id'],session_budget=item['config']['session_budget'],native_workspace=item['config']['native_workspace']))
+            internal=dict(auto_session_id=item['id'],session_budget=item['config']['session_budget'],native_workspace=item['config']['native_workspace'],research_style=item['config'].get('research_style','focused'),scout_preferences=item['config'].get('scout_preferences',{})))
         self.save(item,message='메인 자율 연구 세션이 탐색·구현·실험·리뷰를 이어갑니다.',phase='native',job_id=job['id'])
 
     def _loop(self):

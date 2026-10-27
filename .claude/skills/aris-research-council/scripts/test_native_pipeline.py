@@ -94,6 +94,14 @@ class NativePipelineTests(unittest.TestCase):
         receipt=self.call('finish',report=str(report))
         self.assertEqual(receipt['run_ids'],[run['run_id']])
         self.assertEqual(json.loads((self.work/'native-completion.json').read_text())['job_id'],self.job['id'])
+    def test_successful_skill_receipts_are_reused_only_in_the_same_automatic_session(self):
+        from native_pipeline import session_skill_receipts
+        resumed={**self.config,'id':'resumed-job'}
+        invoked,sources,_=session_skill_receipts(resumed)
+        self.assertEqual(invoked,set(SKILLS));self.assertTrue(sources)
+        unrelated={**resumed,'auto_session_id':'different-authorization'}
+        self.assertEqual(session_skill_receipts(unrelated)[0],set())
+
     def test_quick_native_pause_resume_retains_a_still_running_job(self):
         self.server.autopilot.control(dict(project_id=self.node['project_id'],action='pause'))
         resumed=self.server.autopilot.control(dict(project_id=self.node['project_id'],action='resume'))['session']

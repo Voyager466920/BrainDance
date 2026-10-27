@@ -201,12 +201,15 @@ class TerminalUITests(unittest.TestCase):
             await self.wait_until(lambda:ui.app.current_buffer is fields[1])
             pipe.send_text('\x1b[Z')
             await self.wait_until(lambda:ui.app.current_buffer is fields[0])
-            pipe.send_text('\t\t')
+            pipe.send_text('\t'*4)
+            await self.wait_until(lambda:ui.app.current_buffer not in fields)
+            last_body=ui.app.layout.current_control
+            pipe.send_text('\t')
             await self.wait_until(lambda:ui.app.layout.has_focus(ui.modal_buttons[-1][0]))
             pipe.send_text('\x1b[D')
             await self.wait_until(lambda:ui.app.layout.has_focus(ui.modal_buttons[-1][-1]))
             pipe.send_text('\x1b[A')
-            await self.wait_until(lambda:ui.app.current_buffer is fields[1])
+            await self.wait_until(lambda:ui.app.layout.current_control is last_body)
         self.scenario(exercise)
 
     def test_mouse_tab_and_issue_reply_keep_the_canonical_reference(self):
@@ -255,7 +258,7 @@ class TerminalUITests(unittest.TestCase):
 
     def test_new_project_wizard_selects_device_before_persisting(self):
         async def exercise(ui,pipe):
-            ui.new_project_dialog();fields=self.editable_fields(ui);self.assertEqual(len(fields),2)
+            ui.new_project_dialog();fields=self.editable_fields(ui);self.assertEqual(len(fields),4)
             fields[0].text='Created by tabbed UI';fields[1].text='CPU fixture only'
             ui.modal_buttons[-1][0].handler()
             self.assertIsNotNone(ui.resource_form);ui.resource_form['minutes'].text='2'

@@ -112,7 +112,7 @@ class ViewerHandler(BaseHTTPRequestHandler):
             return
         path = urlsplit(self.path).path
         if path == '/api/health':
-            self._reply(200, {'app': 'BrainDance', 'version': '0.12.0', 'pid': os.getpid(),
+            self._reply(200, {'app': 'BrainDance', 'version': '0.13.0', 'pid': os.getpid(),
                              'workspace_id': hashlib.sha256(str(Path(self.server.store.db_path).resolve()).encode()).hexdigest()})
         elif path=='/api/chat':
             try:self._reply(200,self.server.chat.messages(parse_qs(urlsplit(self.path).query).get('project_id',[''])[0]))
@@ -125,6 +125,13 @@ class ViewerHandler(BaseHTTPRequestHandler):
             self._reports_get(path)
         elif path.startswith('/api/research'):
             self._research_get(path)
+        elif path == '/api/project/research-settings':
+            try:
+                from scout import settings
+                pid=parse_qs(urlsplit(self.path).query).get('project_id',[''])[0]
+                self._reply(200,settings(self.server.store,pid))
+            except KeyError as error:self._reply(404,{'error':str(error)})
+            except ValueError as error:self._reply(400,{'error':str(error)})
         elif path == '/api/project/trash':
             self._reply(200,self.server.cleanup.trash())
         elif path == '/api/project/purge-preview':
@@ -321,8 +328,12 @@ class ViewerHandler(BaseHTTPRequestHandler):
                 self.server.autopilot.control(dict(project_id=payload['project_id'],action='stop'))
             if path.endswith('/delete'):self.server.chat.cancel_project(payload['project_id'])
             result=self.server.store.set_project_deleted(payload['project_id'],path.endswith('/delete'))
+        elif path == '/api/project/research-settings':
+            if set(payload)!={'project_id','settings'}:raise ValueError('프로젝트와 연구 설정이 필요합니다.')
+            from scout import save
+            result=save(self.server.store,payload['project_id'],payload['settings'])
         elif path == '/api/project':
-            if set(payload)!={'name','goal','compute'}:
+            if set(payload)-{'name','goal','compute','research_preferences'} or not {'name','goal','compute'}<=set(payload):
                 raise ValueError('프로젝트 이름, 연구 목표와 실행 환경을 입력하세요.')
             name,goal=payload['name'],payload['goal']
             if not isinstance(name,str) or not name.strip() or len(name)>120:
@@ -332,8 +343,10 @@ class ViewerHandler(BaseHTTPRequestHandler):
             if not isinstance(payload['compute'],dict):
                 raise ValueError('실행 환경을 선택하세요.')
             assignment=self.server.compute.prepare_assignment(payload['compute'])
+            from scout import validate
+            preferences=validate(payload.get('research_preferences',{}))
             node=self.server.store.add_node(None,goal.strip() or name.strip(),kind='problem',project_title=name,
-                metadata={'project_name':name.strip(),'research_goal':goal.strip(),'compute_assignment':assignment})
+                metadata={'project_name':name.strip(),'research_goal':goal.strip(),'compute_assignment':assignment,'research_preferences':preferences})
             result={'node':node,'project_id':node['project_id'],'assignment':assignment}
             try:
                 self.server.compute.persist_assignment(node['project_id'],assignment)

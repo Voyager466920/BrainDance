@@ -57,7 +57,7 @@ MODES = {
 }
 DEFAULTS = dict(codex_effort="xhigh", timeout_seconds=900, claude_budget_usd=8.0,
                 max_papers=8, rounds=1, optimized=True,
-                codex_disabled_mcps=["node_repl", "computer-use"])
+                codex_disabled_mcps=["node_repl", "computer-use"], result_evidence_ids=[])
 
 
 def dump(path, obj):
@@ -213,10 +213,14 @@ def prepare(literature, evidence, output, config, cache_dir):
     if not papers:
         raise ValueError("No papers in ARIS evidence JSON. Run /research-lit with frozen local evidence first.")
     unique, seen = [], set()
+    aliases={}
     for p in papers:
         pid = str(p.get("arxiv_id") or p.get("doi") or p.get("paper_id") or p.get("id") or p.get("title", ""))
         if not pid:
             raise ValueError("Paper has no identifier or title")
+        for field in ("id","paper_id","arxiv_id","doi","abs_url","url"):
+            alias=p.get(field)
+            if isinstance(alias,str) and alias:aliases.setdefault(alias,set()).add(pid)
         if pid in seen:
             continue
         seen.add(pid)
@@ -253,7 +257,7 @@ def prepare(literature, evidence, output, config, cache_dir):
     raw = "LITERATURE (abstract-level claims, not full-text validation):\n" + lit + "\nRAW EVIDENCE:\n" + original
     compact = json.dumps(dict(papers=selected, omitted_ids=omitted,
                               limitation="Abstract-level extractive digest, not a novelty proof. Raw material is retained; omitted papers are not analyzed."), ensure_ascii=False)
-    pack = dict(cache_key=cachekey, cache_hit=cache_hit, paper_ids=[p["id"] for p in unique],
+    pack = dict(aliases={alias:next(iter(ids)) for alias,ids in aliases.items() if len(ids)==1 and next(iter(ids)) in [p["id"] for p in selected]},cache_key=cachekey, cache_hit=cache_hit, paper_ids=[p["id"] for p in unique],
                 selected_ids=[p["id"] for p in selected], omitted_ids=omitted,
                 summaries=selected, raw_chars=len(raw), compact_chars=len(compact),
                 raw_bytes=len(raw.encode()), compact_bytes=len(compact.encode()),
@@ -648,12 +652,24 @@ def load_config(args):
         if unknown:
             raise ValueError("Unknown config keys: " + str(sorted(unknown)))
         cfg.update(supplied)
+    if not isinstance(cfg["result_evidence_ids"],list) or any(not isinstance(v,str) or not re.fullmatch(r"[a-f0-9-]{36}",v) for v in cfg["result_evidence_ids"]):raise ValueError("Result evidence must be host-supplied experiment UUIDs")
     for name in ("max_parallel", "max_depth", "max_councils", "max_model_calls", "token_budget", "rounds", "context_chars", "output_tokens", "max_papers", "timeout_seconds"):
         if not isinstance(cfg[name], int) or isinstance(cfg[name], bool) or cfg[name] < 1:
             raise ValueError(name + " must be a positive integer")
     if cfg["rounds"] > cfg["max_councils"] or cfg["max_parallel"] > 4:
         raise ValueError("rounds exceeds max_councils, or max_parallel exceeds four participants")
     return cfg
+
+
+def normalize_evidence_ids(item,pack):
+    """Resolve only explicit, unambiguous aliases from retained source metadata."""
+    if isinstance(item,dict):
+        for key,value in item.items():
+            if key=='evidence_ids' and isinstance(value,list):item[key]=[pack.get('aliases',{}).get(v,v) if isinstance(v,str) else v for v in value]
+            else:normalize_evidence_ids(value,pack)
+    elif isinstance(item,list):
+        for value in item:normalize_evidence_ids(value,pack)
+    return item
 
 
 def frozen_parent(folder,parent,resuming):
@@ -713,6 +729,10 @@ def run(args, progress=None):
         if prior_state and prior_state.get("topic") != args.topic:
             raise ValueError("Resume requires the original topic")
         pack, context = prepare(args.literature, args.evidence, output, cfg, db.parent/'paper-cache')
+        run_ids=cfg.get("result_evidence_ids",[])
+        if run_ids:context+="\nMEASURED/FAILED EXPERIMENT RECEIPT IDS (not papers): "+json.dumps(run_ids)+". For proposals use paper IDs only in evidence_ids. Reviews and final assessments may also cite these actual run IDs; keep them distinct from paper evidence. Actual receipt values are in the advisory topic."
+        allowed_review_ids=pack["selected_ids"]+run_ids
+        dump(output/"result-evidence-index.json",dict(experiment_run_ids=run_ids,paper_ids=pack["selected_ids"]))
         # Fail before spending any model calls when the complete requested council cannot fit.
         per_council = 2 * (3 + math.ceil(3/min(3, cfg["max_parallel"])) + 1) + 1
         if per_council * cfg["rounds"] > cfg["max_model_calls"]:
@@ -732,6 +752,7 @@ def run(args, progress=None):
             topic = args.topic + ("\nExpand this parent hypothesis: " + json.dumps(original_parent, ensure_ascii=False) if args.node_id or iteration else "")
             progress('generation','Claude 전문가 3명과 Codex가 독립 가설을 생성합니다.')
             proposals = phase(rdir / "generation", "generation", topic, context, cfg, budget, args.aris_repo, pack["full_evidence_path"])
+            normalize_evidence_ids(proposals,pack)
             validate_proposals(proposals, pack["selected_ids"])
             mapping_path = rdir / "private/anonymization-map.json"
             if mapping_path.exists():
@@ -747,14 +768,18 @@ def run(args, progress=None):
             blind_context = context + "\nANONYMOUS PROPOSALS:\n" + json.dumps(blind, ensure_ascii=False)
             progress('peer-review','익명화한 가설을 Claude·Codex가 교차 평가합니다.')
             reviews = phase(rdir / "peer-review", "peer-review", topic, blind_context, cfg, budget, args.aris_repo, pack["full_evidence_path"])
-            validate_reviews(reviews, blind, pack["selected_ids"])
+            normalize_evidence_ids(reviews,pack)
+            validate_reviews(reviews, blind, allowed_review_ids)
             progress('chairman','Claude Chairman이 논문 근거와 교차 평가를 종합합니다.')
             verdict = chairman(rdir / "chairman", topic, context, blind, reviews, cfg, budget)
+            normalize_evidence_ids(verdict,pack)
             for a in verdict["assessments"]:
                 if a.get("status") not in ("active", "held", "discarded") or type(a.get("priority")) is not int or not 0 <= a["priority"] <= 100:
                     raise ValueError("Invalid chairman decision")
-                if not set(a.get("evidence_ids", [])) <= set(pack["selected_ids"]):
+                if not set(a.get("evidence_ids", [])) <= set(allowed_review_ids):
                     raise ValueError("Chairman used unsupported evidence")
+                a["result_evidence_ids"]=[value for value in a.get("evidence_ids",[]) if value in run_ids]
+                a["evidence_ids"]=[value for value in a.get("evidence_ids",[]) if value not in run_ids]
                 for score in ("novelty_score", "feasibility_score", "rigor_score"):
                     if not isinstance(a.get(score), (int, float)) or not 1 <= a[score] <= 5:
                         raise ValueError("Invalid chairman score")

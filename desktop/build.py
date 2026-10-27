@@ -16,10 +16,25 @@ def run(*args):
     subprocess.run([str(arg) for arg in args], cwd=ROOT, check=True)
 
 
-def main():
+def copy_notices(resources):
+    notices = resources/'ThirdPartyNotices'
+    notices.mkdir()
+    shutil.copy2(ROOT/'LICENSE', notices/'BrainDance-MIT.txt')
+    for notice in (ROOT/'desktop/licenses').glob('*'):
+        shutil.copy2(notice,notices/notice.name)
+    shutil.copy2(Path(sys.base_prefix)/'lib'/('python'+str(sys.version_info.major)+'.'+str(sys.version_info.minor))/'LICENSE.txt',notices/'Python-LICENSE.txt')
+    for package in ['certifi','pyinstaller','prompt-toolkit','wcwidth','matplotlib','numpy','pillow','contourpy','cycler','fonttools','kiwisolver','packaging','pyparsing','python-dateutil','six','tzdata','requests','urllib3','idna','charset_normalizer']:
+        distribution=metadata.distribution(package)
+        selected=[f for f in distribution.files if f.name.upper().startswith(('LICENSE','COPYING','NOTICE')) and f.suffix not in {'.py','.pyc'}]
+        if not selected:raise RuntimeError('Missing dependency license: '+package)
+        for file in selected:
+            destination=notices/package/str(file)
+            destination.parent.mkdir(parents=True,exist_ok=True)
+            shutil.copy2(distribution.locate_file(file),destination)
+
+
+def build_backend():
     os.environ['MPLBACKEND']='Agg'
-    if platform.system() != 'Darwin':
-        raise SystemExit('Build the desktop app on macOS.')
     build, dist = ROOT/'build', ROOT/'dist'
     build.mkdir(exist_ok=True); dist.mkdir(exist_ok=True)
     architecture = platform.machine()
@@ -29,10 +44,17 @@ def main():
         '--add-data', str(ROOT/'desktop/BrainDance.itermkeymap')+':assets',
         '--add-data', str(SCRIPTS/'experiment_worker.py')+':worker',
         '--add-data', str(ROOT/'.claude/agents')+':agents',
-        '--hidden-import', 'csv', '--hidden-import', 'statistics', '--hidden-import', 'xml.etree.ElementTree',
+        '--hidden-import', 'requests', '--hidden-import', 'csv', '--hidden-import', 'statistics', '--hidden-import', 'xml.etree.ElementTree',
         '--hidden-import', 'matplotlib.backends.backend_agg',
         '--distpath', build/'server', '--workpath', build/'pyinstaller', '--specpath', build,
         '--target-architecture', architecture, ROOT/'desktop/backend.py')
+    return build,dist,architecture
+
+
+def main():
+    if platform.system() != 'Darwin':
+        raise SystemExit('Build the desktop app on macOS.')
+    build,dist,architecture=build_backend()
     app = dist/'BrainDance.app'
     # Only replace the build output, never an installed app or user data.
     if app.exists():
@@ -42,20 +64,7 @@ def main():
     shutil.copy2(ROOT/'desktop/Info.plist', app/'Contents/Info.plist')
     shutil.copy2(build/'server/BrainDanceServer', resources/'BrainDanceServer')
     shutil.copy2(ROOT/'desktop/BrainDance.itermkeymap', resources/'BrainDance.itermkeymap')
-    notices = resources/'ThirdPartyNotices'
-    notices.mkdir()
-    shutil.copy2(ROOT/'LICENSE', notices/'BrainDance-MIT.txt')
-    for notice in (ROOT/'desktop/licenses').glob('*'):
-        shutil.copy2(notice,notices/notice.name)
-    shutil.copy2(Path(sys.base_prefix)/'lib'/('python'+str(sys.version_info.major)+'.'+str(sys.version_info.minor))/'LICENSE.txt',notices/'Python-LICENSE.txt')
-    for package in ['certifi','pyinstaller','prompt-toolkit','wcwidth','matplotlib','numpy','pillow','contourpy','cycler','fonttools','kiwisolver','packaging','pyparsing','python-dateutil','six','tzdata']:
-        distribution=metadata.distribution(package)
-        selected=[f for f in distribution.files if f.name.upper().startswith(('LICENSE','COPYING','NOTICE')) and f.suffix not in {'.py','.pyc'}]
-        if not selected:raise RuntimeError('Missing dependency license: '+package)
-        for file in selected:
-            destination=notices/package/str(file)
-            destination.parent.mkdir(parents=True,exist_ok=True)
-            shutil.copy2(distribution.locate_file(file),destination)
+    copy_notices(resources)
     env = os.environ.copy(); env['MACOSX_DEPLOYMENT_TARGET'] = '13.0'
     subprocess.run(['swiftc', '-swift-version', '5', '-O', '-gnone', '-target', architecture+'-apple-macosx13.0',
                     '-framework', 'AppKit', '-framework', 'WebKit', str(ROOT/'desktop/main.swift'),

@@ -16,8 +16,9 @@ import urllib.request
 
 def main():
     app=Path(sys.argv[1] if len(sys.argv)>1 else 'dist/BrainDance.app').resolve()
-    executable=app/'Contents/Resources/BrainDanceServer'
-    keymap=json.loads((app/'Contents/Resources/BrainDance.itermkeymap').read_text())
+    executable=app if app.is_file() else app/'Contents/Resources/BrainDanceServer'
+    resources=executable.parent
+    keymap=json.loads((resources/'BrainDance.itermkeymap').read_text())
     assert len(keymap['Key Mappings'])==3 and all(k['Action']==11 for k in keymap['Key Mappings'].values())
     def run(*args):
         result=subprocess.run([str(executable),'--cli',*args],capture_output=True,text=True,timeout=40)
@@ -50,6 +51,9 @@ def main():
             assert 'BrainDance' in get('/')
             assert 'code' in json.loads(get('/api/experiment-template'))
             project=json.loads(run('new','Bundle fixture','--goal','Offline CPU fixture','--json','--db',str(database),'--server',address))
+            interests=json.loads(run('interests','--project',project['project_id'],'--interest','edge adaptation','--bridge','control','--style','scout','--seconds','20','--pilots','1','--json','--db',str(database),'--server',address))
+            assert interests['style']=='scout' and interests['interests']==['edge adaptation'] and interests['pilot_seconds']==20
+            saved=json.loads(run('interests','--project',project['project_id'],'--json','--db',str(database),'--server',address));assert saved==interests
             status=json.loads(run('status','--project',project['project_id'],'--json','--db',str(database),'--server',address))
             assert status['session'] is None and not status['runs']
             assert json.loads(get('/api/health'))['pid']==pid

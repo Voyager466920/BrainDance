@@ -18,35 +18,31 @@
 
 A local research workspace that explores papers, develops and reviews hypotheses, writes experiments, runs them on your selected hardware, and reports the actual results. The interface and research conversation are Korean-first.
 
-## Install the macOS app
+## Install the standalone CLI
 
-1. Download the Apple Silicon ZIP and `SHA256SUMS.txt` from [Releases](https://github.com/Voyager466920/BrainDance/releases/latest).
-2. Verify the archive with `shasum -a 256 -c SHA256SUMS.txt`, then unzip it and move `BrainDance.app` to Applications.
-3. Install and authenticate Claude Code and Codex CLI on the same Mac:
-
-   ```sh
-   codex login
-   claude auth login
-   ```
-
-4. Set up the research engine and its documented prerequisites. Existing checkouts and Claude/Codex configuration are preserved.
-
-The main autonomous pipeline, its nested research Skills, and its original independent Reviewer reuse [ARIS](https://github.com/wanshuiyin/Auto-claude-code-research-in-sleep); Council adds advice after idea discovery and after measured results while the official pipeline drives implementation, experiments and review iterations. Follow its official prerequisite instructions and install the checkout at `~/.local/share/BrainDance/research-engine`.
-
-5. Open BrainDance, add a project, and select its local or SSH execution environment, devices and runtime budget.
-
-The distributed app bundles its backend; Python and Node.js are not required to open it. Model tasks use the authenticated CLIs and their account usage. The app is ad-hoc signed and is not notarized. GPU frameworks, models and datasets must exist on the selected execution target; selecting a device does not reserve it against other software.
-
-## Terminal / CLI
-
-Install the terminal command from the macOS app, then start it:
+Download `BrainDance-cli-macOS-arm64.zip` and `SHA256SUMS.txt` from [Releases](https://github.com/Voyager466920/BrainDance/releases/latest). Verify the archive checksum, unzip it, and install independently of the desktop app:
 
 ```sh
-"/Applications/BrainDance.app/Contents/Resources/BrainDanceServer" --install-cli
+mkdir -p ~/.local/share/BrainDance/cli
+cp -R BrainDanceCLI/. ~/.local/share/BrainDance/cli/
+~/.local/share/BrainDance/cli/BrainDanceServer --install-cli
 ~/.local/bin/braindance
 ```
 
-If `~/.local/bin` is already on your `PATH`, use `braindance` directly. The installer does not change your shell settings or overwrite an unrelated existing command. Python is bundled in the app.
+If `~/.local/bin` is on your `PATH`, use `braindance` directly. The CLI bundles Python, assets and dependencies; `BrainDance.app` is not required. The installer does not modify shell settings or overwrite an unrelated command. Source installs work with `python3 -m pip install -r requirements-cli.txt` and `python3 braindance.py install-cli`.
+
+Install and authenticate the official model CLIs:
+
+```sh
+codex login
+claude auth login
+```
+
+The main autonomous pipeline, its nested research Skills, and its original independent Reviewer reuse [ARIS](https://github.com/wanshuiyin/Auto-claude-code-research-in-sleep); Council adds advice after idea discovery and after measured results while the official pipeline drives implementation, experiments and review iterations. Follow its official prerequisite instructions and install the checkout at `~/.local/share/BrainDance/research-engine`.
+
+GPU frameworks, models and datasets belong on the selected local/SSH target. Selecting a device does not reserve it against other software. Tasks use the authenticated CLI accounts and their usage. The optional app/browser UI shares the same project settings and backend; building the native app is optional. Build a standalone executable using `python3 desktop/build_cli.py` after installing `desktop/requirements-build.txt`.
+
+## Terminal / CLI
 
 Running `braindance` immediately displays a muted green **BrainDance** wordmark with broad oblique strokes, cut corners, and a static scanline texture. Normal and narrow terminals stack the words; wide terminals show one line. Use `--no-banner`, `--no-color`, or `NO_COLOR=1` to simplify it. The separate `--banner` command has been removed. There is no flashing animation. The original lettering is shipped as text assets and can be regenerated with `python3 desktop/make_terminal_logo.py`; no font or image library is needed at runtime.
 
@@ -101,6 +97,21 @@ Creating a project does not start model calls or experiments. `devices` actually
 To retry an experiment after resolving an environment issue, start a new automatic session with `auto start --reuse-research` and the desired `--context`, `--cycles`, `--calls`, and `--tokens`. This requires completed Council results, verified literature receipts, and active hypotheses in the same project. It skips discovery and Council calls while generating and reviewing fresh executable code against the current target and directions. Prior sessions, failures, and token charges remain recorded; the new session has its own model budget, and prior experiment runtime still counts against the unchanged project device/time assignment.
 
 By default, the CLI attaches to `http://127.0.0.1:8766` or starts one detached local backend when none is running. It checks the workspace identity before connecting and refuses a different workspace. Start the CLI first if you want a backend independent of the GUI's lifetime; an already-running GUI-owned backend remains owned by that app. The private backend log is `~/Library/Application Support/BrainDance/cli-backend.log`. `--no-start` requires an existing server. For a separate workspace, use `--db /absolute/path/tree.sqlite3 --port 8770`; for an existing alternate port, use `--db ... --server http://127.0.0.1:8770`. Remote HTTP servers are not supported; SSH execution is handled by the same local backend.
+
+## Paper scouting
+
+Each project stores its own interests and optional bridge fields. Leave bridge fields empty to let the main executor choose adjacent fields and record its rationale. Scouting retrieves recent papers and explicitly labelled older cross-domain papers, retains real source receipts, and avoids re-testing completed connections. The normal main research executor and original independent Reviewer remain in charge; full Council review is reserved for measured promising results in scouting mode.
+
+```sh
+braindance new "Edge research" --goal "Transfer ideas to on-device adaptation" --style scout --interest "on-device adaptation" --bridge "control theory" --target local --devices cpu --minutes 5
+braindance interests --project "Edge research" --days 30 --pilots 2 --seconds 60 --gain 0.05 --seeds 3
+braindance scout start --project "Edge research"
+braindance scout status --project "Edge research"
+```
+
+Use `/interests` and `/scout` in the terminal workspace. The app/browser provides the same project interest form and research-style selector. Promising reports appear in the same project conversation with source links, measured comparisons, seed values, limitations and next steps; negative pilots stay in the journal.
+
+The default screen requires 5% relative improvement, three distinct measured seeds and improvement in at least two thirds of the seeds. Aggregate metrics must agree with seed means. This is pilot triage, not a significance test or novelty claim. Maximize/minimize metrics are supported; zero baselines remain inconclusive. Source errors and missing results stay explicit. Each start is one bounded batch; no recurring schedule is automatically created.
 
 ## Results, visualization, and Notion
 

@@ -19,7 +19,7 @@ import uuid
 
 
 LOGO_ASSETS=Path(getattr(sys,'_MEIPASS',Path(__file__).resolve().parent.parent))/'assets'
-PHASES={'native-pipeline':'자율 연구','native-discovery':'아이디어 탐색','native-implementation':'자율 구현·실험','native-review':'Reviewer 검토·개선','native-council':'Council 추가 평가','native-completed':'자율 연구 완료','preflight':'준비','environment':'환경 확인','exploration':'서버·코드 탐색','inspected':'탐색 완료',
+PHASES={'scout-search':'논문 탐색','native-pipeline':'자율 연구','native-discovery':'아이디어 탐색','native-implementation':'자율 구현·실험','native-review':'Reviewer 검토·개선','native-council':'Council 추가 평가','native-completed':'자율 연구 완료','preflight':'준비','environment':'환경 확인','exploration':'서버·코드 탐색','inspected':'탐색 완료',
  'literature':'논문 탐색','verification':'논문 확인','generation':'가설 생성','peer-review':'교차 평가',
  'chairman':'종합','coding':'실험 코드 작성','code-review':'코드 검토','registering':'계획 등록',
  'experiment_approval':'실행 코드 준비','blocked':'확인 필요','analysis':'결과 분석','analyzed':'분석 완료'}
@@ -195,6 +195,7 @@ def display_message(message,full=False):
 def status_text(project,state):
     usage=state.get('usage');session=state.get('session');lines=[project['title']]
     if session:lines.append({'running':'자동모드 ON','paused':'일시정지','blocked':'확인 필요','completed':'완료','stopped':'중지'}.get(session['status'],session['status'])+' · '+session['message'])
+    if session and session.get('config',{}).get('research_style')=='scout':lines.append('연구 방식 · 논문 탐색 / 작은 실험')
     if usage:lines.append('모델 호출 '+str(usage['calls'])+' / '+str(usage['max_calls'])+' · 남은 '+str(max(0,usage['max_calls']-usage['calls']))+'회 · 토큰 예상·예약 '+str(usage['charged_tokens'])+' / '+str(usage['token_budget']))
     for job in state.get('jobs',[]):
         lines.append('연구 '+job['state']+' · '+PHASES.get(job['phase'],job['phase'])+' · job:'+job['id'])
@@ -260,7 +261,9 @@ def parser():
     q=sub.add_parser('chat',parents=[common]);q.add_argument('message');q.add_argument('--mode',choices=['auto','ask','next','restart'],default='auto');q.add_argument('--no-wait',action='store_true');q.add_argument('--timeout',type=int,default=300);q.add_argument('--request-id');q.add_argument('--reply-to',help='job:ID, session:ID 또는 run:ID')
     q=sub.add_parser('limits',parents=[common]);q.add_argument('--calls',type=int);q.add_argument('--tokens',type=int)
     q=sub.add_parser('auto',parents=[common]);q.add_argument('action',choices=['start','pause','resume','stop']);q.add_argument('--cycles',type=int,default=3);q.add_argument('--calls',type=int,default=40);q.add_argument('--tokens',type=int,default=1500000);q.add_argument('--context',default='');q.add_argument('--mode',choices=['lite','balanced','deep'],default='balanced');q.add_argument('--reuse-research',action='store_true',help='Reuse this project\'s completed Council and verified literature; re-author and review the next experiment')
-    q=sub.add_parser('new',parents=[common]);q.add_argument('name');q.add_argument('--goal',required=True);q.add_argument('--target',default='local');q.add_argument('--devices',default='cpu');q.add_argument('--minutes',type=int,default=30)
+    q=sub.add_parser('interests',parents=[common]);q.add_argument('--interest',action='append');q.add_argument('--bridge',action='append');q.add_argument('--clear-bridges',action='store_true');q.add_argument('--style',choices=['focused','scout']);q.add_argument('--days',type=int);q.add_argument('--papers',type=int);q.add_argument('--pilots',type=int);q.add_argument('--seconds',type=int);q.add_argument('--gain',type=float);q.add_argument('--seeds',type=int)
+    q=sub.add_parser('scout',parents=[common]);q.add_argument('action',choices=['start','status','pause','resume','stop'],default='status',nargs='?');q.add_argument('--calls',type=int,default=80);q.add_argument('--tokens',type=int,default=3000000);q.add_argument('--context',default='');q.add_argument('--mode',choices=['lite','balanced','deep'],default='lite')
+    q=sub.add_parser('new',parents=[common]);q.add_argument('name');q.add_argument('--goal',required=True);q.add_argument('--target',default='local');q.add_argument('--devices',default='cpu');q.add_argument('--minutes',type=int,default=30);q.add_argument('--interest',action='append',default=[]);q.add_argument('--bridge',action='append',default=[]);q.add_argument('--style',choices=['focused','scout'],default='focused')
     q=sub.add_parser('target',parents=[common]);q.add_argument('profile');q.add_argument('--devices',required=True);q.add_argument('--minutes',type=int,default=30)
     q=sub.add_parser('connection',parents=[common]);q.add_argument('alias');q.add_argument('--name')
     q=sub.add_parser('logs',parents=[common]);q.add_argument('kind',choices=['job','run']);q.add_argument('id')
@@ -283,8 +286,19 @@ def dispatch(client,args,project=None):
     if command=='connection':return client.request('/api/compute/profile',dict(name=args.name or args.alias,kind='ssh',host=args.alias,user='',port=None,identity_file=''))
     if command=='devices':return client.request('/api/compute/probe',dict(profile_id=profile_for(client,args.profile)['id']))
     if command=='new':
-        return client.request('/api/project',dict(name=args.name,goal=args.goal,compute=dict(profile_id=profile_for(client,args.target)['id'],device_ids=args.devices.split(','),max_parallel_runs=1,time_budget_minutes=args.minutes,auto_run=False)))
+        return client.request('/api/project',dict(name=args.name,goal=args.goal,research_preferences=dict(style=args.style,interests=args.interest,bridge_fields=args.bridge),compute=dict(profile_id=profile_for(client,args.target)['id'],device_ids=args.devices.split(','),max_parallel_runs=1,time_budget_minutes=args.minutes,auto_run=False)))
     project=client.project(args.project) if hasattr(args,'project') else project or client.project()
+    if command=='interests':
+        mapping={'interest':'interests','bridge':'bridge_fields','style':'style','days':'lookback_days','papers':'max_papers','pilots':'max_pilots','seconds':'pilot_seconds','gain':'min_improvement','seeds':'min_seeds'}
+        changes={field:getattr(args,key) for key,field in mapping.items() if getattr(args,key,None) is not None}
+        if args.clear_bridges:changes['bridge_fields']=[]
+        if changes:return client.request('/api/project/research-settings',dict(project_id=project['id'],settings=changes))
+        return client.request('/api/project/research-settings?'+urllib.parse.urlencode(dict(project_id=project['id'])))
+    if command=='scout':
+        if args.action=='status':return client.control(project)
+        payload=dict(project_id=project['id'],action=args.action)
+        if args.action=='start':payload.update(research_style='scout',max_model_calls=args.calls,token_budget=args.tokens,context_path=args.context,mode=args.mode)
+        return client.request('/api/control/automatic',payload)
     if command in {'report','notion'}:
         query='?'+urllib.parse.urlencode(dict(project_id=project['id']))
         if command=='report' and args.action=='build':return client.request('/api/reports/build',dict(project_id=project['id']))
@@ -364,15 +378,20 @@ def output(value,args,project=None):
             print('로컬 파일 '+file_size(value.get('removed_file_bytes',0))+' · 데이터베이스 '+file_size(value.get('reclaimed_database_bytes',0))+' 정리')
             if value.get('error'):print(safe_text(value['error'])+'\n휴지통에서 같은 프로젝트의 완전 삭제를 다시 시도하세요.')
         else:print(('휴지통으로 이동: ' if args.command=='delete' else '복원: ')+safe_text(value['title']))
+    elif args.command=='interests':
+        print('연구 방식: '+('탐색' if value['style']=='scout' else '집중 연구'))
+        print('관심 분야: '+(', '.join(value['interests']) or '미설정'))
+        print('연결 분야: '+(', '.join(value['bridge_fields']) or '자동 선택'))
+        print(f"최근 {value['lookback_days']}일 · 논문 {value['max_papers']}개 · 작은 실험 {value['max_pilots']}회 × 최대 {value['pilot_seconds']}초 · 상대 개선 {value['min_improvement']:.1%} · seed {value['min_seeds']}개")
     elif args.command=='status':print(status_text(project,value))
     elif args.command=='chat':print(display_message(value,True))
     elif args.command=='history':
         for message in value:print(display_message(message,args.full))
     elif args.command=='tree':
         for n in value:print('  '*n['depth']+('- ' if n['status']!='discarded' else 'x ')+safe_text(n['title'])+'  ['+n['status']+']')
-    elif args.command in {'auto','limits'}:
+    elif args.command in {'auto','limits','scout'}:
         usage=value.get('usage',value) if value else None
-        if args.command=='auto':print(status_text(project,value))
+        if args.command in {'auto','scout'}:print(status_text(project,value))
         elif usage:print('모델 호출 '+str(usage['calls'])+' / '+str(usage['max_calls'])+' · 토큰 예상·예약 '+str(usage['charged_tokens'])+' / '+str(usage['token_budget']))
         else:print('자동모드 실행 한도가 아직 없습니다.')
     elif args.command=='connections':

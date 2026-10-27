@@ -32,3 +32,5 @@ An already-running `discovery-to-results` session keeps its controller until it 
 ## Validation
 
 Distinguish offline transport checks (mocked model answers), real CPU executor checks, and an actual native research run. Only the last demonstrates live official Skill participation; report its exact completed stages and any blocker. A failed or incomplete live run is not an end-to-end success.
+
+Successful original Skill receipts are reused across interrupted jobs within the same automatic authorization/workspace. Source traces remain linked per job; unrelated sessions cannot borrow them. Local context/receipt/triage reads and final report storage do not spend another model call. If a model already requested finish but budget admission stopped local bookkeeping, resume replays only that exact finish request against the normal host verifiers. A successful host finish terminates the closing CLI turn rather than requiring an extra conversational sign-off. Stream usage remains distinct from an unavailable final aggregate receipt.

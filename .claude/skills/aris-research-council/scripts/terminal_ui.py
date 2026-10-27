@@ -36,7 +36,7 @@ from terminal_presenter import (STATES,readable,short,clock,duration,provider_li
 
 TABS=['대화','진행','아이디어','계획','실험','설정','결과']
 MODES=[('auto','대화'),('ask','질문만'),('next','다음 방향'),('restart','중지 후 재준비')]
-SLASH=['/settings','/gpt','/claude','/ssh','/gpu','/notion','/reports','/projects','/new','/delete','/trash','/restore','/purge','/keys','/help','/exit','/quit']
+SLASH=['/interests','/scout','/settings','/gpt','/claude','/ssh','/gpu','/notion','/reports','/projects','/new','/delete','/trash','/restore','/purge','/keys','/help','/exit','/quit']
 
 
 def whitespace_boundary(text,position,direction):
@@ -149,7 +149,7 @@ class ResearchTerminal:
             ConditionalContainer(self.buttons([('가설에 지시',self.direct_idea),('활성',lambda:self.spawn(self.node_status('active'))),('보류',lambda:self.spawn(self.node_status('held'))),('폐기',lambda:self.spawn(self.node_status('discarded')))]),Condition(lambda:self.tab==2)),
             ConditionalContainer(self.buttons([('계획에 지시',self.direct_plan),('코드 보기',self.code_dialog)]),Condition(lambda:self.tab==3)),
             ConditionalContainer(self.buttons([('실험에 지시',self.direct_run),('이 실험 중지',lambda:self.spawn(self.cancel_run()))]),Condition(lambda:self.tab==4)),
-            ConditionalContainer(HSplit([self.buttons([('GPT 연결',lambda:self.provider_dialog('GPT')),('Claude 연결',lambda:self.provider_dialog('Claude')),('SSH 추가',self.ssh_dialog),('서버·GPU',self.resource_dialog)]),self.buttons([('연결 갱신',lambda:self.spawn(self.refresh_providers(True))),('장치 조회',lambda:self.spawn(self.probe_selected())),('한도',self.limits_dialog),('새 프로젝트',self.new_project_dialog),('Notion',lambda:self.spawn(self.notion_dialog()))])]),Condition(lambda:self.tab==5)),
+            ConditionalContainer(HSplit([self.buttons([('GPT 연결',lambda:self.provider_dialog('GPT')),('Claude 연결',lambda:self.provider_dialog('Claude')),('SSH 추가',self.ssh_dialog),('서버·GPU',self.resource_dialog)]),self.buttons([('연결 갱신',lambda:self.spawn(self.refresh_providers(True))),('장치 조회',lambda:self.spawn(self.probe_selected())),('한도',self.limits_dialog),('새 프로젝트',self.new_project_dialog),('관심 분야',lambda:self.spawn(self.interests_dialog())),('Notion',lambda:self.spawn(self.notion_dialog()))])]),Condition(lambda:self.tab==5)),
             ConditionalContainer(self.buttons([('보고서 만들기',lambda:self.spawn(self.report_action(False))),('시각화 열기',lambda:self.spawn(self.open_report())),('Notion 동기화',lambda:self.spawn(self.report_action(True))),('Notion 설정',lambda:self.spawn(self.notion_dialog()))]),Condition(lambda:self.tab==6))]
         lists=HSplit([
             ConditionalContainer(Box(self.idea_list,padding=0),Condition(lambda:self.tab==2)),
@@ -217,7 +217,9 @@ class ResearchTerminal:
 
     def buttons(self,items):return VSplit([Button(text,handler=lambda f=handler:self.invoke(f),width=max(10,len(text)*2+2)) for text,handler in items],padding=1,height=1)
 
-    def header(self):return ' BrainDance  /  '+safe_text(self.project['title'] if self.project else '프로젝트 선택')
+    def header(self):
+        style=(self.state.get('session') or {}).get('config',{}).get('research_style')
+        return ' BrainDance  /  '+safe_text(self.project['title'] if self.project else '프로젝트 선택')+(' · 논문 탐색' if style=='scout' else '')
 
     def detail_title(self):
         title={0:'대화',1:'진행 상황',2:'아이디어 상세',3:'계획 상세',4:'실험 상세',5:'설정',6:'결과 · 시각화'}.get(self.tab,'')
@@ -396,7 +398,7 @@ class ResearchTerminal:
             a=resource['assignment'];lines.extend(['','시간 예산 '+str(a['time_budget_minutes'])+'분 · 동시 실험 '+str(a['max_parallel_runs'])+'개'])
         link=self.reports.get('link');lines.extend(['','Notion · '+('연결됨' if self.reports.get('connected') and link else '설정 필요')+(' · 자동 동기화 ON' if link and link['auto_sync'] else ''),'결과 탭에서 보고서와 그래프를 확인할 수 있습니다.'])
         lines.extend(['','조작','탭 클릭 / Alt+1–7 / Ctrl+B 다음 1–7 또는 N·P','Ctrl+P 프로젝트 · Ctrl+O 입력 방식 · PageUp/Down 기록 스크롤',
-            '모든 탭의 입력은 같은 프로젝트 대화에 기록됩니다.','/settings · /gpt · /claude · /ssh · /gpu · /notion · /reports · /projects · /new · /help · /exit','/delete 삭제 · /trash 휴지통 · /restore 복원 · /purge 완전 삭제 (이름 확인)'])
+            '모든 탭의 입력은 같은 프로젝트 대화에 기록됩니다.','/interests 관심 분야 · /scout 논문 탐색 · /settings · /gpt · /claude · /ssh · /gpu · /notion · /reports · /projects · /new · /help · /exit','/delete 삭제 · /trash 휴지통 · /restore 복원 · /purge 완전 삭제 (이름 확인)'])
         return '\n'.join(lines)
 
     async def call(self,fn,*args):
@@ -529,7 +531,14 @@ class ResearchTerminal:
     async def slash(self,text):
         words=shlex.split(text[1:]);command=words[0] if words else 'help'
         if command in {'quit','exit'}:self.app.exit();return
-        if command in {'settings','설정'}:self.select_tab(5)
+        if command=='interests' and len(words)==1:await self.interests_dialog()
+        elif command=='scout' and len(words)==1:self.start_dialog(research_style='scout')
+        elif command in {'interests','scout'}:
+            try:
+                with redirect_stderr(io.StringIO()):args=parser().parse_args(words)
+            except SystemExit as error:raise ClientError('/interests 또는 /scout start|status|pause|resume|stop 형식을 확인하세요.') from error
+            result=await self.call(dispatch,self.client,args,self.project);self.notice='탐색 설정을 저장했습니다.' if command=='interests' else '탐색 · '+(result.get('session') or {}).get('status','시작 전');self.wakeup.set()
+        elif command in {'settings','설정'}:self.select_tab(5)
         elif command in {'gpt','claude'}:self.provider_dialog('GPT' if command=='gpt' else 'Claude')
         elif command=='ssh':self.ssh_dialog()
         elif command=='gpu':self.resource_dialog()
@@ -689,15 +698,26 @@ class ResearchTerminal:
         self.dialog('프로젝트 완전 삭제',HSplit([Label(purge_summary(preview)),Label('확인: 프로젝트 이름을 그대로 입력하세요.'),confirmation]),[('완전 삭제',lambda:self.spawn(remove())),('취소',self.close_dialog)],confirmation)
 
     def new_project_dialog(self):
-        name=TextArea(multiline=False);goal=TextArea(height=3)
+        name=TextArea(multiline=False);goal=TextArea(height=3);interests=TextArea(height=2);bridges=TextArea(height=2)
+        style=self.navigable_list(RadioList([('focused','집중 연구'),('scout','논문 탐색 · 작은 실험')],default='focused',select_on_focus=True))
         def next_step():
             if not name.text.strip():self.notice='프로젝트 이름을 입력하세요.';return
             async def create(assignment):
-                record=await self.call(self.client.request,'/api/project',dict(name=name.text,goal=goal.text,compute=assignment))
+                record=await self.call(self.client.request,'/api/project',dict(name=name.text,goal=goal.text,research_preferences=dict(style=style.current_value,interests=[v.strip() for v in interests.text.replace('\n',',').split(',') if v.strip()],bridge_fields=[v.strip() for v in bridges.text.replace('\n',',').split(',') if v.strip()]),compute=assignment))
                 while self.modals:self.close_dialog()
                 project=await self.call(self.client.project,record['project_id']);await self.select_project(project)
             self.resource_dialog(on_apply=create,title='새 프로젝트 · 실행 환경')
-        self.dialog('새 프로젝트',HSplit([Label('프로젝트 이름'),name,Label('연구 목표'),goal]),[('다음 · 서버와 GPU',next_step),('취소',self.close_dialog)],name)
+        self.dialog('새 프로젝트',HSplit([Label('프로젝트 이름'),name,Label('연구 목표'),goal,Label('관심 분야 · 쉼표/줄바꿈으로 구분'),interests,Label('연결할 다른 분야 · 비우면 자동 선택'),bridges,Box(style,height=2,padding=0)]),[('다음 · 서버와 GPU',next_step),('취소',self.close_dialog)],name)
+
+    async def interests_dialog(self):
+        pid=self.require_project();prefs=await self.call(self.client.request,'/api/project/research-settings?'+urllib.parse.urlencode(dict(project_id=pid)))
+        interests=TextArea(text='\n'.join(prefs['interests']),height=2);bridges=TextArea(text='\n'.join(prefs['bridge_fields']),height=2)
+        days=TextArea(text=str(prefs['lookback_days']),multiline=False);pilots=TextArea(text=str(prefs['max_pilots']),multiline=False);seconds=TextArea(text=str(prefs['pilot_seconds']),multiline=False);gain=TextArea(text=str(prefs['min_improvement']),multiline=False)
+        style=self.navigable_list(RadioList([('focused','집중 연구'),('scout','논문 탐색 · 작은 실험')],default=prefs['style'],select_on_focus=True))
+        async def save():
+            changes=dict(interests=[v.strip() for v in interests.text.replace('\n',',').split(',') if v.strip()],bridge_fields=[v.strip() for v in bridges.text.replace('\n',',').split(',') if v.strip()],style=style.current_value,lookback_days=int(days.text),max_pilots=int(pilots.text),pilot_seconds=int(seconds.text),min_improvement=float(gain.text))
+            await self.call(self.client.request,'/api/project/research-settings',dict(project_id=pid,settings=changes));self.close_dialog();self.notice='프로젝트 관심 분야를 저장했습니다.'
+        self.dialog('프로젝트 관심 분야',HSplit([Label('관심 분야 · 쉼표/줄바꿈'),interests,Label('연결할 다른 분야 · 비우면 자동 선택'),bridges,Box(style,height=2,padding=0),VSplit([Label('최근 며칠'),days,Label('작은 실험 횟수'),pilots],height=1),VSplit([Label('실험당 최대 초'),seconds,Label('상대 개선 기준 · 0.05=5%'),gain],height=1)]),[('저장',lambda:self.spawn(save())),('취소',self.close_dialog)],interests)
 
     def resource_dialog(self,on_apply=None,title='서버와 GPU'):
         if not self.project and on_apply is None:raise ClientError('프로젝트를 먼저 선택하세요.')
@@ -779,16 +799,19 @@ class ResearchTerminal:
         if not self.project:raise ClientError('프로젝트를 먼저 선택하세요.')
         return self.project['id']
 
-    def start_dialog(self):
+    def start_dialog(self,research_style=None):
         pid=self.require_project()
         current=self.state.get('session')
         if current and current['status'] in {'running','paused','blocked'}:self.select_tab(1);self.notice='기존 자동 연구를 재개하거나 한도를 조정하세요.';return
-        cycles=TextArea(text='3',multiline=False);calls=TextArea(text='40',multiline=False);tokens=TextArea(text='1500000',multiline=False);folder=TextArea(multiline=False)
-        mode=self.navigable_list(RadioList([('lite','Lite'),('balanced','Balanced'),('deep','Deep')],default='balanced',select_on_focus=True))
+        root=next((n for n in self.tree.get('nodes',[]) if n['project_id']==pid and not n['parent_id']),{})
+        preferences=root.get('metadata',{}).get('research_preferences',{});research_style=research_style or preferences.get('style','focused');scouting=research_style=='scout'
+        cycles=TextArea(text=str(preferences.get('max_pilots',2)) if scouting else '3',multiline=False);calls=TextArea(text='80' if scouting else '40',multiline=False);tokens=TextArea(text='3000000' if scouting else '1500000',multiline=False);folder=TextArea(multiline=False)
+        style=self.navigable_list(RadioList([('focused','집중 연구'),('scout','논문 탐색 · 작은 실험')],default=research_style,select_on_focus=True))
+        mode=self.navigable_list(RadioList([('lite','Lite'),('balanced','Balanced'),('deep','Deep')],default='lite' if scouting else 'balanced',select_on_focus=True))
         async def start():
-            await self.call(self.client.request,'/api/control/automatic',dict(project_id=pid,action='start',max_cycles=int(cycles.text),max_model_calls=int(calls.text),token_budget=int(tokens.text),context_path=folder.text,mode=mode.current_value))
+            await self.call(self.client.request,'/api/control/automatic',dict(project_id=pid,action='start',max_cycles=int(cycles.text),max_model_calls=int(calls.text),token_budget=int(tokens.text),context_path=folder.text,mode=mode.current_value,research_style=style.current_value))
             self.close_dialog();self.select_tab(1)
-        self.dialog('프로젝트 자동 연구 시작',HSplit([Label(self.resource_header()),Label('검토된 실험을 선택한 장치·시간·모델 한도 안에서 자동 실행합니다.'),Label('대상 서버의 연구 폴더'),folder,VSplit([Label('실험 횟수'),cycles,Label('모델 호출 한도'),calls],height=1),Label('토큰 예상·예약 한도'),tokens,Box(mode,height=3,padding=0)]),[('자동 시작',lambda:self.spawn(start())),('취소',self.close_dialog)],folder)
+        self.dialog('프로젝트 자동 연구 시작',HSplit([Label(self.resource_header()),Box(style,height=2,padding=0),Label('검토된 실험을 선택한 장치·시간·모델 한도 안에서 자동 실행합니다.'),Label('대상 서버의 연구 폴더'),folder,VSplit([Label('실험 횟수'),cycles,Label('모델 호출 한도'),calls],height=1),Label('토큰 예상·예약 한도'),tokens,Box(mode,height=3,padding=0)]),[('자동 시작',lambda:self.spawn(start())),('취소',self.close_dialog)],folder)
 
     async def automatic(self,action):
         pid=self.require_project();await self.call(self.client.request,'/api/control/automatic',dict(project_id=pid,action=action));self.notice='자동 연구 '+{'pause':'일시정지','resume':'재개','stop':'중지'}[action]

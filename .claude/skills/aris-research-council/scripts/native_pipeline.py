@@ -60,11 +60,49 @@ When the native review loop reaches its own stopping condition or the allowed ex
 '''
 
 
+def session_skill_receipts(job):
+    """Reuse actual successful Skill receipts within this automatic research session."""
+    store=TreeStore(job['db']);invoked=set();sources=[];pending_finish=None
+    with store._connect() as conn:
+        rows=conn.execute('SELECT id,config,run_dir,state,error,message FROM research_jobs WHERE project_id=? ORDER BY created_at',(job['project_id'],)).fetchall()
+    for row in rows:
+        config=json.loads(row['config'])
+        if config.get('auto_session_id')!=job.get('auto_session_id') or config.get('native_workspace')!=job.get('native_workspace'):continue
+        trace=Path(row['run_dir'])/'native.stdout.jsonl'
+        if not trace.is_file():continue
+        requested={};succeeded=set();finish_request=None
+        for line in trace.read_text().splitlines():
+            try:event=json.loads(line)
+            except ValueError:continue
+            content=(event.get('message') or {}).get('content',[])
+            for block in content if isinstance(content,list) else []:
+                if block.get('type')=='tool_use' and block.get('name')=='Skill':requested[block['id']]=block.get('input',{}).get('skill','').split(':')[-1]
+                if block.get('type')=='tool_use' and block.get('name')=='mcp__codex__finish':finish_request=block.get('input',{})
+                if block.get('type')=='tool_result' and not block.get('is_error') and '<tool_use_error>' not in str(block.get('content')):succeeded.add(block.get('tool_use_id'))
+        found={requested[key] for key in requested.keys() & succeeded};invoked.update(found)
+        if found:sources.append(dict(job_id=row['id'],skills=sorted(found),trace=str(trace)))
+        error=(row['error'] or row['message'] or '').lower()
+        if row['id']!=job['id'] and row['state'] in {'failed','interrupted'} and finish_request and config.get('steering',{}).get('revision')==job.get('steering',{}).get('revision') and ('budget' in error or '한도' in error):pending_finish=finish_request
+    return invoked,sources,pending_finish
+
+
 def run(job,root,progress):
     work,plugin=install(job)
+    known,sources,pending_finish=session_skill_receipts(job)
+    if pending_finish:
+        try:completed=Host(job).execute('finish',dict(pending_finish))
+        except (ValueError,RuntimeError,OSError,KeyError):pass
+        else:
+            council.dump(root/'native-completion.json',completed);council.dump(root/'native-skill-receipts.json',dict(invoked=sorted(known),source_jobs=sources,reused=True));council.dump(root/'native-usage.json',dict(model=job['literature_model'],messages=0,tokens=0,replayed_local_finish=True))
+            progress.emit('native-completed','기존 모델의 보고 요청을 재사용해 검증된 결과를 저장했습니다. 추가 모델 호출은 없습니다.',state='completed');return
     host=command('--native-host',str(root/'job.json'))
     mcp=work/'.host-mcp.json';council.dump(mcp,dict(mcpServers={'codex':dict(command=host[0],args=host[1:])}))
-    (work/'CLAUDE.md').write_text(CONTRACT)
+    contract=CONTRACT
+    if job.get('research_style')=='scout':
+        from scout import CONTRACT as scout_contract
+        contract+='\n'+scout_contract
+        council.dump(root/'scout-settings.json',job.get('scout_preferences',{}))
+    (work/'CLAUDE.md').write_text(contract)
     statefile=work/'native-session.json';state=council.read_json(statefile) if statefile.exists() else {}
     argv=['claude','-p','--verbose','--output-format','stream-json','--model',job['literature_model'],
           '--plugin-dir',str(plugin),'--restricted','--setting-sources','project','--strict-mcp-config','--mcp-config',str(mcp),
@@ -74,11 +112,11 @@ def run(job,root,progress):
           '--disallowedTools','Bash,Agent','--max-turns',str(job.get('native_max_turns',120)),
           '--max-budget-usd',str(job.get('native_usd_limit',8))]
     if state.get('session_id'):argv+=['--resume',state['session_id']]
-    prompt=CONTRACT+'\nResearch direction (human authority):\n'+job['topic']+'\nAuthorized automatic run id: '+job['auto_session_id']+'; reuse the upstream run state for this authorization when resuming, otherwise begin a new upstream run while preserving previous reports.\nBegin by reading host context. Continue until the native pipeline completes or a real host budget/stop prevents progress.'
+    prompt=contract+'\nResearch direction (human authority):\n'+job['topic']+'\nAuthorized automatic run id: '+job['auto_session_id']+'; reuse the upstream run state for this authorization when resuming, otherwise begin a new upstream run while preserving previous reports.\nBegin by reading host context. Continue until the native pipeline completes or a real host budget/stop prevents progress.'
     (root/'native-request.txt').write_text(prompt)
     from session_budget import update
     key=str(root/'native-usage.json');update(job['session_budget'],'reserve',key=key,calls=1,estimate=50000)
-    messages={};requested={};succeeded=set();results=[];reserved=1
+    messages={};requested={};succeeded=set();results=[];reserved=1;finish_ids=set();host_finished=False
     progress.emit('native-pipeline','메인 연구 세션이 공식 자율 파이프라인을 실행합니다.')
     env=os.environ.copy();env['ARIS_REPO']=str(Path(job['aris_repo']).resolve());env['CLAUDE_CODE_MAX_OUTPUT_TOKENS']='7000'
     with (root/'native.stdout.jsonl').open('w') as out,(root/'native.stderr.log').open('w') as err:
@@ -110,12 +148,18 @@ def run(job,root,progress):
                             update(job['session_budget'],'record',key=str(root/'native-usage.json'),tokens=total)
                             council.dump(root/'native-usage.json',dict(model=job['literature_model'],messages=len(messages),tokens=total,usage=messages))
                         for b in msg.get('content',[]) if isinstance(msg.get('content'),list) else []:
+                            if b.get('type')=='tool_use' and b.get('name')=='mcp__codex__finish':finish_ids.add(b['id'])
+                            if b.get('type')=='tool_result' and b.get('tool_use_id') in finish_ids and not b.get('is_error'):
+                                saved=work/'native-completion.json'
+                                if saved.is_file():
+                                    done=council.read_json(saved);host_finished=done.get('job_id')==job['id'] and done.get('auto_session_id')==job['auto_session_id']
                             if b.get('type')=='tool_use' and b.get('name')=='Skill':
                                 skill=b.get('input',{}).get('skill','');requested[b['id']]=skill
                                 phase={'idea-discovery':'native-discovery','experiment-bridge':'native-implementation','auto-review-loop':'native-review'}.get(skill.split(':')[-1],'native-pipeline')
                                 progress.emit(phase,'메인 자율 연구가 '+skill.split(':')[-1]+' 단계를 수행합니다.')
                             if b.get('type')=='tool_result' and not b.get('is_error') and '<tool_use_error>' not in str(b.get('content')):succeeded.add(b.get('tool_use_id'))
                         if row.get('type')=='result':results.append(row)
+                if host_finished:break
                 eventfile=work/'host-progress.json'
                 if eventfile.exists():
                     event=council.read_json(eventfile)
@@ -124,15 +168,24 @@ def run(job,root,progress):
                 with TreeStore(job['db'])._connect() as conn:
                     session=conn.execute('SELECT status FROM automatic_sessions WHERE id=?',(job['auto_session_id'],)).fetchone()
                 if not session or session['status']!='running':raise InterruptedError('프로젝트가 일시정지 또는 중지되었습니다. 원본 세션을 보존했습니다.')
-            p.wait(timeout=5)
+            if host_finished and p.poll() is None:os.killpg(p.pid,signal.SIGTERM)
+            try:p.wait(timeout=5)
+            except subprocess.TimeoutExpired:os.killpg(p.pid,signal.SIGKILL);p.wait(timeout=3)
+            if host_finished:council.dump(root/'native-usage.json',dict(model=job['literature_model'],messages=len(messages),tokens=sum(council.tokens(u) for u in messages.values()),usage=messages,source='stream_until_validated_host_finish',closing_response_not_required=True))
             if results:
                 result=results[-1];observed=max(sum(council.tokens(u) for u in messages.values()),council.claude_tokens(result.get('modelUsage'),result.get('usage',{})))
                 update(job['session_budget'],'record',key=str(root/'native-usage.json'),tokens=observed)
                 council.dump(root/'native-usage.json',dict(model=job['literature_model'],messages=len(messages),tokens=observed,usage=messages,model_usage=result.get('modelUsage'),provider_usage=result.get('usage'),total_cost_usd=result.get('total_cost_usd')))
-            skills={requested[i].split(':')[-1] for i in requested.keys() & succeeded}
-            council.dump(root/'native-skill-receipts.json',dict(invoked=sorted(skills),requested=requested,succeeded=sorted(succeeded)))
-            if p.returncode or not results or results[-1].get('is_error') or results[-1].get('subtype')!='success':raise RuntimeError('공식 연구 세션이 완료되지 않았습니다. 원본 세션·오류·사용량을 보존했습니다.')
-            if not set(SKILLS)<=skills:raise RuntimeError('공식 파이프라인과 하위 Skills의 실제 성공 호출 기록이 불완전합니다.')
+            current_skills={requested[i].split(':')[-1] for i in requested.keys() & succeeded}
+            skills,sources,_=session_skill_receipts(job)
+            council.dump(root/'native-skill-receipts.json',dict(invoked=sorted(skills),current_invoked=sorted(current_skills),source_jobs=sources,requested=requested,succeeded=sorted(succeeded)))
+            if not host_finished and (p.returncode or not results or results[-1].get('is_error') or results[-1].get('subtype')!='success'):raise RuntimeError('공식 연구 세션이 완료되지 않았습니다. 원본 세션·오류·사용량을 보존했습니다.')
+            required=set(SKILLS)
+            if job.get('research_style')=='scout':
+                required.add('research-lit')
+                receipt_path=work/'native-completion.json'
+                if receipt_path.is_file() and not council.read_json(receipt_path).get('run_ids'):required={'research-pipeline','research-lit','idea-discovery'}
+            if not required<=skills:raise RuntimeError('공식 파이프라인과 하위 Skills의 실제 성공 호출 기록이 불완전합니다.')
             for name,digest in council.read_json(plugin/'source-manifest.json').items():
                 if hashlib.sha256((plugin/name).read_bytes()).hexdigest()!=digest:raise RuntimeError('공식 Skill 원본이 변경되어 완료로 처리하지 않습니다.')
             receipt=work/'native-completion.json'
@@ -164,24 +217,26 @@ class Host:
         client=Client(self.job['native_api'],self.job['db']);client.health()
         return client.request('/api/native/action',dict(job_id=self.job['id'],action=action,**args))
     def require_skill(self,name):
-        requested={};succeeded=set()
-        trace=self.root/'native.stdout.jsonl'
-        if trace.exists():
-            for line in trace.read_text().splitlines():
-                try:row=json.loads(line)
-                except ValueError:continue
-                content=(row.get('message') or {}).get('content',[])
-                for block in content if isinstance(content,list) else []:
-                    if block.get('type')=='tool_use' and block.get('name')=='Skill':requested[block['id']]=block.get('input',{}).get('skill','').split(':')[-1]
-                    if block.get('type')=='tool_result' and not block.get('is_error') and '<tool_use_error>' not in str(block.get('content')):succeeded.add(block.get('tool_use_id'))
-        if name not in {requested[i] for i in requested.keys() & succeeded}:
-            raise ValueError('먼저 Skill 도구로 aris-official:'+name+'을 실제 호출하고 원래 절차를 따르세요. 문서 읽기만으로 단계를 대체하지 않습니다.')
+        invoked,_,_=session_skill_receipts(self.job)
+        if name not in invoked:raise ValueError('먼저 Skill 도구로 aris-official:'+name+'을 실제 호출하고 원래 절차를 따르세요. 문서 읽기만으로 단계를 대체하지 않습니다.')
 
     def execute(self,name,args):
         from session_budget import update
-        update(self.job['session_budget'],'check')
+        if name not in {'context','receipt','scout_triage','finish'}:update(self.job['session_budget'],'check')
         context=self.api('context');self.latest_context=context
         if name=='context':return context
+        if name=='paper_search':
+            self.require_skill('research-lit')
+            from scout import search
+            self.event('scout-search','관심 분야와 연결할 논문을 실제 출처에서 조회합니다.')
+            result=search(self.job,self.work,args)
+            receipts=self.work/'scout-source-receipts.json';old=council.read_json(receipts) if receipts.exists() else []
+            council.dump(receipts,old+[dict(session_id=self.job['auto_session_id'],source_receipt=result['source_receipt'])])
+            return result
+        if name=='scout_candidates':
+            self.require_skill('idea-discovery')
+            result=self.api('scout_candidates',candidate=args);council.dump(self.work/'scout-selection.json',result);return result
+        if name=='scout_triage':return self.api('scout_triage')
         if name=='target':
             from lab_worker import environment
             from target_explorer import query
@@ -214,6 +269,9 @@ class Host:
             return dict(review=result,receipt=str(folder/'usage.json'))
         if name=='council':
             stage=args['stage']
+            if self.job.get('research_style')=='scout':
+                if stage=='ideas':raise ValueError('탐색 후보는 가볍게 선별하고 기존 Reviewer를 유지하세요. 전체 Council은 측정된 유망 결과에 집중합니다.')
+                if not any(r['promising'] for r in self.api('scout_triage')['evaluations']):raise ValueError('유망성 기준을 충족한 실제 측정 후보가 아직 없습니다. 전체 Council을 호출하지 않습니다.')
             self.require_skill('idea-discovery' if stage=='ideas' else 'auto-review-loop')
             if stage not in {'ideas','results'}:raise ValueError('Council stage must be ideas/results')
             if stage=='results' and not context['completed_runs']:raise ValueError('실제 실험 결과가 있어야 결과 Council을 엽니다.')
@@ -225,15 +283,17 @@ class Host:
             fingerprint=hashlib.sha256(json.dumps(dict(runs=context['completed_runs'] if stage=='results' else [],revision=context['revision'],evidence=(source/'source-evidence.json').read_text(),literature=(source/'LITERATURE.md').read_text()),sort_keys=True).encode()).hexdigest()
             verification=self.root/('native-verification-'+stage+'-'+fingerprint[:12]);verification.mkdir(exist_ok=True)
             evidence=verify(self.job,verification,source,Progress())
-            folder=self.work/('council-'+stage+'-'+fingerprint[:12])
+            folder=self.work/('council-'+stage+'-'+fingerprint[:12]+'-evidence-v2')
             frozen=self.work/('advisory-topic-'+stage+'-'+fingerprint[:12]+'.json')
             if (folder/'status.json').is_file() and council.read_json(folder/'status.json').get('status')=='completed':
                 council.dump(self.work/('advice-'+stage+'.json'),dict(stage=stage,path=str(folder),fingerprint=fingerprint,run_ids=[r['id'] for r in context['completed_runs']]))
                 report=(folder/'round-1/COUNCIL_REPORT.md').read_text();(self.root/('advisory-'+stage+'.md')).write_text(report)
                 return dict(report=report,reused=True)
             cfg={k:v for k,v in self.cfg.items() if k in council.DEFAULTS or k in council.MODES[self.job['mode']] or k=='session_budget'}
-            cfg.update(rounds=1,max_councils=1);config=self.root/('native-council-'+stage+'.json');council.dump(config,cfg)
-            topic=self.job['topic']+'\nADVISORY '+stage+' Council. ARIS remains main executor; retain its independent Reviewer. Review current proposals/results and suggest evidence-based improvements.\n'+json.dumps(context,ensure_ascii=False)
+            cfg.update(rounds=1,max_councils=1,result_evidence_ids=[r['id'] for r in context['completed_runs']] if stage=='results' else []);council.dump(self.root/'native-result-evidence.json',context['completed_runs']);config=self.root/('native-council-'+stage+'.json');council.dump(config,cfg)
+            advisory_context={k:context.get(k) for k in ['research_style','research_preferences','completed_runs','max_runs']}
+            advisory_context['human_directions']=context.get('shared_project',{}).get('directions',[])
+            topic=self.job['topic']+'\nADVISORY '+stage+' Council. ARIS remains main executor; retain its independent Reviewer. Review actual pilot receipts and suggest evidence-based improvements. Cite ONLY IDs in the supplied evidence pack; do not treat paper IDs mentioned in historical assistant reports as supplied evidence.\n'+json.dumps(advisory_context,ensure_ascii=False)
             if frozen.exists():topic=council.read_json(frozen)['topic']
             else:council.dump(frozen,dict(topic=topic))
             self.event('native-council','아이디어 Council이 검토합니다.' if stage=='ideas' else '실제 결과에 대해 Council이 추가 의견을 냅니다.')
@@ -246,7 +306,7 @@ class Host:
         if name=='experiment':
             if self.last_delivered_revision>=0 and context['revision']>self.last_delivered_revision:raise ValueError('새 사용자 지시가 있습니다. context를 읽고 실행 소스에 반영하세요.')
             self.require_skill('experiment-bridge')
-            if not (self.work/'advice-ideas.json').is_file():raise ValueError('먼저 아이디어 Council 의견을 받아야 합니다.')
+            if self.job.get('research_style')!='scout' and not (self.work/'advice-ideas.json').is_file():raise ValueError('먼저 아이디어 Council 의견을 받아야 합니다.')
             from lab_worker import check_code
             code=check_code(self.path(args.pop('source')).read_text())
             self.event('code-review','메인 연구 Reviewer가 실행할 코드 자체를 검토합니다.')
@@ -254,10 +314,14 @@ class Host:
             cfg={**self.cfg,'output_tokens':4000,'codex_model':None,'codex_effort':'xhigh'}
             review=council.codex_call(folder,'Review exact Python code before execution for correctness, leakage, metric integrity, dependencies and matching research design. Return ONLY JSON: verdict (pass/block), reasons (array). Never execute it.\n'+json.dumps(dict(code=code,context=context),ensure_ascii=False),cfg,council.Budget(cfg,folder/'budget.json'),self.job['aris_repo'])
             if review.get('verdict')!='pass':return dict(state='review_blocked',review=review)
-            return self.api('experiment',payload={**args,'node_id':self.job['node_id'],'code':code},review_receipt=str(folder/'usage.json'),direction_revision=context['revision'])
+            node_id=self.job['node_id']
+            if self.job.get('research_style')=='scout':node_id=council.read_json(self.work/'scout-selection.json')['node_id']
+            return self.api('experiment',payload={**args,'node_id':node_id,'code':code},review_receipt=str(folder/'usage.json'),direction_revision=context['revision'])
         if name=='receipt':return self.api('receipt',run_id=args['run_id'])
         if name=='finish':
-            for skill in SKILLS:self.require_skill(skill)
+            required=SKILLS
+            if self.job.get('research_style')=='scout':required=(*SKILLS,'research-lit') if context['completed_runs'] else ('research-pipeline','research-lit','idea-discovery')
+            for skill in required:self.require_skill(skill)
             report=self.path(args['report']);text=report.read_text()
             if not text.strip():raise ValueError('최종 연구 보고가 비어 있습니다.')
             return self.api('finish',report=str(report))
@@ -266,7 +330,7 @@ class Host:
 
 def serve(jobfile):
     host=Host(council.read_json(jobfile))
-    tools=[('context','Shared project conversation, directions, limits and resources',{}),('target','Read-only selected target inventory or source query',{'op':{'type':'string'},'path':{'type':'string'},'start':{'type':'integer'},'lines':{'type':'integer'}}),('helper','Execute an allowed unmodified upstream bookkeeping/paper helper',{'name':{'type':'string'},'args':{'type':'array','items':{'type':'string'}}}),('codex','Original ARIS independent Reviewer; preserve Skill model/effort overrides',{'prompt':{'type':'string'},'model':{'type':'string'},'config':{'type':'object'}}),('codex-reply','Continue original project Reviewer',{'prompt':{'type':'string'},'threadId':{'type':'string'}}),('council','Additional advisory Council at ideas/results boundary',{'stage':{'type':'string','enum':['ideas','results']}}),('experiment','Review and submit immutable Python experiment to selected project resources',{'source':{'type':'string'},'title':{'type':'string'},'interpreter':{'type':'string'},'cwd':{'type':'string'},'args':{'type':'array','items':{'type':'string'}},'timeout_seconds':{'type':'integer'},'metric':{'type':'string'},'direction':{'type':'string','enum':['maximize','minimize']}}),('receipt','Poll actual run metrics/logs',{'run_id':{'type':'string'}}),('finish','Persist native final report after real Reviewer, Council and experiments',{'report':{'type':'string'}})]
+    tools=[('paper_search','Retrieve real recent or cross-domain papers with project duplicate tracking',{'query':{'type':'string'},'source':{'type':'string','enum':['arxiv','openalex']},'kind':{'type':'string','enum':['recent','cross-domain']},'domain':{'type':'string'},'limit':{'type':'integer'}}),('scout_candidates','Connect retrieved canonical paper IDs to a project interest and small experiment',{'paper_ids':{'type':'array','items':{'type':'string'}},'interest':{'type':'string'},'mechanism':{'type':'string'},'hypothesis':{'type':'string'},'experiment':{'type':'string'}}),('scout_triage','Evaluate actual baseline/candidate and seed receipts against project thresholds',{}),('context','Shared project conversation, directions, limits and resources',{}),('target','Read-only selected target inventory or source query',{'op':{'type':'string'},'path':{'type':'string'},'start':{'type':'integer'},'lines':{'type':'integer'}}),('helper','Execute an allowed unmodified upstream bookkeeping/paper helper',{'name':{'type':'string'},'args':{'type':'array','items':{'type':'string'}}}),('codex','Original ARIS independent Reviewer; preserve Skill model/effort overrides',{'prompt':{'type':'string'},'model':{'type':'string'},'config':{'type':'object'}}),('codex-reply','Continue original project Reviewer',{'prompt':{'type':'string'},'threadId':{'type':'string'}}),('council','Additional advisory Council at ideas/results boundary',{'stage':{'type':'string','enum':['ideas','results']}}),('experiment','Review and submit immutable Python experiment to selected project resources',{'source':{'type':'string'},'title':{'type':'string'},'interpreter':{'type':'string'},'cwd':{'type':'string'},'args':{'type':'array','items':{'type':'string'}},'timeout_seconds':{'type':'integer'},'metric':{'type':'string'},'direction':{'type':'string','enum':['maximize','minimize']}}),('receipt','Poll actual run metrics/logs',{'run_id':{'type':'string'}}),('finish','Persist native final report after real Reviewer, Council and experiments',{'report':{'type':'string'}})]
     def stop(*_):
         with council.PROCESS_LOCK:
             for p in council.ACTIVE_PROCESSES:
@@ -316,10 +380,18 @@ def action(server,payload):
     def receipt(row):
         run=server.experiments.run_info(row['id'])
         return {k:run.get(k) for k in ['id','state','result','stdout_tail','stderr_tail','queued_at','finished_at']}
+    if payload['action']=='scout_candidates':
+        if config.get('research_style')!='scout':raise ValueError('탐색 모드에서만 논문 연결을 등록할 수 있습니다.')
+        from scout import candidate
+        return candidate(server.store,job['project_id'],job['node_id'],session['id'],payload['candidate'])
+    if payload['action']=='scout_triage':
+        from scout import triage,settings
+        return dict(evaluations=[triage(server.experiments.run_info(r['id']),settings(server.store,job['project_id'])) for r in rows if r['state'] not in {'queued','running'}])
     if payload['action']=='context':
+        from scout import settings
         from steering import prompt_context
         current=prompt_context(server.store,job['project_id'])
-        return dict(shared_project=current,revision=current['revision'],usage=server.autopilot.state(job['project_id'])['usage'],
+        return dict(research_style=config.get('research_style','focused'),research_preferences=settings(server.store,job['project_id']),shared_project=current,revision=current['revision'],usage=server.autopilot.state(job['project_id'])['usage'],
                     target=dict(profile=profile['name'],kind=profile['kind'],device_ids=assignment['device_ids'],time_budget_minutes=assignment['time_budget_minutes'],context_path=config['context_path']),
                     max_runs=session['config']['max_cycles'],runs_started=len(rows),completed_runs=[receipt(r) for r in rows if r['state'] not in {'queued','running'}])
     if payload['action']=='receipt':
@@ -338,7 +410,12 @@ def action(server,payload):
             revision=steering.snapshot(server.store,job['project_id'])['revision']
             if payload.get('direction_revision')!=revision:raise ValueError('새 사용자 지시가 도착했습니다. context를 읽고 코드를 다시 검토하세요.')
             spec=payload['payload']
-            if spec['node_id']!=job['node_id']:raise ValueError('프로젝트 노드가 일치하지 않습니다.')
+            if config.get('research_style')=='scout':
+                from scout import settings
+                prefs=settings(server.store,job['project_id']);selected=server.store.get_node(spec['node_id'])
+                if selected['project_id']!=job['project_id'] or selected['metadata'].get('scout_session')!=session['id']:raise ValueError('조회 논문과 연결한 이 탐색 세션의 가설을 먼저 등록하세요.')
+                if spec['timeout_seconds']>min(prefs['pilot_seconds'],config['scout_preferences']['pilot_seconds']):raise ValueError('작은 실험의 개별 시간 한도를 넘었습니다.')
+            elif spec['node_id']!=job['node_id']:raise ValueError('프로젝트 노드가 일치하지 않습니다.')
             digest=hashlib.sha256(spec['code'].encode()).hexdigest()
             reviewroot=Path(job['run_dir'])/'native-code-review'/digest
             if Path(payload['review_receipt'])!=reviewroot/'usage.json' or not (reviewroot/'usage.json').is_file():raise ValueError('실행할 코드에 대한 실제 Reviewer 영수증이 없습니다.')
@@ -350,6 +427,9 @@ def action(server,payload):
             server.autopilot.save(session,message='자율 연구가 선택한 실험을 실행합니다.',cycles=len(rows)+1,run_id=run['id'])
             return dict(run_id=run['id'],state=run['state'],experiment_id=experiment['id'],digest=experiment['digest'])
     if payload['action']=='finish':
+        if config.get('research_style')=='scout':
+            from scout import finish
+            return finish(server,job,session,rows,payload['report'])
         if not rows or any(r['state'] in {'queued','running'} for r in rows):raise ValueError('실제 실험 완료 후 보고할 수 있습니다.')
         if not any(r['state']=='succeeded' and json.loads(r['result']).get('analysis',{}).get('status') in {'measured','compared'} for r in rows):raise ValueError('측정된 실험 결과 없이 완료로 표시하지 않습니다. 실패 원인과 남은 항목을 보존하세요.')
         advice=council.read_json(work/'advice-results.json')
