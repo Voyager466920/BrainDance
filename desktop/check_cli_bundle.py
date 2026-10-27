@@ -17,6 +17,8 @@ import urllib.request
 def main():
     app=Path(sys.argv[1] if len(sys.argv)>1 else 'dist/BrainDance.app').resolve()
     executable=app/'Contents/Resources/BrainDanceServer'
+    keymap=json.loads((app/'Contents/Resources/BrainDance.itermkeymap').read_text())
+    assert len(keymap['Key Mappings'])==3 and all(k['Action']==11 for k in keymap['Key Mappings'].values())
     def run(*args):
         result=subprocess.run([str(executable),'--cli',*args],capture_output=True,text=True,timeout=40)
         if result.returncode:raise RuntimeError(result.stderr)

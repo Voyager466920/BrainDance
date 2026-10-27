@@ -21,6 +21,15 @@ from terminal_presenter import readable,resource_info,phase_status
 
 
 class TerminalPresentationTests(unittest.TestCase):
+    def test_iterm_keymap_contains_only_the_requested_command_keys(self):
+        keymap=json.loads((fixtures.ROOT/'desktop/BrainDance.itermkeymap').read_text())
+        mappings=keymap['Key Mappings']
+        self.assertEqual(set(mappings),{'0xf702-0x300000','0xf703-0x300000','0x7f-0x100000'})
+        sequences={k:bytes(int(v,16) for v in action['Text'].split()).decode() for k,action in mappings.items()}
+        self.assertTrue(all(action['Action']==11 for action in mappings.values()))
+        self.assertEqual(sequences['0xf702-0x300000'],'\x1b[1;9D')
+        self.assertEqual(sequences['0xf703-0x300000'],'\x1b[1;9C')
+        self.assertEqual(sequences['0x7f-0x100000'],'\x1b[127;9u')
     def test_structured_reports_are_prose_without_losing_blockers_or_numbers(self):
         text=readable('```json\n{"ready":false,"blockers":["Missing checkpoint"],"metrics":{"accuracy":0},"code":"secret source"}\n```')
         self.assertIn('준비 여부: 아니요',text);self.assertIn('Missing checkpoint',text);self.assertIn('정확도: 0',text)
@@ -91,6 +100,89 @@ class TerminalUITests(unittest.TestCase):
             rows=self.server.chat.messages(self.project['id'])['messages'];self.assertEqual(rows[0]['content'],text)
             self.assertEqual(rows[1]['metadata']['mode'],'next');self.assertEqual(ui.tab,0);self.assertEqual(ui.editor.text,'')
             self.assertEqual(len(self.server.autopilot.state(self.project['id'])['directions']),1)
+        self.scenario(exercise)
+
+    def test_project_picker_arrow_navigation_reaches_delete_and_restores_by_keyboard(self):
+        other=self.fixture.call('new','Keyboard target','--goal','Disposable navigation fixture')['project_id']
+        async def exercise(ui,pipe):
+            pipe.send_text('/projects\r')
+            await self.wait_until(lambda:bool(ui.modals))
+            listing=ui.app.layout.current_control
+            pipe.send_text('\x1b[B\x1b[B')
+            await self.wait_until(lambda:ui.app.layout.has_focus(ui.modal_buttons[-1][0]))
+            pipe.send_text('\x1b[C\x1b[C')
+            await self.wait_until(lambda:ui.app.layout.has_focus(ui.modal_buttons[-1][2]))
+            pipe.send_text('\x1b[A')
+            await self.wait_until(lambda:ui.app.layout.current_control is listing)
+            pipe.send_text('\r')
+            await self.wait_until(lambda:ui.project and ui.project['id']==other and not ui.modals)
+            pipe.send_text('/projects\r')
+            await self.wait_until(lambda:bool(ui.modals))
+            pipe.send_text('\x1b[B\x1b[C\x1b[C\r')
+            await self.wait_until(lambda:len(ui.modals)==2)
+            pipe.send_text('\r')
+            await self.wait_until(lambda:ui.project is None and bool(self.server.cleanup.trash()['projects']))
+            await self.wait_until(lambda:ui.modal_task is None or ui.modal_task.done())
+            pipe.send_text('\x1b')
+            await self.wait_until(lambda:not ui.modals)
+            pipe.send_text('/trash\r')
+            await self.wait_until(lambda:bool(ui.modals))
+            pipe.send_text('\x1b[B\r')
+            await self.wait_until(lambda:ui.project and ui.project['id']==other and not ui.modals)
+            self.assertEqual(self.server.cleanup.trash()['projects'],[])
+            self.assertEqual(self.client.messages(ui.project),[])
+        self.scenario(exercise)
+
+    def test_word_keys_follow_whitespace_and_do_not_switch_tabs(self):
+        text='첫째/경로-값   둘째.결과:값\t셋째'
+        mappings=json.loads((fixtures.ROOT/'desktop/BrainDance.itermkeymap').read_text())['Key Mappings']
+        sequence=lambda k:bytes(int(value,16) for value in mappings[k]['Text'].split()).decode()
+        async def exercise(ui,pipe):
+            ui.editor.text=text;ui.editor.buffer.cursor_position=len(text)
+            pipe.send_text(sequence('0xf702-0x300000'))
+            await self.wait_until(lambda:ui.editor.buffer.cursor_position==text.index('셋째'))
+            pipe.send_text(sequence('0xf702-0x300000'))
+            await self.wait_until(lambda:ui.editor.buffer.cursor_position==text.index('둘째'))
+            pipe.send_text(sequence('0xf703-0x300000'))
+            await self.wait_until(lambda:ui.editor.buffer.cursor_position==text.index('\t'))
+            pipe.send_text(sequence('0x7f-0x100000'))
+            await self.wait_until(lambda:ui.editor.text=='첫째/경로-값   \t셋째')
+            self.assertEqual(ui.tab,0)
+            pipe.send_text('\x17')
+            await self.wait_until(lambda:ui.editor.text=='\t셋째')
+            pipe.send_text('\x1f')
+            await self.wait_until(lambda:ui.editor.text=='첫째/경로-값   \t셋째')
+            ui.new_project_dialog();field=self.editable_fields(ui)[0]
+            field.text='두 단어 test';field.cursor_position=len(field.text)
+            pipe.send_text('\x1b\x7f')
+            await self.wait_until(lambda:field.text=='두 단어 ')
+            pipe.send_text('\x1b[127;5u')
+            await self.wait_until(lambda:field.text=='두 ')
+            pipe.send_text('\x7f')
+            await self.wait_until(lambda:field.text=='두')
+            self.assertEqual(self.client.messages(self.project),[])
+        self.scenario(exercise)
+
+    def test_tab_buttons_and_dialog_fields_are_keyboard_reachable(self):
+        async def exercise(ui,pipe):
+            ui.app.layout.focus(ui.tab_control)
+            pipe.send_text('\x1b[C\x1b[C')
+            await self.wait_until(lambda:ui.tab==2)
+            self.assertTrue(ui.app.layout.has_focus(ui.tab_control))
+            pipe.send_text('\r')
+            await self.wait_until(lambda:ui.app.layout.has_focus(ui.editor))
+            ui.new_project_dialog();fields=self.editable_fields(ui)
+            self.assertEqual(ui.app.current_buffer,fields[0])
+            pipe.send_text('\t')
+            await self.wait_until(lambda:ui.app.current_buffer is fields[1])
+            pipe.send_text('\x1b[Z')
+            await self.wait_until(lambda:ui.app.current_buffer is fields[0])
+            pipe.send_text('\t\t')
+            await self.wait_until(lambda:ui.app.layout.has_focus(ui.modal_buttons[-1][0]))
+            pipe.send_text('\x1b[D')
+            await self.wait_until(lambda:ui.app.layout.has_focus(ui.modal_buttons[-1][-1]))
+            pipe.send_text('\x1b[A')
+            await self.wait_until(lambda:ui.app.current_buffer is fields[1])
         self.scenario(exercise)
 
     def test_mouse_tab_and_issue_reply_keep_the_canonical_reference(self):

@@ -2,11 +2,13 @@
 import asyncio
 from contextlib import suppress,redirect_stderr
 from datetime import datetime
+from pathlib import Path
 import json
 import io
 import os
 import shlex
 import subprocess
+import sys
 import threading
 import time
 import urllib.parse
@@ -19,12 +21,14 @@ from prompt_toolkit.filters import Condition,has_focus,has_completions
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.key_binding.bindings.focus import focus_next,focus_previous
 from prompt_toolkit.layout import Layout,HSplit,VSplit,Window,Float,FloatContainer,ConditionalContainer,DynamicContainer
-from prompt_toolkit.layout.controls import FormattedTextControl
+from prompt_toolkit.layout.controls import FormattedTextControl,BufferControl
 from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.layout.menus import CompletionsMenu
 from prompt_toolkit.mouse_events import MouseEventType
 from prompt_toolkit.styles import Style
 from prompt_toolkit.widgets import TextArea,Label,Button,Dialog,RadioList,CheckboxList,Checkbox,Box,Frame
+from prompt_toolkit.input.ansi_escape_sequences import ANSI_SEQUENCES
+from prompt_toolkit.keys import Keys
 
 from terminal import LOGO_ASSETS,ClientError,parser,dispatch,safe_text,purge_summary,file_size
 from terminal_presenter import (STATES,readable,short,clock,duration,provider_line,device_label,
@@ -32,7 +36,26 @@ from terminal_presenter import (STATES,readable,short,clock,duration,provider_li
 
 TABS=['대화','진행','아이디어','계획','실험','설정','결과']
 MODES=[('auto','대화'),('ask','질문만'),('next','다음 방향'),('restart','중지 후 재준비')]
-SLASH=['/settings','/gpt','/claude','/ssh','/gpu','/notion','/reports','/projects','/new','/delete','/trash','/restore','/purge','/help','/exit','/quit']
+SLASH=['/settings','/gpt','/claude','/ssh','/gpu','/notion','/reports','/projects','/new','/delete','/trash','/restore','/purge','/keys','/help','/exit','/quit']
+
+
+def whitespace_boundary(text,position,direction):
+    if direction<0:
+        while position>0 and text[position-1].isspace():position-=1
+        while position>0 and not text[position-1].isspace():position-=1
+    else:
+        while position<len(text) and text[position].isspace():position+=1
+        while position<len(text) and not text[position].isspace():position+=1
+    return position
+
+
+def register_word_keys():
+    # Super is Command on macOS; normalize only the supported Backspace keys.
+    # Arrow encodings (including CSI 1;9D/C) are already decoded by prompt-toolkit.
+    for modifier in (3,5,9):
+        for key in (8,127):
+            ANSI_SEQUENCES.setdefault(f'\x1b[{key};{modifier}u',(Keys.Escape,Keys.ControlH))
+            ANSI_SEQUENCES.setdefault(f'\x1b[27;{modifier};{key}~',(Keys.Escape,Keys.ControlH))
 
 
 class ResearchTerminal:
@@ -60,21 +83,47 @@ class ResearchTerminal:
         self.editor=TextArea(height=3,multiline=True,wrap_lines=True,prompt=' › ',style='class:input',
             completer=WordCompleter(SLASH),complete_while_typing=Condition(lambda:self.editor.text.startswith('/')),scrollbar=True,name='project-input')
         self.editor.buffer.on_text_changed+=self._typing
-        self.help_text='Ctrl+B→1–7 탭 · 휠/PgUp·PgDn 스크롤 · Enter 전송 · Alt+Enter 줄바꿈'
+        self.help_text='Ctrl+P 프로젝트 · Tab 포커스 이동 · Ctrl+B→1–7 탭 · /keys 키보드 도움말'
         self._build(input,output)
 
     def _typing(self,_):
         if self.editor.text:self.welcome=False
 
     def _build(self,input,output):
-        kb=KeyBindings();normal=Condition(lambda:not self.modals)
+        register_word_keys()
+        kb=KeyBindings();normal=Condition(lambda:not self.modals);modal=~normal
+        editable=Condition(lambda:isinstance(self.app.layout.current_control,BufferControl) and not self.app.current_buffer.read_only())
+        self.tab_control=FormattedTextControl(self.tab_fragments,focusable=True,show_cursor=False)
+        for key,direction in [('left',-1),('right',1)]:
+            def change_tab(event,d=direction):
+                self.select_tab((self.tab+d)%len(TABS));self.app.layout.focus(self.tab_control)
+            kb.add(key,filter=normal & has_focus(self.tab_control))(change_tab)
+        kb.add('enter',filter=normal & has_focus(self.tab_control))(lambda event:self.app.layout.focus(self.editor))
         for index in range(len(TABS)):
             def choose(event,i=index):self.select_tab(i)
             kb.add('c-b',str(index+1),filter=normal)(choose)
             kb.add('escape',str(index+1),filter=normal)(choose)
-        for keys,delta in [(('c-b','n'),1),(('c-b','N'),1),(('c-b','p'),-1),(('c-b','P'),-1),(('c-b','right'),1),(('c-b','left'),-1),(('escape','right'),1),(('escape','left'),-1)]:
+        for keys,delta in [(('c-b','n'),1),(('c-b','N'),1),(('c-b','p'),-1),(('c-b','P'),-1),(('c-b','right'),1),(('c-b','left'),-1)]:
             kb.add(*keys,filter=normal)(lambda event,d=delta:self.select_tab((self.tab+d)%len(TABS)))
+        for keys,direction in [(('c-left',),-1),(('c-right',),1),(('escape','left'),-1),(('escape','right'),1),(('escape','b'),-1),(('escape','f'),1)]:
+            def move_word(event,d=direction):
+                buffer=event.current_buffer;buffer.selection_state=None
+                buffer.cursor_position=whitespace_boundary(buffer.text,buffer.cursor_position,d)
+            kb.add(*keys,filter=editable)(move_word)
+        def delete_word(event):
+            buffer=event.current_buffer
+            if buffer.selection_state:buffer.cut_selection();return
+            start=whitespace_boundary(buffer.text,buffer.cursor_position,-1)
+            buffer.delete_before_cursor(buffer.cursor_position-start)
+        for keys in [('escape','c-h'),('c-w',)]:kb.add(*keys,filter=editable)(delete_word)
+        kb.add('c-u',filter=editable & Condition(lambda:sys.platform=='darwin'))(delete_word)
         kb.add('tab',filter=normal & ~has_completions)(focus_next);kb.add('s-tab',filter=normal & ~has_completions)(focus_previous)
+        kb.add('tab',filter=modal,eager=True)(lambda event:self.modal_focus(1));kb.add('s-tab',filter=modal,eager=True)(lambda event:self.modal_focus(-1))
+        on_buttons=Condition(lambda:bool(self.modals) and any(self.app.layout.has_focus(b) for b in self.modal_buttons[-1]))
+        for key,direction in [('left',-1),('right',1)]:
+            kb.add(key,filter=on_buttons,eager=True)(lambda event,d=direction:self.move_modal_button(d))
+        for key,direction in [('up',-1),('down',1)]:
+            kb.add(key,filter=on_buttons,eager=True)(lambda event,d=direction:self.focus_modal_body(d))
         kb.add('tab',filter=normal & has_focus(self.editor) & has_completions)(lambda event:event.current_buffer.complete_next())
         kb.add('s-tab',filter=normal & has_focus(self.editor) & has_completions)(lambda event:event.current_buffer.complete_previous())
         kb.add('c-p',filter=normal)(lambda event:self.project_dialog())
@@ -122,7 +171,7 @@ class ResearchTerminal:
             Window(FormattedTextControl(self.resource_header),height=1,style='class:muted'),
             Window(FormattedTextControl(self.issue_fragments),height=1,style='class:notice'),
             content,*self.controls,
-            Window(FormattedTextControl(self.tab_fragments,focusable=True,show_cursor=False),height=1,style='class:tabs'),
+            Window(self.tab_control,height=1,style='class:tabs'),
             Window(FormattedTextControl(lambda:self.notice or self.help_text),height=1,style='class:muted'),
             composer,
         ])
@@ -472,6 +521,7 @@ class ResearchTerminal:
         elif command in {'reports','report'}:self.select_tab(6)
         elif command in {'projects','project'}:self.project_dialog()
         elif command=='new':self.new_project_dialog()
+        elif command=='keys':self.keyboard_dialog()
         elif command in {'delete','trash','restore','purge'}:
             try:
                 with redirect_stderr(io.StringIO()):args=parser().parse_args(words)
@@ -494,7 +544,7 @@ class ResearchTerminal:
 
     def dialog(self,title,body,buttons,focus=None):
         self.error=''
-        body=HSplit([body,Window(FormattedTextControl(lambda:short(self.error,64)),height=1,style='class:notice')])
+        body=HSplit([body,Label('Tab/Shift+Tab 이동 · ↑↓ 목록/버튼 · ←→ 버튼 · Enter 실행 · Esc 닫기',style='class:muted'),Window(FormattedTextControl(lambda:short(self.error,64)),height=1,style='class:notice')])
         def activate(text,callback):
             if self.modal_task and not self.modal_task.done():self.notice='저장 처리 중입니다.';return
             result=self.invoke(callback)
@@ -504,6 +554,32 @@ class ResearchTerminal:
         floating=Float(content=view);self.container.floats.append(floating);self.modals.append((view,floating))
         self.modal_buttons.append(actions)
         self.app.layout.focus(focus or view);self.app.invalidate()
+
+    def move_modal_button(self,direction):
+        buttons=self.modal_buttons[-1]
+        current=next(i for i,b in enumerate(buttons) if self.app.layout.has_focus(b))
+        self.app.layout.focus(buttons[(current+direction)%len(buttons)])
+
+    def modal_focus(self,direction):
+        # New dialog fields may not be in the previous render's visible cache.
+        self.app.layout.update_parents_relations()
+        windows=list(self.app.layout.get_focusable_windows())
+        if windows:
+            current=windows.index(self.app.layout.current_window) if self.app.layout.current_window in windows else 0
+            self.app.layout.focus(windows[(current+direction)%len(windows)])
+
+    def focus_modal_body(self,direction):
+        self.app.layout.update_parents_relations()
+        buttons=self.modal_buttons[-1]
+        windows=[w for w in self.app.layout.get_focusable_windows() if not any(w.content is b.control for b in buttons)]
+        if windows:self.app.layout.focus(windows[-1] if direction<0 else windows[0])
+
+    def navigable_list(self,widget):
+        bindings=widget.control.key_bindings
+        for key,direction in [('up',-1),('down',1)]:
+            edge=Condition(lambda d=direction:bool(self.modals) and widget._selected_index==(0 if d<0 else len(widget.values)-1))
+            bindings.add(key,filter=edge,eager=True)(lambda event,d=direction:self.modal_focus(d))
+        return widget
 
     def close_dialog(self):
         if not self.modals:return
@@ -517,12 +593,31 @@ class ResearchTerminal:
     def text_dialog(self,title,text,verbatim=False):
         self.dialog(title,TextArea(text=safe_text(text) if verbatim else readable(text),read_only=True,scrollbar=True,height=Dimension(min=4,preferred=12,max=18)),[('닫기',self.close_dialog)])
 
+    def keyboard_dialog(self):
+        keymap=Path(sys.executable).with_name('BrainDance.itermkeymap') if getattr(sys,'frozen',False) else Path(__file__).resolve().parents[4]/'desktop/BrainDance.itermkeymap'
+        self.text_dialog('키보드 조작',
+            'Ctrl+P 또는 /projects: 프로젝트 선택·삭제·휴지통\n'
+            '↑↓: 목록 이동 · 마지막 항목에서 ↓: 아래 버튼으로\n'
+            '←→: 버튼 선택 · 버튼에서 ↑: 목록/입력으로\n'
+            'Tab / Shift+Tab: 다음 / 이전 입력·버튼 · Enter: 실행 · Esc: 닫기\n'
+            'Ctrl+B 다음 1–7 또는 Alt+1–7: 탭 선택\n'
+            '탭 막대에 포커스가 있으면 ←→로 탭 선택 · Enter: 입력창\n'
+            'Ctrl+L: 입력창 · Enter: 전송 · Alt+Enter: 줄바꿈\n'
+            'Cmd+←/→: 공백 단위 이동 · Cmd+Backspace: 이전 공백 단위 삭제\n'
+            'Option+←/→, Ctrl+←/→, Option+Backspace, Ctrl+W도 지원합니다.\n\n'
+            'iTerm2의 Command 키는 아래 키맵을 가져오면 앱으로 전달됩니다.\n'
+            'Settings → Profiles → Keys → Key Mappings → Presets → Import\n'
+            '기존 매핑 유지(Keep)를 선택하세요. 의도한 Command 키 3개만 바뀝니다.\n'
+            '다른 터미널·쉘에 영향을 피하려면 BrainDance용 프로필에 적용하세요.\n'
+            '키맵 파일: '+str(keymap),verbatim=True)
+
     def project_dialog(self):
-        choices=RadioList([(p['id'],safe_text(p['title'])) for p in self.projects] or [('','프로젝트가 없습니다.')],default=self.project['id'] if self.project else None)
+        choices=self.navigable_list(RadioList([(p['id'],safe_text(p['title'])) for p in self.projects] or [('','프로젝트가 없습니다.')],default=self.project['id'] if self.project else None,select_on_focus=True))
         async def choose():
             project=next((p for p in self.projects if p['id']==choices.current_value),None)
             if not project:raise ClientError('새 프로젝트를 먼저 만드세요.')
             self.close_dialog();await self.select_project(project)
+        choices.control.key_bindings.add('enter')(lambda event:self.spawn(choose()))
         def delete():
             project=next((p for p in self.projects if p['id']==choices.current_value),None)
             if not project:raise ClientError('삭제할 프로젝트를 선택하세요.')
@@ -545,7 +640,7 @@ class ResearchTerminal:
 
     async def trash_dialog(self):
         rows=(await self.call(self.client.request,'/api/project/trash'))['projects']
-        choices=RadioList([(p['id'],safe_text(p['title'])+(' · 정리 미완료' if p.get('cleanup_pending') else '')) for p in rows] or [('','휴지통이 비어 있습니다.')])
+        choices=self.navigable_list(RadioList([(p['id'],safe_text(p['title'])+(' · 정리 미완료' if p.get('cleanup_pending') else '')) for p in rows] or [('','휴지통이 비어 있습니다.')],select_on_focus=True))
         def selected():
             project=next((p for p in rows if p['id']==choices.current_value),None)
             if not project:raise ClientError('휴지통에서 프로젝트를 선택하세요.')
@@ -590,8 +685,8 @@ class ResearchTerminal:
         if not self.project and on_apply is None:raise ClientError('프로젝트를 먼저 선택하세요.')
         current=resource_info(self.compute,self.project['id'] if self.project else '')['assignment'] or {}
         profiles=self.compute.get('profiles',[]) or [dict(id='local',name='로컬 CPU',kind='local')]
-        profile=RadioList([(p['id'],safe_text(p['name'])+' · '+p['kind']) for p in profiles],default=current.get('profile_id','local'),select_on_focus=True)
-        devices=CheckboxList([('cpu','CPU')],default_values=current.get('device_ids',['cpu']))
+        profile=self.navigable_list(RadioList([(p['id'],safe_text(p['name'])+' · '+p['kind']) for p in profiles],default=current.get('profile_id','local'),select_on_focus=True))
+        devices=self.navigable_list(CheckboxList([('cpu','CPU')],default_values=current.get('device_ids',['cpu'])))
         minutes=TextArea(text=str(current.get('time_budget_minutes',30)),multiline=False)
         parallel=TextArea(text=str(current.get('max_parallel_runs',1)),multiline=False)
         form=dict(profile=profile,devices=devices,minutes=minutes,parallel=parallel,last=None,initial=current.get('device_ids',['cpu']))
@@ -671,7 +766,7 @@ class ResearchTerminal:
         current=self.state.get('session')
         if current and current['status'] in {'running','paused','blocked'}:self.select_tab(1);self.notice='기존 자동 연구를 재개하거나 한도를 조정하세요.';return
         cycles=TextArea(text='3',multiline=False);calls=TextArea(text='40',multiline=False);tokens=TextArea(text='1500000',multiline=False);folder=TextArea(multiline=False)
-        mode=RadioList([('lite','Lite'),('balanced','Balanced'),('deep','Deep')],default='balanced')
+        mode=self.navigable_list(RadioList([('lite','Lite'),('balanced','Balanced'),('deep','Deep')],default='balanced',select_on_focus=True))
         async def start():
             await self.call(self.client.request,'/api/control/automatic',dict(project_id=pid,action='start',max_cycles=int(cycles.text),max_model_calls=int(calls.text),token_budget=int(tokens.text),context_path=folder.text,mode=mode.current_value))
             self.close_dialog();self.select_tab(1)

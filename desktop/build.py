@@ -26,6 +26,7 @@ def main():
     run(sys.executable, '-m', 'PyInstaller', '--noconfirm', '--clean', '--onefile',
         '--name', 'BrainDanceServer', '--paths', SCRIPTS,
         '--add-data', str(SCRIPTS.parent/'assets')+':assets', '--collect-data', 'certifi',
+        '--add-data', str(ROOT/'desktop/BrainDance.itermkeymap')+':assets',
         '--add-data', str(SCRIPTS/'experiment_worker.py')+':worker',
         '--add-data', str(ROOT/'.claude/agents')+':agents',
         '--hidden-import', 'csv', '--hidden-import', 'statistics', '--hidden-import', 'xml.etree.ElementTree',
@@ -40,6 +41,7 @@ def main():
     resources.mkdir(parents=True); macos.mkdir()
     shutil.copy2(ROOT/'desktop/Info.plist', app/'Contents/Info.plist')
     shutil.copy2(build/'server/BrainDanceServer', resources/'BrainDanceServer')
+    shutil.copy2(ROOT/'desktop/BrainDance.itermkeymap', resources/'BrainDance.itermkeymap')
     notices = resources/'ThirdPartyNotices'
     notices.mkdir()
     shutil.copy2(ROOT/'LICENSE', notices/'BrainDance-MIT.txt')
