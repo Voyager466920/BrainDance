@@ -1,8 +1,9 @@
 """Tabbed terminal workspace over the existing BrainDance API and project stream."""
 import asyncio
-from contextlib import suppress
+from contextlib import suppress,redirect_stderr
 from datetime import datetime
 import json
+import io
 import os
 import shlex
 import subprocess
@@ -472,7 +473,10 @@ class ResearchTerminal:
         elif command in {'projects','project'}:self.project_dialog()
         elif command=='new':self.new_project_dialog()
         elif command in {'delete','trash','restore','purge'}:
-            args=parser().parse_args(words)
+            try:
+                with redirect_stderr(io.StringIO()):args=parser().parse_args(words)
+            except SystemExit as error:
+                raise ClientError('/delete [--project 이름] · /trash · /restore --project 이름 · /purge --project 이름') from error
             if command=='delete':
                 project=await self.call(self.client.project,args.project) if hasattr(args,'project') else self.project
                 if not project:raise ClientError('삭제할 프로젝트를 선택하세요.')

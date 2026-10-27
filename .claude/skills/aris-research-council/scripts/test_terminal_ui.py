@@ -213,6 +213,9 @@ class TerminalUITests(unittest.TestCase):
         for command in ['/delete','/trash','/restore','/purge']:self.assertIn(command,SLASH)
         pid=self.project['id'];title=self.project['title']
         async def exercise(ui,pipe):
+            from terminal import ClientError
+            with self.assertRaises(ClientError):await ui.slash('/delete --unknown-option')
+            self.assertTrue(ui.app.is_running)
             ui.editor.text='Preserve this project draft'
             await ui.slash('/delete')
             self.assertEqual(len(ui.modal_buttons[-1]),2)
