@@ -25,13 +25,13 @@ from prompt_toolkit.mouse_events import MouseEventType
 from prompt_toolkit.styles import Style
 from prompt_toolkit.widgets import TextArea,Label,Button,Dialog,RadioList,CheckboxList,Checkbox,Box,Frame
 
-from terminal import LOGO_ASSETS,ClientError,parser,dispatch,safe_text
+from terminal import LOGO_ASSETS,ClientError,parser,dispatch,safe_text,purge_summary,file_size
 from terminal_presenter import (STATES,readable,short,clock,duration,provider_line,device_label,
     resource_info,phase_status,conversation,progress_view,idea_view,plan_view,run_view,report_view,clip_cells,wrap_cells,connection_error)
 
 TABS=['대화','진행','아이디어','계획','실험','설정','결과']
 MODES=[('auto','대화'),('ask','질문만'),('next','다음 방향'),('restart','중지 후 재준비')]
-SLASH=['/settings','/gpt','/claude','/ssh','/gpu','/notion','/reports','/projects','/new','/help','/exit','/quit']
+SLASH=['/settings','/gpt','/claude','/ssh','/gpu','/notion','/reports','/projects','/new','/delete','/trash','/restore','/purge','/help','/exit','/quit']
 
 
 class ResearchTerminal:
@@ -328,7 +328,7 @@ class ResearchTerminal:
             a=resource['assignment'];lines.extend(['','시간 예산 '+str(a['time_budget_minutes'])+'분 · 동시 실험 '+str(a['max_parallel_runs'])+'개'])
         link=self.reports.get('link');lines.extend(['','Notion · '+('연결됨' if self.reports.get('connected') and link else '설정 필요')+(' · 자동 동기화 ON' if link and link['auto_sync'] else ''),'결과 탭에서 보고서와 그래프를 확인할 수 있습니다.'])
         lines.extend(['','조작','탭 클릭 / Alt+1–7 / Ctrl+B 다음 1–7 또는 N·P','Ctrl+P 프로젝트 · Ctrl+O 입력 방식 · PageUp/Down 기록 스크롤',
-            '모든 탭의 입력은 같은 프로젝트 대화에 기록됩니다.','/settings · /gpt · /claude · /ssh · /gpu · /notion · /reports · /projects · /new · /help · /exit'])
+            '모든 탭의 입력은 같은 프로젝트 대화에 기록됩니다.','/settings · /gpt · /claude · /ssh · /gpu · /notion · /reports · /projects · /new · /help · /exit','/delete 삭제 · /trash 휴지통 · /restore 복원 · /purge 완전 삭제 (이름 확인)'])
         return '\n'.join(lines)
 
     async def call(self,fn,*args):
@@ -471,6 +471,17 @@ class ResearchTerminal:
         elif command in {'reports','report'}:self.select_tab(6)
         elif command in {'projects','project'}:self.project_dialog()
         elif command=='new':self.new_project_dialog()
+        elif command in {'delete','trash','restore','purge'}:
+            args=parser().parse_args(words)
+            if command=='delete':
+                project=await self.call(self.client.project,args.project) if hasattr(args,'project') else self.project
+                if not project:raise ClientError('삭제할 프로젝트를 선택하세요.')
+                self.delete_dialog(project)
+            elif command=='trash' or not hasattr(args,'project'):await self.trash_dialog()
+            else:
+                project=await self.call(lambda:self.client.project(args.project,deleted=True))
+                if command=='restore':await self.restore_project(project)
+                else:await self.purge_dialog(project,preview_only=args.preview)
         elif command=='help':self.text_dialog('도움말',self.settings_text().split('조작\n')[-1]+'\n\n입력 방식은 Ctrl+O로 바꿉니다. 질문만 / 다음 방향 / 중지 후 재준비를 구분할 수 있습니다.')
         elif command in {'history','chat'}:self.select_tab(0)
         elif command=='status':self.select_tab(1)
@@ -483,7 +494,7 @@ class ResearchTerminal:
         def activate(text,callback):
             if self.modal_task and not self.modal_task.done():self.notice='저장 처리 중입니다.';return
             result=self.invoke(callback)
-            if text in {'저장','등록','자동 시작'} and isinstance(result,asyncio.Task):self.modal_task=result
+            if text in {'저장','등록','자동 시작','삭제','복원','완전 삭제'} and isinstance(result,asyncio.Task):self.modal_task=result
         actions=[Button(t,handler=lambda text=t,callback=f:activate(text,callback)) for t,f in buttons]
         view=Dialog(title=title,body=body,buttons=actions,with_background=True,width=Dimension(preferred=76,max=90))
         floating=Float(content=view);self.container.floats.append(floating);self.modals.append((view,floating))
@@ -508,7 +519,57 @@ class ResearchTerminal:
             project=next((p for p in self.projects if p['id']==choices.current_value),None)
             if not project:raise ClientError('새 프로젝트를 먼저 만드세요.')
             self.close_dialog();await self.select_project(project)
-        self.dialog('프로젝트',Box(choices,height=Dimension(min=2,preferred=6,max=10),padding=0),[('열기',lambda:self.spawn(choose())),('새 프로젝트',self.new_project_dialog),('닫기',self.close_dialog)],choices)
+        def delete():
+            project=next((p for p in self.projects if p['id']==choices.current_value),None)
+            if not project:raise ClientError('삭제할 프로젝트를 선택하세요.')
+            self.delete_dialog(project)
+        self.dialog('프로젝트',Box(choices,height=Dimension(min=2,preferred=6,max=10),padding=0),[('열기',lambda:self.spawn(choose())),('새 프로젝트',self.new_project_dialog),('삭제',delete),('휴지통',lambda:self.spawn(self.trash_dialog())),('닫기',self.close_dialog)],choices)
+
+    def delete_dialog(self,project):
+        project=dict(project)
+        async def remove():
+            args=parser().parse_args(['delete','--project',project['id']])
+            await self.call(dispatch,self.client,args)
+            if self.project and self.project['id']==project['id']:
+                self.drafts[project['id']]=(self.editor.text,self.mode,self.reply_to,self.scope)
+                self.epoch+=1;self.project=None;self.messages=[];self.state={};self.jobs=[];self.experiments={};self.reports={};self.job_info=None;self.run_info=None;self.editor.text='';self.reply_to=None;self.scope=None
+            self.projects=await self.call(self.client.projects)
+            while self.modals:self.close_dialog()
+            self.notice='휴지통으로 이동했습니다. /trash에서 복원할 수 있습니다.'
+            self.project_dialog();self.wakeup.set()
+        self.dialog('프로젝트 삭제',Label(safe_text(project['title'])+'\n진행 중인 연구를 중지하고 휴지통으로 이동합니다.\n휴지통에서 복원할 수 있습니다.'),[('삭제',lambda:self.spawn(remove())),('취소',self.close_dialog)])
+
+    async def trash_dialog(self):
+        rows=(await self.call(self.client.request,'/api/project/trash'))['projects']
+        choices=RadioList([(p['id'],safe_text(p['title'])+(' · 정리 미완료' if p.get('cleanup_pending') else '')) for p in rows] or [('','휴지통이 비어 있습니다.')])
+        def selected():
+            project=next((p for p in rows if p['id']==choices.current_value),None)
+            if not project:raise ClientError('휴지통에서 프로젝트를 선택하세요.')
+            return project
+        self.dialog('휴지통',Box(choices,height=Dimension(min=2,preferred=6,max=10),padding=0),[('복원',lambda:self.spawn(self.restore_project(selected()))),('완전 삭제',lambda:self.spawn(self.purge_dialog(selected()))),('닫기',self.close_dialog)],choices)
+
+    async def restore_project(self,project):
+        args=parser().parse_args(['restore','--project',project['id']])
+        await self.call(dispatch,self.client,args)
+        restored=await self.call(self.client.project,project['id'])
+        while self.modals:self.close_dialog()
+        await self.select_project(restored);self.notice='프로젝트를 복원했습니다. 연구는 자동으로 재개하지 않습니다.'
+
+    async def purge_dialog(self,project,preview_only=False):
+        project=dict(project)
+        preview=await self.call(self.client.request,'/api/project/purge-preview?'+urllib.parse.urlencode(dict(project_id=project['id'])))
+        if preview_only:self.text_dialog('완전 삭제 미리보기',purge_summary(preview),verbatim=True);return
+        confirmation=TextArea(multiline=False)
+        async def remove():
+            if confirmation.text!=preview['title']:raise ClientError('프로젝트 이름을 정확히 입력해야 완전 삭제할 수 있습니다.')
+            args=parser().parse_args(['purge','--project',project['id'],'--confirm-name',confirmation.text])
+            result=await self.call(dispatch,self.client,args)
+            self.drafts.pop(project['id'],None);self.pending={k:v for k,v in self.pending.items() if k[0]!=project['id']}
+            while self.modals:self.close_dialog()
+            await self.trash_dialog()
+            self.notice=('정리 미완료 · 같은 프로젝트의 완전 삭제를 다시 시도하세요.' if result.get('cleanup_pending') else '완전 삭제했습니다. 로컬 파일 '+file_size(result.get('removed_file_bytes',0))+' 정리')
+            if result.get('error'):self.error=safe_text(result['error'])
+        self.dialog('프로젝트 완전 삭제',HSplit([Label(purge_summary(preview)),Label('확인: 프로젝트 이름을 그대로 입력하세요.'),confirmation]),[('완전 삭제',lambda:self.spawn(remove())),('취소',self.close_dialog)],confirmation)
 
     def new_project_dialog(self):
         name=TextArea(multiline=False);goal=TextArea(height=3)

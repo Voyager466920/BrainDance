@@ -208,6 +208,36 @@ class TerminalUITests(unittest.TestCase):
             self.scenario(exercise)
         self.assertEqual(self.client.messages(self.project),[])
 
+    def test_project_delete_restore_and_confirmed_purge_use_the_same_store(self):
+        from terminal_ui import SLASH
+        for command in ['/delete','/trash','/restore','/purge']:self.assertIn(command,SLASH)
+        pid=self.project['id'];title=self.project['title']
+        async def exercise(ui,pipe):
+            ui.editor.text='Preserve this project draft'
+            await ui.slash('/delete')
+            self.assertEqual(len(ui.modal_buttons[-1]),2)
+            ui.modal_buttons[-1][0].handler()
+            await self.wait_until(lambda:ui.project is None and bool(self.server.cleanup.trash()['projects']))
+            await self.wait_until(lambda:ui.modal_task is None or ui.modal_task.done())
+            await ui.slash('/restore --project '+pid)
+            self.assertEqual(ui.project['id'],pid)
+            self.assertEqual(ui.editor.text,'Preserve this project draft')
+            self.assertEqual(self.server.cleanup.trash()['projects'],[])
+            await ui.slash('/delete');ui.modal_buttons[-1][0].handler()
+            await self.wait_until(lambda:ui.project is None)
+            await self.wait_until(lambda:ui.modal_task.done())
+            await ui.slash('/purge --project '+pid)
+            fields=self.editable_fields(ui);self.assertEqual(len(fields),1)
+            fields[0].text='wrong name';ui.modal_buttons[-1][0].handler()
+            await self.wait_until(lambda:bool(ui.error) and ui.modal_task.done())
+            self.assertEqual(len(self.server.cleanup.trash()['projects']),1)
+            fields[0].text=title;ui.modal_buttons[-1][0].handler()
+            await self.wait_until(lambda:not self.server.cleanup.trash()['projects'])
+            await self.wait_until(lambda:ui.modal_task.done())
+            self.assertNotIn(pid,ui.drafts)
+            self.assertEqual(self.server.store.export_json()['projects'],[])
+        self.scenario(exercise)
+
     def test_code_view_preserves_python_operators_instead_of_treating_them_as_markdown(self):
         code="print(2**3)\nprint({'accuracy': 0.7})"
         self.server.experiments.create(dict(node_id=self.client.root(self.project)['id'],title='Code viewer fixture',timeout_seconds=2,code=code))

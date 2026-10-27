@@ -79,6 +79,19 @@ braindance --project "My project" target my-ssh-alias --devices GPU-UUID --minut
 braindance --project "My project" auto start --context /path/on/target --calls 40 --tokens 1500000 --cycles 3
 ```
 
+Manage projects from either the terminal workspace or one-shot commands:
+
+```sh
+braindance delete --project "My project"                    # Stop research and move to Trash
+braindance trash                                          # List trashed projects and pending cleanup
+braindance restore --project "My project"                   # Restore without resuming research
+braindance purge --project "My project" --preview            # Preview records and managed local file size
+braindance purge --project "My project"                      # Ask for the exact project name in a terminal
+braindance purge --project PROJECT_ID --confirm-name "My project" # Explicit confirmation for scripts
+```
+
+The project menu (`Ctrl+P` or `/projects`) includes Delete and Trash. `/delete` opens confirmation for the current project; `/trash` opens Restore and Permanently delete actions. Permanent deletion requires typing the exact project name and cannot be undone. Use a project ID if names are duplicated. These commands share the app's lifecycle and cleanup APIs: local managed results, conversation/session records, reports and database space are cleaned up, while SSH server files and external source/data folders are preserved. Incomplete cleanup remains visible in Trash and can be retried; scripts receive a nonzero exit status. Noninteractive purge requires `--confirm-name`; `--preview` never deletes anything.
+
 Creating a project does not start model calls or experiments. `devices` actually checks the selected connection; remote/GPU assignments require a recent successful discovery. `auto start` explicitly authorizes the reviewed pipeline on the selected devices within the specified limits, just like the app button. Raising limits preserves used amounts and does not resume work by itself. `chat --no-wait` returns immediately; subsequent `history` shows the reply. Supply the same `--request-id` and exact message/mode to check an uncertain send without duplicating it.
 
 To retry an experiment after resolving an environment issue, start a new automatic session with `auto start --reuse-research` and the desired `--context`, `--cycles`, `--calls`, and `--tokens`. This requires completed Council results, verified literature receipts, and active hypotheses in the same project. It skips discovery and Council calls while generating and reviewing fresh executable code against the current target and directions. Prior sessions, failures, and token charges remain recorded; the new session has its own model budget, and prior experiment runtime still counts against the unchanged project device/time assignment.

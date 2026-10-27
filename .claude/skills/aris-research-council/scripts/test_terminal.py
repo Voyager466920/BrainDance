@@ -104,6 +104,80 @@ class TerminalTests(unittest.TestCase):
         assignment=self.call('target','local','--devices','cpu','--minutes','2')
         self.assertEqual(assignment['time_budget_minutes'],2)
 
+    def test_project_trash_restore_and_purge_reclaim_only_owned_local_data(self):
+        other=self.call('new','Keep project','--goal','Must survive')['project_id']
+        root=self.client.root(self.project)
+        for index in range(16):self.server.store.add_note(root['id'],'memo','Retained evidence '+str(index),'x'*95000)
+        owned=self.db.parent/'council-runs/cli-owned';owned.mkdir();(owned/'result.bin').write_bytes(b'z'*300000)
+        external=self.db.parent/'external-data';external.mkdir();(external/'keep').write_text('keep')
+        self.server.store.update_node(root['id'],metadata={'run':str(owned)})
+        self.call('delete')
+        self.assertNotIn(self.project['id'],[p['id'] for p in self.call('projects')])
+        self.assertEqual(self.call('trash')[0]['id'],self.project['id'])
+        self.call('restore','--project',self.project['id'])
+        self.assertTrue(owned.exists());self.assertEqual(self.call('trash'),[])
+        self.assertEqual(self.client.root(self.project)['id'],root['id'])
+        self.call('delete','--project',self.project['id'])
+        preview=self.call('purge','--project',self.project['id'],'--preview')
+        self.assertEqual(preview['action'],'preview');self.assertGreaterEqual(preview['local_file_bytes'],300000)
+        self.assertTrue(owned.exists())
+        with patch('sys.stdin.isatty',return_value=False):
+            with self.assertRaisesRegex(terminal.ClientError,'--confirm-name'):self.call('purge','--project',self.project['id'])
+        with self.assertRaises(terminal.ClientError):self.call('purge','--project',self.project['id'],'--confirm-name','wrong')
+        self.assertTrue(owned.exists())
+        result=self.call('purge','--project',self.project['id'],'--confirm-name',self.project['title'])
+        self.assertFalse(result['cleanup_pending']);self.assertGreaterEqual(result['removed_file_bytes'],300000)
+        self.assertGreater(result['reclaimed_database_bytes'],0)
+        self.assertFalse(owned.exists());self.assertTrue((external/'keep').exists())
+        self.assertEqual([p['id'] for p in self.call('projects')],[other]);self.assertEqual(self.call('trash'),[])
+
+    def test_purge_pending_is_visible_retryable_and_cannot_be_restored(self):
+        root=self.client.root(self.project);owned=self.db.parent/'council-runs/retry-owned';owned.mkdir();(owned/'file').write_text('test')
+        self.server.store.update_node(root['id'],metadata={'run':str(owned)})
+        self.call('delete')
+        args=['purge','--project',self.project['id'],'--confirm-name',self.project['title'],'--server',self.client.url,'--db',str(self.db),'--json']
+        with patch('project_cleanup.shutil.rmtree',side_effect=OSError('Fixture cleanup failure')),contextlib.redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(terminal.main(args),1)
+        self.assertTrue(json.loads(output.getvalue())['cleanup_pending'])
+        self.assertTrue(self.call('trash')[0]['cleanup_pending'])
+        with self.assertRaisesRegex(terminal.ClientError,'복원할 수 없'):self.call('restore','--project',self.project['id'])
+        result=self.call('purge','--project',self.project['id'],'--confirm-name',self.project['title'])
+        self.assertFalse(result['cleanup_pending']);self.assertEqual(self.call('trash'),[])
+
+    def test_one_shot_lifecycle_selects_trash_and_json_without_active_project(self):
+        def run(*words):
+            value=subprocess.run([sys.executable,str(ROOT/'braindance.py'),*words,'--json','--server',self.client.url,'--db',str(self.db)],capture_output=True,text=True,timeout=12)
+            self.assertEqual(value.returncode,0,value.stderr);return json.loads(value.stdout)
+        run('delete','--project',self.project['id'])
+        self.assertEqual(run('trash')[0]['id'],self.project['id'])
+        run('restore','--project',self.project['id']);self.assertEqual(len(run('projects')),1)
+        run('delete','--project',self.project['id'])
+        self.assertEqual(run('purge','--project',self.project['id'],'--preview')['title'],self.project['title'])
+        run('purge','--project',self.project['id'],'--confirm-name',self.project['title'])
+        self.assertEqual(run('trash'),[])
+
+    def test_lifecycle_ambiguity_and_active_project_purge_are_rejected(self):
+        with self.assertRaises(terminal.ClientError):self.call('purge','--project',self.project['id'],'--confirm-name',self.project['title'])
+        second=self.call('new',self.project['title'],'--goal','Duplicate name')['project_id']
+        for pid in [self.project['id'],second]:self.call('delete','--project',pid)
+        with self.assertRaises(terminal.ClientError):self.call('restore','--project',self.project['title'])
+        with self.assertRaises(terminal.ClientError):self.call('purge','--project',self.project['title'],'--confirm-name',self.project['title'])
+        self.assertEqual(len(self.call('trash')),2)
+
+    def test_purge_interactive_name_confirmation_and_plain_console_selection(self):
+        console=terminal.Console(self.client,terminal.parser().parse_args(['--plain']));console.project=self.project
+        with contextlib.redirect_stdout(io.StringIO()):asyncio.run(console.handle('/delete'))
+        self.assertIsNone(console.project)
+        with patch('sys.stdin.isatty',return_value=True),patch('builtins.input',return_value=''),contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(terminal.ClientError):self.call('purge','--project',self.project['id'])
+        self.assertEqual(len(self.call('trash')),1)
+        with contextlib.redirect_stdout(io.StringIO()):asyncio.run(console.handle('/restore --project '+self.project['id']))
+        self.assertEqual(console.project['id'],self.project['id'])
+        self.call('delete')
+        with patch('sys.stdin.isatty',return_value=True),patch('builtins.input',return_value=self.project['title']),contextlib.redirect_stdout(io.StringIO()):
+            self.call('purge','--project',self.project['id'])
+        self.assertEqual(self.call('trash'),[])
+
     def test_interactive_progress_prints_while_prompt_is_waiting(self):
         from prompt_toolkit import PromptSession
         from prompt_toolkit.input import create_pipe_input

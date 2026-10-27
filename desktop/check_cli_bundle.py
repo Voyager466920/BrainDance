@@ -72,7 +72,24 @@ def main():
             with urllib.request.urlopen(address+'/api/reports/file?project_id='+project['project_id']+'&digest='+reports['report']['digest']+'&file='+chart['file']) as response:
                 assert response.read().startswith(b'\x89PNG')
             assert 'observed' in get('/api/reports/preview?project_id='+project['project_id']) or 'img' in get('/api/reports/preview?project_id='+project['project_id'])
-            print('PASS: packaged logo, detached assets/CA, shared backend, actual CPU execution and measured PNG reporting; no model/GPU/Notion account calls.')
+            # Exercise the shipped CLI against disposable data, including actual
+            # report/run cleanup and an unrelated project that must survive.
+            common=('--json','--db',str(database),'--server',address)
+            other=json.loads(run('new','Keep bundle fixture','--goal','Must survive deletion',*common))
+            external=database.parent/'external-input.txt';external.write_text('preserve external source')
+            run('delete','--project',project['project_id'],*common)
+            assert any(p['id']==project['project_id'] for p in json.loads(run('trash',*common)))
+            run('restore','--project',project['project_id'],*common)
+            assert Path(receipt['run_dir']).exists()
+            run('delete','--project',project['project_id'],*common)
+            preview=json.loads(run('purge','--project',project['project_id'],'--preview',*common))
+            assert preview['local_file_bytes']>0 and Path(receipt['run_dir']).exists()
+            deleted=json.loads(run('purge','--project',project['project_id'],'--confirm-name','Bundle fixture',*common))
+            assert not deleted['cleanup_pending'] and deleted['removed_file_bytes']>0
+            assert not Path(receipt['run_dir']).exists() and external.exists()
+            assert json.loads(run('trash',*common))==[]
+            assert [p['id'] for p in json.loads(run('projects',*common))]==[other['project_id']]
+            print('PASS: packaged logo, detached assets/CA, shared backend, actual CPU/PNG reporting, Trash/restore/confirmed purge and local space cleanup; no model/GPU/Notion account calls.')
         finally:
             if pid:
                 os.kill(pid,signal.SIGTERM)

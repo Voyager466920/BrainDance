@@ -107,7 +107,8 @@ class Client:
             body=json.dumps(payload,ensure_ascii=False).encode()
         request=urllib.request.Request(self.url+path,data=body,headers=headers)
         try:
-            with self.opener.open(request,timeout=45 if path in {'/api/compute/probe','/api/providers','/api/providers/refresh','/api/notion/configure'} else 8) as response:
+            timeout=120 if path=='/api/project/purge' else 45 if path.split('?')[0] in {'/api/compute/probe','/api/providers','/api/providers/refresh','/api/notion/configure','/api/project/purge-preview','/api/project/delete'} else 8
+            with self.opener.open(request,timeout=timeout) as response:
                 data=response.read().decode('utf-8')
                 return json.loads(data) if 'application/json' in response.headers.get('Content-Type','') else data
         except urllib.error.HTTPError as error:
@@ -128,17 +129,17 @@ class Client:
     def projects(self):
         return [p for p in self.request('/api/tree')['projects'] if not p.get('deleted_at')]
 
-    def project(self,selector=None):
-        projects=self.projects()
+    def project(self,selector=None,*,deleted=False):
+        projects=self.request('/api/project/trash')['projects'] if deleted else self.projects()
         if selector is None:
             if len(projects)==1:return projects[0]
-            raise ClientError('프로젝트를 선택하세요. /projects 다음 /use 번호 또는 --project 이름을 사용하세요.')
+            raise ClientError('프로젝트를 선택하세요. '+('/trash' if deleted else '/projects')+'로 목록을 확인하고 --project 이름 또는 ID를 사용하세요.')
         text=str(selector)
         exact=[p for p in projects if p['id']==text or p['title'].casefold()==text.casefold()]
         if len(exact)==1:return exact[0]
         if text.isdigit() and 1<=int(text)<=len(projects):return projects[int(text)-1]
         matches=[p for p in projects if p['id'].startswith(text)]
-        if len(matches)!=1:raise ClientError('프로젝트를 하나로 특정할 수 없습니다. /projects로 확인하세요.')
+        if len(matches)!=1:raise ClientError('프로젝트를 하나로 특정할 수 없습니다. '+('/trash' if deleted else '/projects')+'로 확인하세요.')
         return matches[0]
 
     def root(self,project):
@@ -202,6 +203,44 @@ def status_text(project,state):
     return safe_text('\n'.join(lines))
 
 
+def file_size(value):
+    size=float(value)
+    for unit in ['B','KiB','MiB','GiB','TiB']:
+        if size<1024 or unit=='TiB':return f'{size:,.1f} {unit}'
+        size/=1024
+
+
+def purge_summary(preview):
+    counts=preview.get('counts',{})
+    return safe_text('\n'.join([preview['title'],'완전 삭제하면 복원할 수 없습니다.',
+        '노드 '+str(counts.get('nodes',0))+'개 · 기록 '+str(counts.get('notes',0))+'개 · 대화 '+str(counts.get('messages',0))+'개',
+        '실험 '+str(counts.get('experiments',0))+'개 · 실행 '+str(counts.get('runs',0))+'개',
+        '정리 대상 로컬 파일: '+file_size(preview.get('local_file_bytes',0)),
+        '프로젝트의 관리 파일·로컬 기록을 삭제하고 데이터베이스 공간을 정리합니다.',
+        'SSH 서버 파일과 외부 데이터·코드는 삭제하지 않습니다.']))
+
+
+def project_action(client,args,current=None):
+    command=args.command
+    if command=='trash':return client.request('/api/project/trash')['projects']
+    selector=getattr(args,'project',None)
+    project=client.project(selector,deleted=command in {'restore','purge'}) if selector is not None or command!='delete' or current is None else current
+    if command=='purge':
+        preview=client.request('/api/project/purge-preview?'+urllib.parse.urlencode(dict(project_id=project['id'])))
+        if args.preview:return dict(action='preview',**preview)
+        name=args.confirm_name
+        if name is None:
+            if not sys.stdin.isatty() or getattr(args,'json',False):raise ClientError(purge_summary(preview)+'\n먼저 --preview로 확인한 뒤 --confirm-name에 프로젝트 이름을 정확히 입력하세요.')
+            print(purge_summary(preview))
+            name=input('완전 삭제할 프로젝트 이름을 그대로 입력하세요 (Enter 취소): ')
+        if name!=preview['title']:raise ClientError('프로젝트 이름이 일치하지 않아 완전 삭제하지 않았습니다.')
+        result=client.request('/api/project/purge',dict(project_id=project['id'],confirmation_name=name))
+    else:
+        if project.get('cleanup_pending'):raise ClientError('이미 완전 삭제된 프로젝트의 파일 정리가 남아 있습니다. 복원할 수 없으며 완전 삭제를 다시 시도하세요.')
+        result=client.request('/api/project/'+command,dict(project_id=project['id']))
+    return {**result,'project_id':project['id'],'title':project['title'],'action':command}
+
+
 def parser():
     common=argparse.ArgumentParser(add_help=False)
     for name,kw in [('db',dict(type=Path)),('server',{}),('port',dict(type=int)),('project',{})]:common.add_argument('--'+name,default=argparse.SUPPRESS,**kw)
@@ -209,6 +248,11 @@ def parser():
     p=argparse.ArgumentParser(prog='braindance',description='BrainDance 프로젝트 대화·연구 터미널',parents=[common])
     sub=p.add_subparsers(dest='command')
     sub.add_parser('install-cli',parents=[common])
+    for name in ['delete','trash','restore','purge']:
+        q=sub.add_parser(name,parents=[common])
+        if name=='purge':
+            q.add_argument('--preview',action='store_true',help='Show local records and files to remove without deleting')
+            q.add_argument('--confirm-name',help='Exact project name required for permanent deletion without an interactive prompt')
     for name in ['projects','status','tree','connections','devices']:
         q=sub.add_parser(name,parents=[common]);
         if name=='devices':q.add_argument('profile')
@@ -233,6 +277,7 @@ def profile_for(client,selector):
 
 def dispatch(client,args,project=None):
     command=args.command
+    if command in {'delete','trash','restore','purge'}:return project_action(client,args,project)
     if command=='projects':return client.projects()
     if command=='connections':return client.request('/api/compute')['profiles']
     if command=='connection':return client.request('/api/compute/profile',dict(name=args.name or args.alias,kind='ssh',host=args.alias,user='',port=None,identity_file=''))
@@ -309,9 +354,16 @@ def output(value,args,project=None):
         else:
             from terminal_presenter import report_view
             print(safe_text(report_view(value)))
-    elif args.command=='projects':
-        for i,p in enumerate(value,1):print(str(i)+'. '+safe_text(p['title'])+'  '+p['id'])
-        if not value:print('프로젝트가 없습니다. new 명령으로 추가하세요.')
+    elif args.command in {'projects','trash'}:
+        for i,p in enumerate(value,1):print(str(i)+'. '+safe_text(p['title'])+'  '+p['id']+(' · 정리 미완료' if p.get('cleanup_pending') else ''))
+        if not value:print('휴지통이 비어 있습니다.' if args.command=='trash' else '프로젝트가 없습니다. new 명령으로 추가하세요.')
+    elif args.command in {'delete','restore','purge'}:
+        if value['action']=='preview':print(purge_summary(value))
+        elif value['action']=='purge':
+            print(('정리 미완료: ' if value.get('cleanup_pending') else '완전 삭제: ')+safe_text(value['title']))
+            print('로컬 파일 '+file_size(value.get('removed_file_bytes',0))+' · 데이터베이스 '+file_size(value.get('reclaimed_database_bytes',0))+' 정리')
+            if value.get('error'):print(safe_text(value['error'])+'\n휴지통에서 같은 프로젝트의 완전 삭제를 다시 시도하세요.')
+        else:print(('휴지통으로 이동: ' if args.command=='delete' else '복원: ')+safe_text(value['title']))
     elif args.command=='status':print(status_text(project,value))
     elif args.command=='chat':print(display_message(value,True))
     elif args.command=='history':
@@ -342,6 +394,8 @@ def output(value,args,project=None):
 
 
 HELP='''/projects · /use 번호 또는 이름 · /new 이름 --goal "연구 목표"
+/delete [--project 이름] · /trash · /restore --project 이름 또는 ID
+/purge --project 이름 또는 ID [--preview] · 완전 삭제는 이름 확인 필요
 /status · /history [--full] · /tree · /connections · /devices 연결
 /auto start --context "연구 폴더" · /auto pause|resume|stop
 /limits --calls 총횟수 · /limits --tokens 총토큰
@@ -415,9 +469,12 @@ class Console:
         except SystemExit:return True
         if args.command is None:print(HELP);return True
         value=await asyncio.to_thread(dispatch,self.client,args,self.project)
-        selected=self.client.project(args.project) if hasattr(args,'project') else self.project
+        selected=None if command in {'delete','trash','restore','purge'} else self.client.project(args.project) if hasattr(args,'project') else self.project
         output(value,args,selected)
         if command=='new':await asyncio.to_thread(self.select,value['project_id'])
+        if command=='delete' and self.project and self.project['id']==value['project_id']:
+            self.project=None;self.seen={};self.toolbar='프로젝트 선택'
+        if command=='restore' and self.project is None:await asyncio.to_thread(self.select,value['project_id'])
         return True
 
     async def run(self):
@@ -431,7 +488,7 @@ class Console:
         def newline(event):event.current_buffer.insert_text('\n')
         colored=not getattr(self.args,'no_color',False) and 'NO_COLOR' not in os.environ and os.environ.get('TERM')!='dumb'
         style=Style.from_dict({'prompt':'#7bb594','toolbar':'#899c91'}) if colored else Style.from_dict({})
-        session=PromptSession(key_bindings=kb,completer=WordCompleter(['/projects','/use','/new','/status','/history','/tree','/connections','/devices','/target','/auto','/limits','/ask','/next','/restart','/reply','/logs','/report','/notion','/exit','/quit','/help']),complete_while_typing=False,style=style)
+        session=PromptSession(key_bindings=kb,completer=WordCompleter(['/projects','/use','/new','/delete','/trash','/restore','/purge','/status','/history','/tree','/connections','/devices','/target','/auto','/limits','/ask','/next','/restart','/reply','/logs','/report','/notion','/exit','/quit','/help']),complete_while_typing=False,style=style)
         self.prompt_session=session
         print('/help 도움말 · /exit 종료 (연구 작업은 유지)')
         selector=getattr(self.args,'project',None)
@@ -472,9 +529,9 @@ def main(argv=None):
                     asyncio.run(ResearchTerminal(client,args).run())
             except ImportError:raise ClientError('대화형 CLI에는 prompt-toolkit이 필요합니다. requirements-cli.txt를 설치하거나 패키지 앱의 braindance 명령을 사용하세요.')
             return 0
-        project=None if args.command in {'projects','connections','connection','devices','new'} else client.project(getattr(args,'project',None))
+        project=None if args.command in {'projects','connections','connection','devices','new','delete','trash','restore','purge'} else client.project(getattr(args,'project',None))
         result=dispatch(client,args,project);output(result,args,project)
-        return 1 if args.command=='chat' and result['state'] in {'failed','interrupted'} else 0
+        return 1 if (args.command=='chat' and result['state'] in {'failed','interrupted'}) or (args.command=='purge' and result.get('cleanup_pending')) else 0
     except KeyboardInterrupt:
         print('\n연결을 종료했습니다. 서버의 연구 작업은 계속됩니다.',file=sys.stderr);return 130
     except (ClientError,urllib.error.URLError,TimeoutError,OSError,ValueError) as error:
