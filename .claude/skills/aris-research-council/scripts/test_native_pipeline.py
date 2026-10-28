@@ -188,3 +188,9 @@ class NativePipelineTests(unittest.TestCase):
         for name in ['../tree.sqlite3','/etc/passwd','.aris-official/skills/research-pipeline/SKILL.md']:
             with self.assertRaises(ValueError):self.host.path(name)
         with self.assertRaises(ValueError):self.host.execute('helper',dict(name='install_aris.sh',args=[]))
+
+    def test_advisor_prompt_is_an_actual_system_instruction_asset(self):
+        from native_pipeline import advisor_prompt,REPORT_CONTRACT
+        prompt=advisor_prompt();self.assertTrue(prompt.startswith('# Role: Critical AI Research Advisor'))
+        self.assertIn('Confirmed:',prompt);self.assertIn('Speculation:',prompt)
+        self.assertIn('RESEARCH_BRIEF.json',REPORT_CONTRACT)

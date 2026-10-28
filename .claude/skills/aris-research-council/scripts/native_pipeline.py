@@ -91,6 +91,13 @@ def session_skill_receipts(job):
     return invoked,sources,pending_finish
 
 
+def advisor_prompt():
+    asset=Path(getattr(sys,'_MEIPASS',Path(__file__).resolve().parent.parent))/'assets/research-advisor.md'
+    return asset.read_text()
+
+REPORT_CONTRACT="\nREADER REPORT: Before finish, write RESEARCH_BRIEF.json containing native_cycle (integer matching context.native_cycle), problem (string), approach (string), findings (string), limitations (array of strings), next_steps (array of strings). State only facts supported by current receipts, and distinguish confirmed findings, hypotheses and speculation. Write NARRATIVE_REPORT.md in clean Korean Markdown with headings: 해결하려는 문제, 해결 방법, 살펴볼 코드, 결과, 한계와 다음 단계, 참고 논문. References contain plain http/https URLs ONLY: no paper metadata, abstracts, bibliographies or evidence dumps. Mention exact implemented file/function references, actual baseline/candidate numbers, settings and uncertainty. The host adds retained source references, measured tables and graphs. No fabricated measurements. The advisor's critical questions should guide your autonomous next experiment; ask the human only for genuinely missing authority or credentials. Do not pause authorized research merely to wait for answers to the advisor's default discussion questions. The report format here and explicit human instructions take precedence over the advisor's default response template.\n"
+
+
 def run(job,root,progress):
     work,plugin=install(job)
     known,sources,pending_finish=session_skill_receipts(job)
@@ -102,7 +109,7 @@ def run(job,root,progress):
             progress.emit('native-completed','기존 모델의 보고 요청을 재사용해 검증된 결과를 저장했습니다. 추가 모델 호출은 없습니다.',state='completed');return
     host=command('--native-host',str(root/'job.json'))
     mcp=work/'.host-mcp.json';council.dump(mcp,dict(mcpServers={'codex':dict(command=host[0],args=host[1:])}))
-    contract=CONTRACT
+    contract=CONTRACT+REPORT_CONTRACT
     if job.get('research_style')=='scout':
         from scout import CONTRACT as scout_contract
         contract+='\n'+scout_contract
@@ -114,7 +121,7 @@ def run(job,root,progress):
     (work/'CLAUDE.md').write_text(contract)
     statefile=work/'native-session.json';state=council.read_json(statefile) if statefile.exists() else {}
     argv=['claude','-p','--verbose','--output-format','stream-json','--model',job['literature_model'],
-          '--plugin-dir',str(plugin),'--restricted','--setting-sources','project','--strict-mcp-config','--mcp-config',str(mcp),
+          '--append-system-prompt',advisor_prompt(),'--plugin-dir',str(plugin),'--restricted','--setting-sources','project','--strict-mcp-config','--mcp-config',str(mcp),
           '--permission-mode','acceptEdits','--permission-prompts','none',
           '--tools','Skill,Read,Write,Edit,Glob,Grep,WebSearch,WebFetch',
           '--allowedTools','Skill,Read,Write,Edit,Glob,Grep,WebSearch,WebFetch,mcp__codex__*',
@@ -124,6 +131,7 @@ def run(job,root,progress):
     council.dump(root/'native-argv.json',argv)
     prompt=contract+'\nResearch direction (human authority):\n'+job['topic']+'\nAuthorized automatic run id: '+job['auto_session_id']+'; current scientific cycle: '+str(job.get('native_cycle',0))+'. Reuse the upstream run state only when resuming THIS unfinished cycle. If the prior cycle is complete, begin a NEW upstream pipeline run and a new research question while preserving all prior reports.\nBegin by reading host context. Continue until the native pipeline cycle completes or a real host deadline/stop prevents progress.'
     (root/'native-request.txt').write_text(prompt)
+    (root/'advisor-system-prompt.md').write_text(advisor_prompt())
     from session_budget import update
     key=str(root/'native-usage.json');update(job['session_budget'],'reserve',key=key,calls=1,estimate=50000)
     messages={};requested={};succeeded=set();results=[];reserved=1;finish_ids=set();host_finished=False
@@ -347,6 +355,13 @@ class Host:
             return self.api('experiment',payload=spec,review_receipt=str(folder/'usage.json'),direction_revision=context['revision'])
         if name=='receipt':return self.api('receipt',run_id=args['run_id'])
         if name=='finish':
+            brief=self.work/'RESEARCH_BRIEF.json'
+            if brief.is_file() and not brief.is_symlink():
+                from research_reports import validate_brief
+                raw=council.read_json(brief)
+                if raw.get('native_cycle')!=self.job.get('native_cycle',0):raise ValueError('현재 연구 사이클의 RESEARCH_BRIEF.json을 작성하세요.')
+                summary=validate_brief(raw);summary['native_cycle']=self.job.get('native_cycle',0)
+                council.dump(self.root/'research-brief.json',summary)
             required=SKILLS
             if self.job.get('research_style')=='scout':required=(*SKILLS,'research-lit') if context['completed_runs'] else ('research-pipeline','research-lit','idea-discovery')
             for skill in required:self.require_skill(skill)
@@ -423,7 +438,7 @@ def action(server,payload):
         current=prompt_context(server.store,job['project_id'])
         with server.store._connect() as conn:time_budget=server.experiments._budget(job['project_id'],assignment['updated_at'],assignment['time_budget_minutes']*60,conn)
         continuous=session['config'].get('execution_policy')=='until_deadline'
-        allocation=runtime_budget(settings(server.store,job['project_id']),config.get('scout_preferences',{}),time_budget['remaining_seconds'],None if continuous else session['config']['max_cycles']-completed_count,config.get('research_style','focused'),until_deadline=continuous)
+        allocation=runtime_budget(settings(server.store,job['project_id']),config.get('scout_preferences',{}),time_budget['remaining_seconds'],None if continuous else session['config']['max_cycles']-completed_count,config.get('research_style','focused'),until_deadline=continuous,experiment_timeout_seconds=session['config'].get('experiment_timeout_seconds'))
         return dict(research_style=config.get('research_style','focused'),research_preferences=settings(server.store,job['project_id']),shared_project=current,revision=current['revision'],usage=server.autopilot.state(job['project_id'])['usage'],
                     execution_budget=allocation,execution_policy=session['config'].get('execution_policy','bounded'),deadline_epoch=session['config'].get('deadline_epoch'),native_cycle=config.get('native_cycle',0),resource_signature=resource_signature(profile,assignment),
                     target=dict(profile=profile['name'],kind=profile['kind'],device_ids=assignment['device_ids'],time_budget_minutes=assignment['time_budget_minutes'],context_path=config['context_path']),
@@ -453,7 +468,7 @@ def action(server,payload):
             elif spec['node_id']!=job['node_id']:raise ValueError('프로젝트 노드가 일치하지 않습니다.')
             from scout import settings,runtime_budget
             with server.store._connect() as conn:time_budget=server.experiments._budget(job['project_id'],assignment['updated_at'],assignment['time_budget_minutes']*60,conn)
-            allocation=runtime_budget(settings(server.store,job['project_id']),config.get('scout_preferences',{}),time_budget['remaining_seconds'],None if continuous else session['config']['max_cycles']-completed_count,config.get('research_style','focused'),until_deadline=continuous)
+            allocation=runtime_budget(settings(server.store,job['project_id']),config.get('scout_preferences',{}),time_budget['remaining_seconds'],None if continuous else session['config']['max_cycles']-completed_count,config.get('research_style','focused'),until_deadline=continuous,experiment_timeout_seconds=session['config'].get('experiment_timeout_seconds'))
             if type(spec.get('timeout_seconds')) is not int or not 1<=spec['timeout_seconds']<=allocation['max_timeout_seconds']:raise ValueError('실험 시간이 현재 남은 프로젝트 예산의 배분 한도를 넘었습니다. 새 context로 다시 준비하세요.')
             reviewroot=review_directory(job['run_dir'],spec,revision,resource_signature(profile,assignment))
             if Path(payload['review_receipt'])!=reviewroot/'usage.json' or not (reviewroot/'usage.json').is_file():raise ValueError('실행할 코드에 대한 실제 Reviewer 영수증이 없습니다.')
@@ -483,5 +498,12 @@ def action(server,payload):
         server.store.add_note(job['node_id'],'analysis','자율 연구 최종 보고',text[:99000])
         record=dict(job_id=job['id'],auto_session_id=session['id'],run_ids=[r['id'] for r in rows],report=str(archive),report_sha256=hashlib.sha256(text.encode()).hexdigest(),completed_at=now())
         council.dump(work/'native-completion.json',record)
+        retain_brief(server,job)
         return record
     raise ValueError('지원하지 않는 자율 연구 작업입니다.')
+
+
+def retain_brief(server,job):
+    path=Path(job['run_dir'])/'research-brief.json'
+    if path.is_file():
+        server.store.add_note(job['node_id'],'analysis','연구 보고 요약',path.read_text())

@@ -12,7 +12,7 @@ import urllib.error
 
 import terminal
 import test_terminal as fixtures
-from notion_reports import NotionAPI,NotionError,PublicationService,blocks_for,page_id
+from notion_reports import NotionAPI,NotionError,PublicationService,blocks_for,page_id,block_signature
 from research_reports import build_report,project_data,report_html,signature
 from tree_store import now
 
@@ -174,7 +174,7 @@ class PublicationTests(unittest.TestCase):
         self.assertIn('image/png',self.client.opener.open(self.client.url+'/api/reports/file'+query+chart['file']).headers['Content-Type'])
         self.assertEqual(state['jobs'][0]['state'],'completed')
         page=state['jobs'][0]['page_id'];self.assertTrue(any(b['type']=='image' for b in self.remote.blocks[page]))
-        self.assertEqual(len(self.remote.uploads),3)
+        self.assertEqual(len(self.remote.uploads),2)
         self.assertNotIn(TOKEN,self.service.file(self.project['id'],report['digest'],'results.json').read_text())
         self.assertFalse(any('untrusted.invalid' in path for _,path,_ in self.remote.calls))
 
@@ -188,7 +188,7 @@ class PublicationTests(unittest.TestCase):
         self.service.update(response['id'],'failed','Fixture retry')
         state=self.run_job(self.service.enqueue(self.project['id'],True));page=state['jobs'][0]['page_id']
         self.assertEqual(len(self.remote.blocks),3) # parent, project, snapshot
-        self.assertEqual(len(self.remote.blocks[page]),len(blocks_for(state['report']))+2)
+        self.assertEqual(len(self.remote.blocks[page]),len(blocks_for(state['report']))+1)
         calls=len(self.remote.calls);again=self.service.enqueue(self.project['id'],True)
         self.assertEqual(again['state'],'completed');self.assertEqual(len(self.remote.calls),calls)
 
@@ -234,6 +234,34 @@ class PublicationTests(unittest.TestCase):
         body='한글🙂'*2500;blocks=blocks_for(dict(sections=[('제목',body)]))
         self.assertEqual(''.join(b['paragraph']['rich_text'][0]['text']['content'] for b in blocks[1:]),body)
         self.assertTrue(all(len(b[b['type']]['rich_text'][0]['text']['content'].encode('utf-16-le'))//2<=2000 for b in blocks))
+
+    def test_reading_report_cites_urls_only_and_formats_tables_and_code(self):
+        self.add_measurement();node=self.client.root(self.project)
+        with self.server.store._connect() as conn:conn.execute('UPDATE nodes SET evidence=? WHERE id=?',(json.dumps([dict(url='https://arxiv.org/abs/2601.00001',title='BIBLIOGRAPHY_SENTINEL',source_excerpt='ABSTRACT_SENTINEL')]),node['id']))
+        self.server.store.add_note(node['id'],'analysis','연구 보고 요약',json.dumps(dict(problem='메모리 병목',approach='**재사용**을 검증',findings='확인된 측정 결과만 비교합니다.',limitations=['추가 모델 검증 필요'],next_steps=['절제 실험'])))
+        self.configure(layout='database');state=self.run_job(self.service.enqueue(self.project['id'],True))
+        markdown=self.service.file(self.project['id'],state['report']['digest'],'report.md').read_text()
+        self.assertIn('## 해결하려는 문제',markdown);self.assertIn('https://arxiv.org/abs/2601.00001',markdown)
+        self.assertNotIn('BIBLIOGRAPHY_SENTINEL',markdown);self.assertNotIn('ABSTRACT_SENTINEL',markdown)
+        self.assertIn('experiment-runs/',markdown);self.assertIn('모듈 직접 실행',markdown)
+        entry=next(iter(self.remote.entries.values()))[0];blocks=self.remote.blocks[entry['id']]
+        table=next(b for b in blocks if b['type']=='table');self.assertTrue(table['table']['has_column_header'])
+        kinds=[b['type'] for b in blocks];self.assertLess(kinds.index('image'),next(i for i,b in enumerate(blocks) if b['type']=='heading_2' and b['heading_2']['rich_text'][0]['text']['content']=='한계와 다음 단계'))
+        first=block_signature(table);table['table']['children'][1]['table_row']['cells'][0][0]['text']['content']='HUMAN_EDIT'
+        self.assertNotEqual(block_signature(table),first)
+        self.assertFalse(any(v['filename']=='results.json' for v in self.remote.uploads.values()))
+        self.assertEqual(entry['id'],state['jobs'][0]['page_id'])
+
+    def test_automatic_publication_waits_for_results_or_reader_summary(self):
+        self.configure(True,layout='database');self.service.tick()
+        with self.service.connect() as conn:first=dict(conn.execute('SELECT * FROM jobs').fetchone())
+        self.run_job(first)
+        node=self.client.root(self.project);self.server.store.add_note(node['id'],'analysis','내부 검토','중간 사고 기록')
+        self.service.tick()
+        with self.service.connect() as conn:self.assertEqual(conn.execute('SELECT count(*) FROM jobs').fetchone()[0],1)
+        self.server.store.add_note(node['id'],'analysis','연구 보고 요약',json.dumps(dict(problem='확인할 문제',approach='검증할 방법',findings='아직 측정 전',limitations=[],next_steps=[])))
+        self.service.tick()
+        with self.service.connect() as conn:self.assertEqual(conn.execute('SELECT count(*) FROM jobs').fetchone()[0],2)
 
 
 class NotionTransportTests(unittest.TestCase):

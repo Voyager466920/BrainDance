@@ -39,7 +39,7 @@ def root(store,project_id):
 def settings(store,project_id):return validate(root(store,project_id)['metadata'].get('research_preferences',{}))
 
 
-def runtime_budget(prefs,snapshot,remaining_seconds,remaining_runs,style,until_deadline=False):
+def runtime_budget(prefs,snapshot,remaining_seconds,remaining_runs,style,until_deadline=False,experiment_timeout_seconds=None):
     """Allocate existing project time; model requests cannot expand it."""
     remaining=max(0,int(remaining_seconds));slots=max(1,remaining_runs or 1)
     fixed=[] if until_deadline else [p['pilot_seconds'] for p in (prefs,snapshot) if p.get('runtime_policy')=='fixed']
@@ -48,7 +48,8 @@ def runtime_budget(prefs,snapshot,remaining_seconds,remaining_runs,style,until_d
     else:
         cap=min(86400,remaining//slots);policy='auto'
         recommended=min(cap,max(prefs['pilot_seconds'],900 if style=='scout' else 1800))
-    return dict(policy=policy,remaining_project_seconds=remaining,remaining_experiments=slots,max_timeout_seconds=cap,recommended_timeout_seconds=recommended,supervisor_enforced=True)
+    if experiment_timeout_seconds is not None:cap=min(cap,experiment_timeout_seconds);recommended=min(recommended,cap)
+    return dict(experiment_timeout_seconds=experiment_timeout_seconds,policy=policy,remaining_project_seconds=remaining,remaining_experiments=slots,max_timeout_seconds=cap,recommended_timeout_seconds=recommended,supervisor_enforced=True)
 
 
 def save(store,project_id,value):
@@ -229,6 +230,8 @@ def finish(server,job,session,rows,report):
     text=path.read_text()
     if not text.strip():raise ValueError('탐색 보고가 비어 있습니다.')
     archive=Path(job['run_dir'])/'native-summary.md';archive.write_text(text)
+    from native_pipeline import retain_brief
+    retain_brief(server,job)
     ideas=work/'SCOUT_IDEAS.md'
     if ideas.is_file() and not ideas.is_symlink():
         content=ideas.read_text();(Path(job['run_dir'])/'scout-ideas.md').write_text(content)

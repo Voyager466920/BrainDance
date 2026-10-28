@@ -82,8 +82,11 @@ class Autopilot:
                 (item['status'],item['message'],json.dumps(item['progress']),now(),item['id']))
 
     def control(self,payload):
-        if set(payload)-{'project_id','action','max_cycles','max_model_calls','token_budget','context_path','mode','session_id','reuse_research','research_style','execution_policy','duration_seconds','deadline_epoch'}:raise ValueError('지원하지 않는 자동모드 설정입니다.')
+        if set(payload)-{'project_id','action','max_cycles','max_model_calls','token_budget','context_path','mode','session_id','reuse_research','research_style','execution_policy','duration_seconds','deadline_epoch','experiment_timeout_seconds'}:raise ValueError('지원하지 않는 자동모드 설정입니다.')
         project_id=payload['project_id'];action=payload['action'];root=self.root(project_id);self.store.get_node(root['id'])
+        if 'experiment_timeout_seconds' in payload:
+            value=payload['experiment_timeout_seconds']
+            if value is not None and (type(value) is not int or not 1<=value<=86400):raise ValueError('실험당 제한 시간은 1초–24시간 또는 자동 배분으로 설정하세요.')
         if action not in {'start','pause','resume','stop','limits','time_only','deadline'}:raise ValueError('자동모드 동작을 확인하세요.')
         with self.lock:
             old=self.sessions(project_id);item=old[0] if old else None
@@ -96,6 +99,7 @@ class Autopilot:
                 from session_budget import update
                 update(item['config']['session_budget'],'time_only',deadline_epoch=clock['deadline_epoch'],started_epoch=clock['started_epoch'])
                 item['config'].update(clock,max_cycles=None,pipeline='aris-native')
+                if 'experiment_timeout_seconds' in payload:item['config']['experiment_timeout_seconds']=payload['experiment_timeout_seconds']
                 with self.store._connect() as conn:conn.execute('UPDATE automatic_sessions SET config=? WHERE id=?',(json.dumps(item['config']),item['id']))
                 if action=='time_only':
                     p=item['progress'];current=self.research.get(p['job_id']) if p.get('job_id') else None
@@ -148,6 +152,7 @@ class Autopilot:
                     config=dict(scope='project',pipeline=self.default_pipeline,research_style=style,scout_preferences=preferences,max_cycles=cycles,mode=mode,context_path=context,resource_signature=resource_signature(profile,assignment),reuse_research=reuse,
                                 session_budget=str(ledger),native_workspace=str(native_workspace)),progress=dict(phase='prepare',discovery_completed=False,cycles=0,revision=steering.snapshot(self.store,project_id)['revision'],code_hashes=[],failures=0),created_at=now(),updated_at=now())
                 item['config']['execution_policy']=policy
+                item['config']['experiment_timeout_seconds']=payload.get('experiment_timeout_seconds')
                 if policy=='until_deadline':
                     clock=self.deadline_spec(payload,assignment['time_budget_minutes']*60);item['config'].update(clock,pipeline='aris-native')
                     from session_budget import update

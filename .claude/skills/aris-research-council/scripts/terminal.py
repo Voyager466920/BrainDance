@@ -263,16 +263,16 @@ def parser():
     q=sub.add_parser('history',parents=[common]);q.add_argument('--full',action='store_true');q.add_argument('--last',type=int,default=10)
     q=sub.add_parser('chat',parents=[common]);q.add_argument('message');q.add_argument('--mode',choices=['auto','ask','next','restart'],default='auto');q.add_argument('--no-wait',action='store_true');q.add_argument('--timeout',type=int,default=300);q.add_argument('--request-id');q.add_argument('--reply-to',help='job:ID, session:ID 또는 run:ID')
     q=sub.add_parser('limits',parents=[common]);q.add_argument('--calls',type=int);q.add_argument('--tokens',type=int)
-    q.add_argument('--hours',type=float)
+    q.add_argument('--hours',type=float);q.add_argument('--experiment-minutes',type=float,help='Optional maximum minutes per experiment; 0 selects automatic allocation')
     q=sub.add_parser('auto',parents=[common]);q.add_argument('action',choices=['start','pause','resume','stop']);q.add_argument('--cycles',type=int,default=3);q.add_argument('--calls',type=int,default=40);q.add_argument('--tokens',type=int,default=1500000);q.add_argument('--context',default='');q.add_argument('--mode',choices=['lite','balanced','deep'],default='balanced');q.add_argument('--reuse-research',action='store_true',help='Reuse this project\'s completed Council and verified literature; re-author and review the next experiment')
-    q.add_argument('--hours',type=float);q.add_argument('--bounded',action='store_true',help='Legacy count-budget mode instead of deadline-only autonomous research')
+    q.add_argument('--hours',type=float);q.add_argument('--experiment-minutes',type=float,help='Optional maximum minutes per experiment; 0 selects automatic allocation');q.add_argument('--bounded',action='store_true',help='Legacy count-budget mode instead of deadline-only autonomous research')
     q=sub.add_parser('interests',parents=[common]);q.add_argument('--interest',action='append');q.add_argument('--bridge',action='append');q.add_argument('--clear-bridges',action='store_true');q.add_argument('--style',choices=['focused','scout']);q.add_argument('--days',type=int);q.add_argument('--papers',type=int);q.add_argument('--pilots',type=int);q.add_argument('--seconds',type=int);q.add_argument('--gain',type=float);q.add_argument('--seeds',type=int)
     q.add_argument('--runtime-policy',choices=['auto','fixed'],help='Auto allocates remaining project time; fixed enforces --seconds as a hard cap')
     q=sub.add_parser('scout',parents=[common]);q.add_argument('action',choices=['start','status','pause','resume','stop'],default='status',nargs='?');q.add_argument('--calls',type=int,default=80);q.add_argument('--tokens',type=int,default=3000000);q.add_argument('--context',default='');q.add_argument('--mode',choices=['lite','balanced','deep'],default='lite')
-    q.add_argument('--hours',type=float);q.add_argument('--bounded',action='store_true')
+    q.add_argument('--hours',type=float);q.add_argument('--experiment-minutes',type=float,help='Optional maximum minutes per experiment; 0 selects automatic allocation');q.add_argument('--bounded',action='store_true')
     q=sub.add_parser('new',parents=[common]);q.add_argument('name');q.add_argument('--goal',required=True);q.add_argument('--target',default='local');q.add_argument('--devices',default='cpu');q.add_argument('--minutes',type=int,default=30);q.add_argument('--interest',action='append',default=[]);q.add_argument('--bridge',action='append',default=[]);q.add_argument('--style',choices=['focused','scout'],default='focused')
     q.add_argument('--start',action='store_true',help='Create and immediately start automatic research within the selected limits');q.add_argument('--calls',type=int);q.add_argument('--tokens',type=int);q.add_argument('--cycles',type=int);q.add_argument('--context',default='');q.add_argument('--mode',choices=['lite','balanced','deep'])
-    q.add_argument('--hours',type=float);q.add_argument('--bounded',action='store_true')
+    q.add_argument('--hours',type=float);q.add_argument('--experiment-minutes',type=float,help='Optional maximum minutes per experiment; 0 selects automatic allocation');q.add_argument('--bounded',action='store_true')
     q=sub.add_parser('target',parents=[common]);q.add_argument('profile');q.add_argument('--devices',required=True);q.add_argument('--minutes',type=int,default=30)
     q=sub.add_parser('connection',parents=[common]);q.add_argument('alias');q.add_argument('--name')
     q=sub.add_parser('logs',parents=[common]);q.add_argument('kind',choices=['job','run']);q.add_argument('id')
@@ -290,6 +290,7 @@ def profile_for(client,selector):
 def time_options(args):
     result=dict(execution_policy='bounded' if args.bounded else 'until_deadline')
     if args.hours is not None:result['duration_seconds']=int(args.hours*3600)
+    if args.experiment_minutes is not None:result['experiment_timeout_seconds']=int(args.experiment_minutes*60) if args.experiment_minutes else None
     return result
 
 
@@ -354,7 +355,12 @@ def dispatch(client,args,project=None):
         return value
     if command=='limits':
         state=client.control(project)
-        if args.hours is not None:return client.request('/api/control/automatic',dict(project_id=project['id'],action='deadline',duration_seconds=int(args.hours*3600)))
+        if args.hours is not None or args.experiment_minutes is not None:
+            payload=dict(project_id=project['id'],action='deadline')
+            if args.hours is not None:payload['duration_seconds']=int(args.hours*3600)
+            else:payload.update(deadline_epoch=state['session']['config']['deadline_epoch'],duration_seconds=state['session']['config']['duration_seconds'])
+            if args.experiment_minutes is not None:payload['experiment_timeout_seconds']=int(args.experiment_minutes*60) if args.experiment_minutes else None
+            return client.request('/api/control/automatic',payload)
         if args.calls is None and args.tokens is None:return state.get('usage')
         if not state.get('session') or not state.get('usage'):raise ClientError('자동모드 실행 한도를 먼저 설정하세요.')
         return client.request('/api/control/automatic',dict(project_id=project['id'],action='limits',session_id=state['session']['id'],max_model_calls=args.calls if args.calls is not None else state['usage']['max_calls'],token_budget=args.tokens if args.tokens is not None else state['usage']['token_budget']))

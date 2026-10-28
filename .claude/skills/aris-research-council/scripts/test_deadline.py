@@ -103,3 +103,24 @@ class DeadlineTests(unittest.TestCase):
             restarted._conversation_requests();dispatch.assert_not_called()
         with self.server.store._connect() as conn:row=conn.execute("SELECT state,receipt FROM conversation_actions WHERE id='OFFLINE-after-clock'").fetchone()
         self.assertEqual(row['state'],'blocked');self.assertIn('종료 시각',json.loads(row['receipt'])['error'])
+
+    def test_human_per_experiment_time_applies_without_new_count_caps(self):
+        self.authorize(60)
+        changed=self.server.autopilot.control(dict(project_id=self.node['project_id'],action='deadline',duration_seconds=60,experiment_timeout_seconds=2))
+        context=self.call('context');self.assertEqual(context['execution_budget']['max_timeout_seconds'],2)
+        self.assertEqual(context['execution_budget']['recommended_timeout_seconds'],2);self.assertIsNone(context['max_runs'])
+        self.assertIsNone(changed['usage']['max_calls'])
+        with self.assertRaises(ValueError):self.server.autopilot.control(dict(project_id=self.node['project_id'],action='deadline',duration_seconds=60,experiment_timeout_seconds=-1))
+        self.server.autopilot.control(dict(project_id=self.node['project_id'],action='deadline',duration_seconds=60,experiment_timeout_seconds=None))
+        self.assertGreater(self.call('context')['execution_budget']['max_timeout_seconds'],2)
+
+    def test_per_experiment_limit_terminates_real_cpu_work_before_project_deadline(self):
+        self.authorize(60)
+        self.server.autopilot.control(dict(project_id=self.node['project_id'],action='deadline',duration_seconds=60,experiment_timeout_seconds=2))
+        (self.work/'advice-ideas.json').write_text('{}')
+        (self.work/'per-run.py').write_text('import time\ndef self_test():\n assert True\ndef run_experiment():\n time.sleep(15)\n')
+        with patch('native_pipeline.council.codex_call',side_effect=self.fake_review):
+            run=self.host.execute('experiment',dict(source='per-run.py',title='OFFLINE per-experiment timeout',timeout_seconds=30))
+        actual=self.wait_run(run['run_id'])
+        self.assertEqual(self.server.experiments.run_info(run['run_id'])['timeout_seconds'],2);self.assertEqual(actual['state'],'timed_out')
+        self.assertEqual(self.server.autopilot.state(self.node['project_id'])['session']['status'],'running')

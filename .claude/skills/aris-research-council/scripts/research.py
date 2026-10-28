@@ -88,7 +88,7 @@ class ResearchEngine:
             'council/usage.json','council/round-1/COUNCIL_REPORT.md','error.log',
             'worker.stderr.log','literature.stderr.log','verification.stderr.log','arxiv-fetch.stderr.log',
             'generated-experiment.py','generated-experiment.json','generated-proposal.json','environment.json','environment.stderr.log','context-discovery.json','resolved-context.json',
-            'native-request.txt','native-argv.json','native.stdout.jsonl','native.stderr.log','native-usage.json','native-skill-receipts.json','native-completion.json','scout-triage.json','scout-settings.json','scout-ideas.md','native-result-evidence.json','native-summary.md','advisory-ideas.md','advisory-results.md','registered-experiment.json','analysis.json','lab-usage.json','explored-environment.json',
+            'native-request.txt','advisor-system-prompt.md','research-brief.json','native-argv.json','native.stdout.jsonl','native.stderr.log','native-usage.json','native-skill-receipts.json','native-completion.json','scout-triage.json','scout-settings.json','scout-ideas.md','native-result-evidence.json','native-summary.md','advisory-ideas.md','advisory-results.md','registered-experiment.json','analysis.json','lab-usage.json','explored-environment.json',
             'exploration-1.json','exploration-2.json'] if (root/name).is_file()]
         for prefix in ['native-helpers','native-reviewer','native-code-review','scout-searches']:
             folder=root/prefix

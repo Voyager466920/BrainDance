@@ -172,6 +172,14 @@ The **실험 실행** (Experiments) tab keeps immutable plans, source code, and 
 
 Use **한도** (Limits), `/limits`, or `braindance limits --hours 8 --project "My project"` to change the remaining time. Recorded usage, scientific history, device selection and the shared project conversation remain intact. The new end time is measured from the moment the change is saved. Paused or stopped work still requires an explicit resume/start.
 
+## Research advisor and readable reports
+
+The main research executor loads `assets/research-advisor.md` as an additional Claude system prompt. It evaluates concrete problems, structural insights, fair experiments and novelty, while the original autonomous research Skills continue to execute. Confirmed observations, hypotheses and speculation remain distinct. The advisor's default discussion questions do not add human checkpoints to an authorized automatic run.
+
+Reports use Korean Markdown sections for the problem, approach, exact retained source file and entry points, measured baseline/candidate results, limitations and next actions. Paper citations are plain URLs; full abstracts, bibliographic metadata, Council dumps and raw JSON stay in the local archive. Notion records are dated entries **inside the research database**, with real tables and charts immediately after the results. The Markdown report is attached; raw `results.json` remains local. Earlier published snapshots are preserved.
+
+The automatic start dialog lets you set total research hours and an optional maximum per-experiment duration in minutes (`0` means automatic allocation). For scripts: `braindance auto start --hours 8 --experiment-minutes 20`. Change the next experiment's allocation with `braindance limits --experiment-minutes 10`; it preserves the existing project end time. `/limits` exposes both controls. Changes apply to subsequent immutable experiment plans; work already running keeps its reviewed timeout. Count and token caps remain absent in timed mode.
+
 ## Project automatic mode
 
 `braindance auto start --hours 8 --project "My project"` starts deadline-only autonomous research. The normal start wizard asks for a research folder and duration, plus the research style/model preset. There are **no model-call, token, dollar or experiment-count stop limits** in this mode. Account usage and all actual receipts remain recorded. Provider authentication and provider-side availability still apply.

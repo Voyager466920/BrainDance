@@ -217,6 +217,8 @@ def progress_view(state,jobs,job_info,experiments):
     session=state.get('session')
     if session:
         lines.extend(['자동 연구 · '+STATES.get(session['status'],session['status']),''])
+    per_run=(state.get('session') or {}).get('config',{}).get('experiment_timeout_seconds')
+    if per_run:lines.append('실험당 최대 '+str(per_run)+'초 · 다음 실행부터 적용')
     usage=state.get('usage')
     if usage and usage.get('policy')=='until_deadline':lines.extend([deadline_text(usage['deadline_epoch']),f"모델 호출 {usage['calls']:,}회 · 보고된 토큰 {usage['observed_tokens']:,} · 횟수·토큰 제한 없음",''])
     elif usage:lines.extend([f"모델 호출 {usage['calls']:,} / {usage['max_calls']:,}회",f"토큰 예상·예약 {usage['charged_tokens']:,} / {usage['token_budget']:,}",''])

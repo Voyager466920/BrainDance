@@ -72,6 +72,8 @@ class NotionAPI:
         result=[];cursor=''
         while True:
             data=self.request('GET','/blocks/'+page_id(identity)+'/children?page_size=100'+('&start_cursor='+urllib.parse.quote(cursor,safe='') if cursor else ''))
+            for block in data['results']:
+                if block.get('type')=='table' and block.get('has_children') and 'children' not in block['table']:block['table']['children']=self.children(block['id'])
             result.extend(data['results'])
             if not data.get('has_more'):return result
             cursor=data['next_cursor']
@@ -135,13 +137,61 @@ class NotionAPI:
 def rich(value):return [{'type':'text','text':{'content':value}}]
 
 
+def inline(value):
+    result=[];pattern=r'(\*\*[^*]+\*\*|`[^`]+`|https?://[^\s<>]+)';offset=0
+    def add(item,bold=False,code=False,link=None):
+        for chunk in chunks(item):
+            part={'type':'text','text':{'content':chunk}}
+            if link:part['text']['link']={'url':link}
+            if bold or code:part['annotations']={'bold':bold,'code':code}
+            result.append(part)
+    for match in re.finditer(pattern,value):
+        if match.start()>offset:add(value[offset:match.start()])
+        part=match.group()
+        if part.startswith('**'):add(part[2:-2],bold=True)
+        elif part.startswith('`'):add(part[1:-1],code=True)
+        else:add(part,link=part)
+        offset=match.end()
+    if offset<len(value):add(value[offset:])
+    return result or rich(' ')
+
+
+def markdown_blocks(body):
+    """Render the report's Markdown subset as real Notion formatting."""
+    lines=body.splitlines();blocks=[];i=0
+    def block(kind,value):
+        for chunk in chunks(value):blocks.append({'object':'block','type':kind,kind:{'rich_text':inline(chunk)}})
+    while i<len(lines):
+        line=lines[i].strip();i+=1
+        if not line:continue
+        if line.startswith('|') and i<len(lines) and re.fullmatch(r'[\s|:\-]+',lines[i]) and '-' in lines[i]:
+            rows=[line];i+=1
+            while i<len(lines) and lines[i].strip().startswith('|'):rows.append(lines[i].strip());i+=1
+            cells=[[c.strip() for c in r.strip('|').split('|')] for r in rows];width=max(map(len,cells))
+            # Notion accepts at most 100 children on creation: split long tables.
+            for start in range(1,len(cells),90):
+                subset=[cells[0],*cells[start:start+90]]
+                children=[{'object':'block','type':'table_row','table_row':{'cells':[inline(c) for c in row+['']*(width-len(row))]}} for row in subset]
+                blocks.append({'object':'block','type':'table','table':{'table_width':width,'has_column_header':True,'has_row_header':False,'children':children}})
+        elif line.startswith('```'):
+            content=[]
+            while i<len(lines) and not lines[i].strip().startswith('```'):content.append(lines[i]);i+=1
+            i+=1
+            for chunk in chunks('\n'.join(content)):blocks.append({'object':'block','type':'code','code':{'language':'plain text','rich_text':rich(chunk)}})
+        elif re.match(r'^#{1,6}\s',line):
+            depth=len(line)-len(line.lstrip('#'));block('heading_'+str(min(3,depth)),line[depth:].strip())
+        elif re.match(r'^[-*]\s+',line):block('bulleted_list_item',re.sub(r'^[-*]\s+','',line))
+        elif re.match(r'^\d+\.\s+',line):block('numbered_list_item',re.sub(r'^\d+\.\s+','',line))
+        else:block('paragraph',line)
+    return blocks
+
+
 def blocks_for(record):
     blocks=[]
     for title,body in record['sections']:
         for chunk in chunks(title):blocks.append({'object':'block','type':'heading_2','heading_2':{'rich_text':rich(chunk)}})
-        for chunk in chunks(body):blocks.append({'object':'block','type':'paragraph','paragraph':{'rich_text':rich(chunk)}})
+        blocks.extend(markdown_blocks(body))
     return blocks
-
 
 def chunks(text):
     # 900 codepoints also fits the 2,000 UTF-16-unit limit for emoji.
@@ -150,6 +200,7 @@ def chunks(text):
 
 def block_signature(block):
     kind=block['type'];payload=block[kind]
+    if kind=='table':return (kind,json.dumps([[''.join(t.get('plain_text',t.get('text',{}).get('content','')) for t in cell) for cell in row['table_row']['cells']] for row in payload.get('children',[])],ensure_ascii=False))
     return (kind,''.join(v.get('plain_text',v.get('text',{}).get('content','')) for v in payload.get('rich_text',payload.get('caption',[]))))
 
 
@@ -257,26 +308,30 @@ class PublicationService:
                 identity=api.child_page(parent,'결과 보고 · '+job['digest'][:12])
             url='https://www.notion.so/'+identity.replace('-','')
             self.update(job['id'],'uploading','그래프와 결과 파일을 첨부합니다.',page_id=identity,page_url=url)
-            blocks=blocks_for(record)
-            files=[(c['file'],c['title']+' · '+c['file']) for c in record['charts']]+[('report.md','전체 연구 보고서'),('results.json','보고서에 사용한 측정값과 논문 근거')]
-            expected=[block_signature(b) for b in blocks]+[('image' if name.endswith('.png') else 'file',caption) for name,caption in files]
+            items=[]
+            for title,body in record['sections']:
+                items.extend(blocks_for(dict(sections=[(title,body)])))
+                if title=='결과':items.extend((c['file'],c['title']+' · '+c['file']) for c in record['charts'])
+            items.append(('report.md','연구 보고서 · Markdown'))
+            expected=[block_signature(item) if isinstance(item,dict) else ('image' if item[0].endswith('.png') else 'file',item[1]) for item in items]
             existing=api.children(identity)
             if len(existing)>len(expected) or [block_signature(b) for b in existing]!=expected[:len(existing)]:raise ValueError('Notion 보고서에 수동 변경이 있습니다. 원본을 보존하기 위해 덮어쓰기를 중단했습니다.')
             offset=len(existing)
-            while offset<len(blocks):
-                batch=[];size=0
-                for b in blocks[offset:offset+80]:
-                    encoded=len(json.dumps(b,ensure_ascii=False).encode())
-                    if size+encoded>350000:break
-                    batch.append(b);size+=encoded
+            while offset<len(items):
                 project_data(self.store,job['project_id'])
+                item=items[offset]
+                if isinstance(item,tuple):
+                    name,caption=item
+                    if not self.token():raise ValueError('Notion 연결이 해제되었습니다.')
+                    batch=[api.upload(self.file(job['project_id'],job['digest'],name),caption)]
+                else:
+                    batch=[];size=0
+                    for item in items[offset:offset+80]:
+                        if not isinstance(item,dict):break
+                        encoded=len(json.dumps(item,ensure_ascii=False).encode())
+                        if size+encoded>350000:break
+                        batch.append(item);size+=encoded
                 api.request('PATCH','/blocks/'+identity+'/children',dict(children=batch));offset+=len(batch)
-            for position,(name,caption) in enumerate(files,len(blocks)):
-                if position<len(existing):continue
-                project_data(self.store,job['project_id'])
-                if not self.token():raise ValueError('Notion 연결이 해제되었습니다.')
-                b=api.upload(self.file(job['project_id'],job['digest'],name),caption)
-                api.request('PATCH','/blocks/'+identity+'/children',dict(children=[b]))
             self.update(job['id'],'completed','Notion에 결과와 시각화를 정리했습니다.')
         else:self.update(job['id'],'completed','보고서와 시각화를 저장했습니다.')
         # Publication receipts belong to the same project stream; they are not
@@ -289,7 +344,14 @@ class PublicationService:
         with self.connect() as conn:links=[dict(r) for r in conn.execute('SELECT * FROM links WHERE auto_sync=1')]
         if not self.token():return
         for link in links:
-            try:self.enqueue(link['project_id'],publish=True,retry=False)
+            try:
+                data=project_data(self.store,link['project_id'])
+                with self.connect() as conn:previous=conn.execute("SELECT snapshot FROM jobs WHERE project_id=? AND kind IN ('notion','notion-database') ORDER BY rowid DESC LIMIT 1",(link['project_id'],)).fetchone()
+                if previous:
+                    prior=json.loads(previous['snapshot'])
+                    # Internal reviews and brainstorming remain in the journal; publish scientific milestones.
+                    if prior.get('schema_version')==2 and prior.get('runs')==data.get('runs') and prior.get('brief')==data.get('brief'):continue
+                self.enqueue(link['project_id'],publish=True,retry=False)
             except (ValueError,KeyError):pass
 
     def loop(self):
