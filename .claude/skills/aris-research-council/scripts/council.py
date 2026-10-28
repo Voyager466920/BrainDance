@@ -164,9 +164,10 @@ class Budget:
 
     def reserve(self, calls, estimated_tokens):
         with self.lock:
-            if self.calls + calls > self.config["max_model_calls"]:
+            from session_budget import time_only
+            if not time_only(self.config) and self.calls + calls > self.config["max_model_calls"]:
                 raise RuntimeError("Model invocation budget exhausted before dispatch")
-            if not self.config.get('session_budget') and self.observed_tokens + estimated_tokens > self.config["token_budget"]:
+            if not time_only(self.config) and not self.config.get('session_budget') and self.observed_tokens + estimated_tokens > self.config["token_budget"]:
                 raise RuntimeError("Token admission budget exhausted before dispatch")
             if self.config.get('session_budget'):
                 from session_budget import update
@@ -185,13 +186,14 @@ class Budget:
             self.save()
 
     def save(self):
+        from session_budget import time_only
         shared=self.config.get('session_budget')
         limit=read_json(shared)['token_budget'] if shared else self.config['token_budget']
         dump(self.path, dict(model_invocations_reserved=self.calls,
                              observed_tokens=self.observed_tokens,
                              token_budget=limit,stage_default_token_budget=self.config['token_budget'],
                              budget_scope='project_session' if shared else 'standalone',
-                             budget_semantics="Admission estimate and stop between stages; in-flight calls may exceed token budget. Not a provider hard token or spend cap.",
+                             budget_semantics="Usage accounting only until the shared deadline." if time_only(self.config) else "Admission estimate and stop between stages; in-flight calls may exceed token budget. Not a provider hard token or spend cap.",
                              records=self.records))
 
 
@@ -303,7 +305,9 @@ def claude_call(folder, name, prompt, model, config, budget, agents=None, requir
     work.mkdir(exist_ok=True)
     argv = ["claude", "-p", "--verbose", "--output-format", "stream-json", "--model", model,
             "--setting-sources", "", "--disable-slash-commands", "--strict-mcp-config",
-            "--mcp-config", '{"mcpServers":{}}', "--max-budget-usd", str(config["claude_budget_usd"])]
+            "--mcp-config", '{"mcpServers":{}}']
+    from session_budget import time_only
+    if not time_only(config):argv += ["--max-budget-usd", str(config["claude_budget_usd"])]
     if agents:
         afile = folder / "agents.json"
         dump(afile, agents)

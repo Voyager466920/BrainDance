@@ -72,7 +72,7 @@ def session_skill_receipts(job):
         rows=conn.execute('SELECT id,config,run_dir,state,error,message FROM research_jobs WHERE project_id=? ORDER BY created_at',(job['project_id'],)).fetchall()
     for row in rows:
         config=json.loads(row['config'])
-        if config.get('auto_session_id')!=job.get('auto_session_id') or config.get('native_workspace')!=job.get('native_workspace'):continue
+        if config.get('auto_session_id')!=job.get('auto_session_id') or config.get('native_workspace')!=job.get('native_workspace') or config.get('native_cycle',0)!=job.get('native_cycle',0):continue
         trace=Path(row['run_dir'])/'native.stdout.jsonl'
         if not trace.is_file():continue
         requested={};succeeded=set();finish_request=None
@@ -107,6 +107,10 @@ def run(job,root,progress):
         from scout import CONTRACT as scout_contract
         contract+='\n'+scout_contract
         council.dump(root/'scout-settings.json',job.get('scout_preferences',{}))
+    from session_budget import time_only,deadline_for
+    continuous=time_only(job)
+    if continuous:
+        contract+='\nTIME-ONLY CONTINUOUS RESEARCH: The human authorized research until the absolute deadline '+str(deadline_for(job))+'. There are NO project model-call, token, dollar or experiment-count caps. Usage is still recorded. context.max_runs=null means unlimited; do not stop because of previous numeric defaults. Follow the official pipeline and its artifact-driven internal review loop, not a timer-based fresh review. Finish each scientifically coherent cycle with its real reviewed report using finish; the host then continues the next exploration cycle automatically until the deadline. A successful or negative experiment is information, not permission to terminate the whole project. Explore the next unresolved hypothesis or a new cross-field connection; preserve failures and avoid repeating unchanged completed pilots. When the host says a new cycle starts, create a NEW upstream pipeline run in the SAME shared project conversation/workspace, reusing evidence and reviewer context appropriately.\n'
     (work/'CLAUDE.md').write_text(contract)
     statefile=work/'native-session.json';state=council.read_json(statefile) if statefile.exists() else {}
     argv=['claude','-p','--verbose','--output-format','stream-json','--model',job['literature_model'],
@@ -114,10 +118,11 @@ def run(job,root,progress):
           '--permission-mode','acceptEdits','--permission-prompts','none',
           '--tools','Skill,Read,Write,Edit,Glob,Grep,WebSearch,WebFetch',
           '--allowedTools','Skill,Read,Write,Edit,Glob,Grep,WebSearch,WebFetch,mcp__codex__*',
-          '--disallowedTools','Bash,Agent','--max-turns',str(job.get('native_max_turns',120)),
-          '--max-budget-usd',str(job.get('native_usd_limit',8))]
+          '--disallowedTools','Bash,Agent']
+    if not continuous:argv+=['--max-turns',str(job.get('native_max_turns',120)),'--max-budget-usd',str(job.get('native_usd_limit',8))]
     if state.get('session_id'):argv+=['--resume',state['session_id']]
-    prompt=contract+'\nResearch direction (human authority):\n'+job['topic']+'\nAuthorized automatic run id: '+job['auto_session_id']+'; reuse the upstream run state for this authorization when resuming, otherwise begin a new upstream run while preserving previous reports.\nBegin by reading host context. Continue until the native pipeline completes or a real host budget/stop prevents progress.'
+    council.dump(root/'native-argv.json',argv)
+    prompt=contract+'\nResearch direction (human authority):\n'+job['topic']+'\nAuthorized automatic run id: '+job['auto_session_id']+'; current scientific cycle: '+str(job.get('native_cycle',0))+'. Reuse the upstream run state only when resuming THIS unfinished cycle. If the prior cycle is complete, begin a NEW upstream pipeline run and a new research question while preserving all prior reports.\nBegin by reading host context. Continue until the native pipeline cycle completes or a real host deadline/stop prevents progress.'
     (root/'native-request.txt').write_text(prompt)
     from session_budget import update
     key=str(root/'native-usage.json');update(job['session_budget'],'reserve',key=key,calls=1,estimate=50000)
@@ -133,7 +138,8 @@ def run(job,root,progress):
             # Read bytes: TextIO.readline can hide already-buffered records from select.
             os.set_blocking(p.stdout.fileno(),False)
             while p.poll() is None or selector.get_map():
-                if time.monotonic()-start>job['phase_timeout_seconds']*7:raise TimeoutError('공식 연구 세션 제한 시간을 초과했습니다.')
+                update(job['session_budget'],'check')
+                if not continuous and time.monotonic()-start>job['phase_timeout_seconds']*7:raise TimeoutError('공식 연구 세션 제한 시간을 초과했습니다.')
                 for keyevent,_ in selector.select(.2):
                     block=os.read(keyevent.fd,65536)
                     if not block:selector.unregister(keyevent.fileobj);continue
@@ -236,7 +242,7 @@ class Host:
             self.event('scout-search','관심 분야와 연결할 논문을 실제 출처에서 조회합니다.')
             result=search(self.job,self.work,args)
             receipts=self.work/'scout-source-receipts.json';old=council.read_json(receipts) if receipts.exists() else []
-            council.dump(receipts,old+[dict(session_id=self.job['auto_session_id'],source_receipt=result['source_receipt'])])
+            council.dump(receipts,old+[dict(session_id=self.job['auto_session_id'],native_cycle=self.job.get('native_cycle',0),source_receipt=result['source_receipt'])])
             return result
         if name=='scout_candidates':
             self.require_skill('idea-discovery')
@@ -291,7 +297,7 @@ class Host:
             folder=self.work/('council-'+stage+'-'+fingerprint[:12]+'-evidence-v2')
             frozen=self.work/('advisory-topic-'+stage+'-'+fingerprint[:12]+'.json')
             if (folder/'status.json').is_file() and council.read_json(folder/'status.json').get('status')=='completed':
-                council.dump(self.work/('advice-'+stage+'.json'),dict(stage=stage,path=str(folder),fingerprint=fingerprint,run_ids=[r['id'] for r in context['completed_runs']]))
+                council.dump(self.work/('advice-'+stage+'.json'),dict(stage=stage,native_cycle=self.job.get('native_cycle',0),path=str(folder),fingerprint=fingerprint,run_ids=[r['id'] for r in context['completed_runs']]))
                 report=(folder/'round-1/COUNCIL_REPORT.md').read_text();(self.root/('advisory-'+stage+'.md')).write_text(report)
                 return dict(report=report,reused=True)
             cfg={k:v for k,v in self.cfg.items() if k in council.DEFAULTS or k in council.MODES[self.job['mode']] or k=='session_budget'}
@@ -303,7 +309,7 @@ class Host:
             else:council.dump(frozen,dict(topic=topic))
             self.event('native-council','아이디어 Council이 검토합니다.' if stage=='ideas' else '실제 결과에 대해 Council이 추가 의견을 냅니다.')
             council.run(SimpleNamespace(mode=self.job['mode'],config=str(config),topic=topic,node_id=self.job['node_id'],db=self.job['db'],literature=str(source/'LITERATURE.md'),evidence=str(evidence),output=str(folder),aris_repo=self.job['aris_repo'],resume=(folder/'config.json').is_file()),lambda phase,message:self.event('native-council',message))
-            receipt=dict(stage=stage,path=str(folder),fingerprint=fingerprint,run_ids=[r['id'] for r in context['completed_runs']])
+            receipt=dict(stage=stage,native_cycle=self.job.get('native_cycle',0),path=str(folder),fingerprint=fingerprint,run_ids=[r['id'] for r in context['completed_runs']])
             council.dump(self.work/('advice-'+stage+'.json'),receipt)
             report=(folder/'round-1/COUNCIL_REPORT.md').read_text();(self.root/('advisory-'+stage+'.md')).write_text(report)
             self.store.add_note(self.job['node_id'],'analysis','아이디어 Council 의견' if stage=='ideas' else '결과 Council 의견',report[:99000])
@@ -311,7 +317,7 @@ class Host:
         if name=='experiment':
             if self.last_delivered_revision>=0 and context['revision']>self.last_delivered_revision:raise ValueError('새 사용자 지시가 있습니다. context를 읽고 실행 소스에 반영하세요.')
             self.require_skill('experiment-bridge')
-            if self.job.get('research_style')!='scout' and not (self.work/'advice-ideas.json').is_file():raise ValueError('먼저 아이디어 Council 의견을 받아야 합니다.')
+            if self.job.get('research_style')!='scout' and (not (self.work/'advice-ideas.json').is_file() or council.read_json(self.work/'advice-ideas.json').get('native_cycle',0)!=self.job.get('native_cycle',0)):raise ValueError('먼저 아이디어 Council 의견을 받아야 합니다.')
             from lab_worker import check_code
             code=check_code(self.path(args.pop('source')).read_text())
             allocation=context['execution_budget'];cap=allocation['max_timeout_seconds']
@@ -398,7 +404,7 @@ def action(server,payload):
     work=workspace(config)
     with server.store._connect() as conn:
         rows=[dict(r) for r in conn.execute('SELECT r.*,e.spec FROM experiment_runs r JOIN experiments e ON r.experiment_id=e.id WHERE r.project_id=? ORDER BY r.queued_at',(job['project_id'],))]
-    rows=[r for r in rows if json.loads(r['spec']).get('generation',{}).get('native_session_id')==session['id']]
+    rows=[r for r in rows if json.loads(r['spec']).get('generation',{}).get('native_session_id')==session['id'] and json.loads(r['spec']).get('generation',{}).get('native_cycle',0)==config.get('native_cycle',0)]
     from experiments import completed_run_count
     completed_count=completed_run_count(rows)
     def receipt(row):
@@ -407,7 +413,7 @@ def action(server,payload):
     if payload['action']=='scout_candidates':
         if config.get('research_style')!='scout':raise ValueError('탐색 모드에서만 논문 연결을 등록할 수 있습니다.')
         from scout import candidate
-        return candidate(server.store,job['project_id'],job['node_id'],session['id'],payload['candidate'])
+        return candidate(server.store,job['project_id'],job['node_id'],session['id'],payload['candidate'],cycle=config.get('native_cycle',0))
     if payload['action']=='scout_triage':
         from scout import triage,settings
         return dict(evaluations=[triage(server.experiments.run_info(r['id']),settings(server.store,job['project_id'])) for r in rows if r['state'] not in {'queued','running'}])
@@ -416,9 +422,10 @@ def action(server,payload):
         from steering import prompt_context
         current=prompt_context(server.store,job['project_id'])
         with server.store._connect() as conn:time_budget=server.experiments._budget(job['project_id'],assignment['updated_at'],assignment['time_budget_minutes']*60,conn)
-        allocation=runtime_budget(settings(server.store,job['project_id']),config.get('scout_preferences',{}),time_budget['remaining_seconds'],session['config']['max_cycles']-completed_count,config.get('research_style','focused'))
+        continuous=session['config'].get('execution_policy')=='until_deadline'
+        allocation=runtime_budget(settings(server.store,job['project_id']),config.get('scout_preferences',{}),time_budget['remaining_seconds'],None if continuous else session['config']['max_cycles']-completed_count,config.get('research_style','focused'),until_deadline=continuous)
         return dict(research_style=config.get('research_style','focused'),research_preferences=settings(server.store,job['project_id']),shared_project=current,revision=current['revision'],usage=server.autopilot.state(job['project_id'])['usage'],
-                    execution_budget=allocation,resource_signature=resource_signature(profile,assignment),
+                    execution_budget=allocation,execution_policy=session['config'].get('execution_policy','bounded'),deadline_epoch=session['config'].get('deadline_epoch'),native_cycle=config.get('native_cycle',0),resource_signature=resource_signature(profile,assignment),
                     target=dict(profile=profile['name'],kind=profile['kind'],device_ids=assignment['device_ids'],time_budget_minutes=assignment['time_budget_minutes'],context_path=config['context_path']),
                     max_runs=session['config']['max_cycles'],runs_started=completed_count+sum(r['state'] in {'queued','running'} for r in rows),attempts_started=len(rows),completed_experiments=completed_count,completed_runs=[receipt(r) for r in rows if r['state'] not in {'queued','running'}])
     if payload['action']=='receipt':
@@ -429,10 +436,11 @@ def action(server,payload):
         with server.autopilot.lock:
             with server.store._connect() as conn:
                 rows=[dict(r) for r in conn.execute('SELECT r.*,e.spec FROM experiment_runs r JOIN experiments e ON r.experiment_id=e.id WHERE r.project_id=? ORDER BY r.queued_at',(job['project_id'],))]
-            rows=[r for r in rows if json.loads(r['spec']).get('generation',{}).get('native_session_id')==session['id']]
+            rows=[r for r in rows if json.loads(r['spec']).get('generation',{}).get('native_session_id')==session['id'] and json.loads(r['spec']).get('generation',{}).get('native_cycle',0)==config.get('native_cycle',0)]
             if server.autopilot.get(session['id'])['status']!='running':raise ValueError('자동 연구가 실행 중이 아닙니다.')
             completed_count=completed_run_count(rows)
-            if completed_count>=session['config']['max_cycles']:raise ValueError('설정한 정상 측정 횟수를 완료했습니다. 기존 결과를 분석·검토하고 최종 보고하세요.')
+            continuous=session['config'].get('execution_policy')=='until_deadline'
+            if not continuous and completed_count>=session['config']['max_cycles']:raise ValueError('설정한 정상 측정 횟수를 완료했습니다. 기존 결과를 분석·검토하고 최종 보고하세요.')
             if any(r['state'] in {'queued','running'} for r in rows):raise ValueError('진행 중인 실험 결과를 먼저 확인하세요.')
             import steering
             revision=steering.snapshot(server.store,job['project_id'])['revision']
@@ -441,16 +449,16 @@ def action(server,payload):
             if config.get('research_style')=='scout':
                 from scout import settings
                 prefs=settings(server.store,job['project_id']);selected=server.store.get_node(spec['node_id'])
-                if selected['project_id']!=job['project_id'] or selected['metadata'].get('scout_session')!=session['id']:raise ValueError('조회 논문과 연결한 이 탐색 세션의 가설을 먼저 등록하세요.')
+                if selected['project_id']!=job['project_id'] or selected['metadata'].get('scout_session')!=session['id'] or selected['metadata'].get('scout_cycle',0)!=config.get('native_cycle',0):raise ValueError('조회 논문과 연결한 이 탐색 세션의 가설을 먼저 등록하세요.')
             elif spec['node_id']!=job['node_id']:raise ValueError('프로젝트 노드가 일치하지 않습니다.')
             from scout import settings,runtime_budget
             with server.store._connect() as conn:time_budget=server.experiments._budget(job['project_id'],assignment['updated_at'],assignment['time_budget_minutes']*60,conn)
-            allocation=runtime_budget(settings(server.store,job['project_id']),config.get('scout_preferences',{}),time_budget['remaining_seconds'],session['config']['max_cycles']-completed_count,config.get('research_style','focused'))
+            allocation=runtime_budget(settings(server.store,job['project_id']),config.get('scout_preferences',{}),time_budget['remaining_seconds'],None if continuous else session['config']['max_cycles']-completed_count,config.get('research_style','focused'),until_deadline=continuous)
             if type(spec.get('timeout_seconds')) is not int or not 1<=spec['timeout_seconds']<=allocation['max_timeout_seconds']:raise ValueError('실험 시간이 현재 남은 프로젝트 예산의 배분 한도를 넘었습니다. 새 context로 다시 준비하세요.')
             reviewroot=review_directory(job['run_dir'],spec,revision,resource_signature(profile,assignment))
             if Path(payload['review_receipt'])!=reviewroot/'usage.json' or not (reviewroot/'usage.json').is_file():raise ValueError('실행할 코드에 대한 실제 Reviewer 영수증이 없습니다.')
             if council.parse_object((reviewroot/'response.txt').read_text()).get('verdict')!='pass':raise ValueError('코드 검토가 통과하지 않았습니다.')
-            generation=dict(job_id=job['id'],auto_session_id=session['id'],native_session_id=session['id'],direction_revision=revision,review_receipt=str(reviewroot/'usage.json'),automatic_analysis=False,runtime_allocation={**allocation,'granted_seconds':spec['timeout_seconds']})
+            generation=dict(job_id=job['id'],auto_session_id=session['id'],native_session_id=session['id'],native_cycle=config.get('native_cycle',0),direction_revision=revision,review_receipt=str(reviewroot/'usage.json'),automatic_analysis=False,runtime_allocation={**allocation,'granted_seconds':spec['timeout_seconds']})
             experiment=server.experiments.create(spec,provenance=generation)
             approval=server.experiments.approve(experiment['id'],experiment['digest'],True,authority='automatic:'+session['id'])
             run=server.experiments.enqueue(experiment['id'],approval['id'])
@@ -464,7 +472,7 @@ def action(server,payload):
         if not any(r['state']=='succeeded' and json.loads(r['result']).get('analysis',{}).get('status') in {'measured','compared'} for r in rows):raise ValueError('측정된 실험 결과 없이 완료로 표시하지 않습니다. 실패 원인과 남은 항목을 보존하세요.')
         advice=council.read_json(work/'advice-results.json')
         if set(advice['run_ids'])!={r['id'] for r in rows}:raise ValueError('최신 실험 결과의 Council 평가가 필요합니다.')
-        if not (work/'advice-ideas.json').is_file():raise ValueError('아이디어 Council의 실제 기록이 없습니다.')
+        if not (work/'advice-ideas.json').is_file() or council.read_json(work/'advice-ideas.json').get('native_cycle',0)!=config.get('native_cycle',0):raise ValueError('아이디어 Council의 실제 기록이 없습니다.')
         if not (work/'reviewer-latest.json').is_file():raise ValueError('기존 Reviewer의 결과 검토 기록이 없습니다. codex 도구로 결과를 검토하세요. 완료된 Council은 반복할 필요가 없습니다.')
         reviewer=council.read_json(work/'reviewer-latest.json')
         if set(reviewer['run_ids'])!={r['id'] for r in rows} or not Path(reviewer['receipt']).is_file():raise ValueError('최신 실험 결과에 대한 기존 Reviewer 기록이 필요합니다.')

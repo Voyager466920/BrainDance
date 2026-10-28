@@ -2,9 +2,16 @@
 from datetime import datetime,timezone
 import json
 import re
+import time
+from zoneinfo import ZoneInfo
 
 from terminal import PHASES,safe_text
 from prompt_toolkit.utils import get_cwidth
+
+
+def deadline_text(epoch):
+    end=datetime.fromtimestamp(epoch,ZoneInfo('Asia/Seoul')).strftime('%m/%d %H:%M')
+    return '종료 '+end+' · 남은 '+duration(max(0,epoch-time.time()))
 
 STATES={'active':'활성','expanded':'확장','held':'보류','discarded':'폐기','queued':'대기','preparing':'준비',
  'running':'진행 중','paused':'일시정지','blocked':'확인 필요','completed':'완료','succeeded':'성공',
@@ -211,7 +218,8 @@ def progress_view(state,jobs,job_info,experiments):
     if session:
         lines.extend(['자동 연구 · '+STATES.get(session['status'],session['status']),''])
     usage=state.get('usage')
-    if usage:lines.extend([f"모델 호출 {usage['calls']:,} / {usage['max_calls']:,}회",f"토큰 예상·예약 {usage['charged_tokens']:,} / {usage['token_budget']:,}",''])
+    if usage and usage.get('policy')=='until_deadline':lines.extend([deadline_text(usage['deadline_epoch']),f"모델 호출 {usage['calls']:,}회 · 보고된 토큰 {usage['observed_tokens']:,} · 횟수·토큰 제한 없음",''])
+    elif usage:lines.extend([f"모델 호출 {usage['calls']:,} / {usage['max_calls']:,}회",f"토큰 예상·예약 {usage['charged_tokens']:,} / {usage['token_budget']:,}",''])
     budget=experiments.get('budget')
     if budget:lines.extend(['실험 시간 예산','사용 '+duration(budget['spent_seconds'])+' · 예약 '+duration(budget['reserved_seconds'])+' · 남은 '+duration(budget['remaining_seconds']),''])
     if session:

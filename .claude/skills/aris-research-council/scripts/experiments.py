@@ -128,7 +128,9 @@ class ExperimentEngine:
         if not isinstance(args,list) or len(args)>64 or not all(isinstance(a,str) and len(a)<=2000 and '\x00' not in a for a in args):raise ValueError('인수는 문자열 JSON 배열이어야 합니다.')
         timeout=payload.get('timeout_seconds',60);metric=payload.get('metric','accuracy');direction=payload.get('direction','maximize')
         profile,assignment=self._resources(node)
-        if type(timeout) is not int or not 1<=timeout<=assignment['time_budget_minutes']*60:raise ValueError('실험 시간은 프로젝트 시간 예산 안에서 지정하세요.')
+        with self.store._connect() as conn:budget=self._budget(node['project_id'],assignment['updated_at'],assignment['time_budget_minutes']*60,conn)
+        ceiling=min(86400,int(budget['remaining_seconds'])) if budget.get('policy')=='until_deadline' else assignment['time_budget_minutes']*60
+        if type(timeout) is not int or not 1<=timeout<=ceiling:raise ValueError('실험 시간은 프로젝트의 남은 시간 안에서 지정하세요.')
         if not isinstance(metric,str) or not metric.strip() or len(metric)>100 or direction not in {'maximize','minimize'}:raise ValueError('평가 지표와 방향을 확인하세요.')
         spec=dict(node_id=node['id'],project_id=node['project_id'],title=title.strip(),code=code,
                   interpreter=interpreter,cwd=cwd,args=args,timeout_seconds=timeout,metric=metric.strip(),direction=direction,
@@ -176,6 +178,12 @@ class ExperimentEngine:
             return approval
 
     def _budget(self,project_id,epoch,limit,conn):
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE name='automatic_sessions'").fetchone():
+            session=conn.execute('SELECT config FROM automatic_sessions WHERE project_id=? ORDER BY rowid DESC LIMIT 1',(project_id,)).fetchone()
+            config=json.loads(session['config']) if session else {}
+            if config.get('execution_policy')=='until_deadline':
+                end=config['deadline_epoch'];start=config['started_epoch'];remaining=max(0,end-time.time())
+                return dict(policy='until_deadline',deadline_epoch=end,limit_seconds=end-start,spent_seconds=max(0,min(end,time.time())-start),reserved_seconds=0,remaining_seconds=remaining)
         spent=reserved=0.0
         for run in conn.execute('SELECT * FROM experiment_runs WHERE project_id=? AND epoch=?',(project_id,epoch)):
             if run['state'] in {'queued','running'}:reserved+=run['timeout_seconds']
@@ -342,6 +350,10 @@ class ExperimentEngine:
             payload=dict(run_id=run['id'],digest=experiment['digest'],run_dir=str(root),remote=spec['profile']['kind']=='ssh',
                          code=spec['code'],interpreter=spec['interpreter'],cwd=spec['cwd'],args=spec['args'],
                          timeout_seconds=run['timeout_seconds'],device_ids=spec['device_ids'])
+            with self.store._connect() as conn:clock=self._budget(run['project_id'],run['epoch'],86400,conn)
+            if clock.get('policy')=='until_deadline':
+                if clock['remaining_seconds']<=0:raise TimeoutError('연구 종료 시각에 도달했습니다.')
+                payload.update(deadline_epoch=clock['deadline_epoch'],timeout_seconds=min(run['timeout_seconds'],clock['remaining_seconds']))
             (root/'experiment.py').write_text(spec['code'],encoding='utf-8')
             (root/'dispatch.json').write_text(encode({k:v for k,v in payload.items() if k!='code'}),encoding='utf-8')
             with (root/'worker.log').open('wb') as worker_log, (root/'stdout.log').open('wb') as out, (root/'stderr.log').open('wb') as err:

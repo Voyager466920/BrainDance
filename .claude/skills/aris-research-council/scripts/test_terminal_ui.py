@@ -295,12 +295,12 @@ class TerminalUITests(unittest.TestCase):
             ui.modal_buttons[-1][1].handler()
             await self.wait_until(lambda:ui.modals and '만들고 자동 시작' in ui.modals[-1][0].title)
             self.assertEqual(len(self.server.store.export_json()['projects']),before)
-            fields=self.editable_fields(ui);fields[1].text='1';fields[2].text='12';fields[3].text='200000'
+            fields=self.editable_fields(ui);self.assertEqual(len(fields),2);fields[1].text='1'
             ui.modal_buttons[-1][0].handler()
             await self.wait_until(lambda:not ui.modals)
             self.assertEqual(ui.project['title'],'Create and scout')
             state=self.server.autopilot.state(ui.project['id'])
-            self.assertEqual(state['session']['status'],'running');self.assertEqual(state['usage']['max_calls'],12)
+            self.assertEqual(state['session']['status'],'running');self.assertIsNone(state['usage']['max_calls']);self.assertEqual(state['session']['config']['execution_policy'],'until_deadline')
             self.assertEqual(self.server.compute.state()['assignments'][ui.project['id']]['time_budget_minutes'],2)
             self.assertEqual(ui.tab,1)
         self.scenario(exercise)

@@ -87,7 +87,8 @@ def run(spec):
     command += [str(script),*spec.get('args',[])]
     env=child_environment(spec['device_ids'],root)
     env['BRAINDANCE_TIMEOUT_SECONDS']=str(timeout)
-    env['BRAINDANCE_DEADLINE_UNIX']=str(time.time()+timeout)
+    deadline=min(time.time()+timeout,spec.get('deadline_epoch',float('inf')))
+    env['BRAINDANCE_DEADLINE_UNIX']=str(deadline)
     if spec.get('cwd'):env['PYTHONPATH']=str(cwd)
     started=time.monotonic();process=None;threads=[]
     def pump(stream,name):
@@ -103,6 +104,7 @@ def run(spec):
                 if len(chunk)>available:
                     truncated[name]=True;log_limit.set()
     try:
+        if time.time()>=deadline:raise TimeoutError('Research deadline passed before target execution')
         process=subprocess.Popen(command,cwd=str(cwd),env=env,stdin=subprocess.DEVNULL,
                                  stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True)
         emit('started',pid=process.pid,target_dir=str(root),device=env['BRAINDANCE_DEVICE'],digest=spec['digest'],
@@ -115,7 +117,7 @@ def run(spec):
             elapsed=time.monotonic()-started
             if log_limit.is_set():state='failed';break
             if cancel.is_set():state='cancelled';break
-            if elapsed>=timeout:state='timed_out';break
+            if elapsed>=timeout or time.time()>=deadline:state='timed_out';break
             if elapsed-heartbeat>=1:emit('heartbeat',elapsed_seconds=elapsed);heartbeat=elapsed
             time.sleep(.05)
         terminate_group(process)

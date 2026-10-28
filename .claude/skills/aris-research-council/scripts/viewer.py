@@ -45,6 +45,7 @@ class ViewerServer(ThreadingHTTPServer):
             self.research.api_url="http://127.0.0.1:"+str(actual_port)
             self.autopilot=Autopilot(store,self.research,self.experiments)
             self.chat=ResearchChat(store,self.research,self.autopilot)
+            self.autopilot.deadline_callback=self.chat.cancel_project
             self.publications=PublicationService(store)
             self.chat.publications=self.publications
             self.cleanup=ProjectCleanup(store,self.experiments,self.compute,self.research)
@@ -112,7 +113,7 @@ class ViewerHandler(BaseHTTPRequestHandler):
             return
         path = urlsplit(self.path).path
         if path == '/api/health':
-            self._reply(200, {'app': 'BrainDance', 'version': '0.14.0', 'pid': os.getpid(),
+            self._reply(200, {'app': 'BrainDance', 'version': '0.15.0', 'pid': os.getpid(),
                              'workspace_id': hashlib.sha256(str(Path(self.server.store.db_path).resolve()).encode()).hexdigest()})
         elif path=='/api/chat':
             try:self._reply(200,self.server.chat.messages(parse_qs(urlsplit(self.path).query).get('project_id',[''])[0]))

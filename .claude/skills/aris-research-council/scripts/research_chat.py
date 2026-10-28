@@ -153,7 +153,7 @@ class ResearchChat:
                 aris_repo=available['aris_repo'],phase_timeout_seconds=240,chat_context=context)
             from project_session import identity
             job['project_session']=identity(self.store,message['project_id'])
-            if session and session['status'] in {'running','paused','blocked'}:job['session_budget']=session['config']['session_budget']
+            if session and (session['status'] in {'running','paused','blocked'} or session['config'].get('execution_policy')=='until_deadline'):job['session_budget']=session['config']['session_budget']
             from council import dump
             dump(root/'job.json',job)
             with (root/'worker.stdout.log').open('wb') as out,(root/'worker.stderr.log').open('wb') as err:

@@ -40,6 +40,7 @@ class TerminalTests(unittest.TestCase):
         self.server.shutdown();self.thread.join(3);self.server.server_close()
 
     def call(self,*words):
+        if len(words)>1 and words[0] in {'auto','scout'} and words[1]=='start' and '--hours' not in words and '--bounded' not in words:words=(*words,'--bounded')
         args=terminal.parser().parse_args(list(words));return terminal.dispatch(self.client,args,self.project)
 
     def test_shared_app_conversation_idempotency_and_project_isolation(self):
@@ -56,7 +57,7 @@ class TerminalTests(unittest.TestCase):
         self.assertEqual(self.client.messages(self.client.project(second['project_id'])),[])
 
     def test_new_start_uses_selected_style_and_explicit_limits(self):
-        record=self.call('new','Immediate scout','--goal','OFFLINE setup only','--style','scout','--interest','classification','--start','--calls','12','--tokens','200000','--cycles','1','--minutes','2')
+        record=self.call('new','Immediate scout','--goal','OFFLINE setup only','--style','scout','--interest','classification','--start','--bounded','--calls','12','--tokens','200000','--cycles','1','--minutes','2')
         state=self.server.autopilot.state(record['project_id'])
         self.assertEqual(state['session']['status'],'running')
         self.assertEqual(state['session']['config']['research_style'],'scout')

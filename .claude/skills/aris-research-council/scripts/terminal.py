@@ -196,7 +196,10 @@ def status_text(project,state):
     usage=state.get('usage');session=state.get('session');lines=[project['title']]
     if session:lines.append({'running':'자동모드 ON','paused':'일시정지','blocked':'확인 필요','completed':'완료','stopped':'중지'}.get(session['status'],session['status'])+' · '+session['message'])
     if session and session.get('config',{}).get('research_style')=='scout':lines.append('연구 방식 · 논문 탐색 / 작은 실험')
-    if usage:lines.append('모델 호출 '+str(usage['calls'])+' / '+str(usage['max_calls'])+' · 남은 '+str(max(0,usage['max_calls']-usage['calls']))+'회 · 토큰 예상·예약 '+str(usage['charged_tokens'])+' / '+str(usage['token_budget']))
+    if usage and usage.get('policy')=='until_deadline':
+        from terminal_presenter import deadline_text
+        lines.append(deadline_text(usage['deadline_epoch']));lines.append('모델 호출 '+str(usage['calls'])+'회 · 보고된 토큰 '+str(usage['observed_tokens'])+' · 횟수·토큰 제한 없음')
+    elif usage:lines.append('모델 호출 '+str(usage['calls'])+' / '+str(usage['max_calls'])+' · 남은 '+str(max(0,usage['max_calls']-usage['calls']))+'회 · 토큰 예상·예약 '+str(usage['charged_tokens'])+' / '+str(usage['token_budget']))
     for job in state.get('jobs',[]):
         lines.append('연구 '+job['state']+' · '+PHASES.get(job['phase'],job['phase'])+' · job:'+job['id'])
     if session and session['status']=='blocked':lines.append('답글 대상: session:'+session['id'])
@@ -260,12 +263,16 @@ def parser():
     q=sub.add_parser('history',parents=[common]);q.add_argument('--full',action='store_true');q.add_argument('--last',type=int,default=10)
     q=sub.add_parser('chat',parents=[common]);q.add_argument('message');q.add_argument('--mode',choices=['auto','ask','next','restart'],default='auto');q.add_argument('--no-wait',action='store_true');q.add_argument('--timeout',type=int,default=300);q.add_argument('--request-id');q.add_argument('--reply-to',help='job:ID, session:ID 또는 run:ID')
     q=sub.add_parser('limits',parents=[common]);q.add_argument('--calls',type=int);q.add_argument('--tokens',type=int)
+    q.add_argument('--hours',type=float)
     q=sub.add_parser('auto',parents=[common]);q.add_argument('action',choices=['start','pause','resume','stop']);q.add_argument('--cycles',type=int,default=3);q.add_argument('--calls',type=int,default=40);q.add_argument('--tokens',type=int,default=1500000);q.add_argument('--context',default='');q.add_argument('--mode',choices=['lite','balanced','deep'],default='balanced');q.add_argument('--reuse-research',action='store_true',help='Reuse this project\'s completed Council and verified literature; re-author and review the next experiment')
+    q.add_argument('--hours',type=float);q.add_argument('--bounded',action='store_true',help='Legacy count-budget mode instead of deadline-only autonomous research')
     q=sub.add_parser('interests',parents=[common]);q.add_argument('--interest',action='append');q.add_argument('--bridge',action='append');q.add_argument('--clear-bridges',action='store_true');q.add_argument('--style',choices=['focused','scout']);q.add_argument('--days',type=int);q.add_argument('--papers',type=int);q.add_argument('--pilots',type=int);q.add_argument('--seconds',type=int);q.add_argument('--gain',type=float);q.add_argument('--seeds',type=int)
     q.add_argument('--runtime-policy',choices=['auto','fixed'],help='Auto allocates remaining project time; fixed enforces --seconds as a hard cap')
     q=sub.add_parser('scout',parents=[common]);q.add_argument('action',choices=['start','status','pause','resume','stop'],default='status',nargs='?');q.add_argument('--calls',type=int,default=80);q.add_argument('--tokens',type=int,default=3000000);q.add_argument('--context',default='');q.add_argument('--mode',choices=['lite','balanced','deep'],default='lite')
+    q.add_argument('--hours',type=float);q.add_argument('--bounded',action='store_true')
     q=sub.add_parser('new',parents=[common]);q.add_argument('name');q.add_argument('--goal',required=True);q.add_argument('--target',default='local');q.add_argument('--devices',default='cpu');q.add_argument('--minutes',type=int,default=30);q.add_argument('--interest',action='append',default=[]);q.add_argument('--bridge',action='append',default=[]);q.add_argument('--style',choices=['focused','scout'],default='focused')
     q.add_argument('--start',action='store_true',help='Create and immediately start automatic research within the selected limits');q.add_argument('--calls',type=int);q.add_argument('--tokens',type=int);q.add_argument('--cycles',type=int);q.add_argument('--context',default='');q.add_argument('--mode',choices=['lite','balanced','deep'])
+    q.add_argument('--hours',type=float);q.add_argument('--bounded',action='store_true')
     q=sub.add_parser('target',parents=[common]);q.add_argument('profile');q.add_argument('--devices',required=True);q.add_argument('--minutes',type=int,default=30)
     q=sub.add_parser('connection',parents=[common]);q.add_argument('alias');q.add_argument('--name')
     q=sub.add_parser('logs',parents=[common]);q.add_argument('kind',choices=['job','run']);q.add_argument('id')
@@ -280,6 +287,12 @@ def profile_for(client,selector):
     return matches[0]
 
 
+def time_options(args):
+    result=dict(execution_policy='bounded' if args.bounded else 'until_deadline')
+    if args.hours is not None:result['duration_seconds']=int(args.hours*3600)
+    return result
+
+
 def dispatch(client,args,project=None):
     command=args.command
     if command in {'delete','trash','restore','purge'}:return project_action(client,args,project)
@@ -291,7 +304,7 @@ def dispatch(client,args,project=None):
         record=client.request('/api/project',dict(name=args.name,goal=args.goal,research_preferences=dict(style=args.style,interests=args.interest,bridge_fields=args.bridge),compute=dict(profile_id=profile_for(client,args.target)['id'],device_ids=args.devices.split(','),max_parallel_runs=1,time_budget_minutes=args.minutes,auto_run=False)))
         if args.start:
             scouting=args.style=='scout'
-            try:record['automatic']=client.request('/api/control/automatic',dict(project_id=record['project_id'],action='start',research_style=args.style,max_cycles=args.cycles if args.cycles is not None else (2 if scouting else 3),max_model_calls=args.calls if args.calls is not None else (80 if scouting else 40),token_budget=args.tokens if args.tokens is not None else (3000000 if scouting else 1500000),context_path=args.context,mode=args.mode or ('lite' if scouting else 'balanced')))
+            try:record['automatic']=client.request('/api/control/automatic',dict(project_id=record['project_id'],action='start',**time_options(args),research_style=args.style,max_cycles=args.cycles if args.cycles is not None else (2 if scouting else 3),max_model_calls=args.calls if args.calls is not None else (80 if scouting else 40),token_budget=args.tokens if args.tokens is not None else (3000000 if scouting else 1500000),context_path=args.context,mode=args.mode or ('lite' if scouting else 'balanced')))
             except ClientError as error:raise ClientError('프로젝트는 생성됐지만 자동 시작에 실패했습니다. 프로젝트 ID: '+record['project_id']+' · '+str(error)) from error
         return record
     project=client.project(args.project) if hasattr(args,'project') else project or client.project()
@@ -304,7 +317,7 @@ def dispatch(client,args,project=None):
     if command=='scout':
         if args.action=='status':return client.control(project)
         payload=dict(project_id=project['id'],action=args.action)
-        if args.action=='start':payload.update(research_style='scout',max_model_calls=args.calls,token_budget=args.tokens,context_path=args.context,mode=args.mode)
+        if args.action=='start':payload.update(**time_options(args),research_style='scout',max_model_calls=args.calls,token_budget=args.tokens,context_path=args.context,mode=args.mode)
         return client.request('/api/control/automatic',payload)
     if command in {'report','notion'}:
         query='?'+urllib.parse.urlencode(dict(project_id=project['id']))
@@ -341,13 +354,14 @@ def dispatch(client,args,project=None):
         return value
     if command=='limits':
         state=client.control(project)
+        if args.hours is not None:return client.request('/api/control/automatic',dict(project_id=project['id'],action='deadline',duration_seconds=int(args.hours*3600)))
         if args.calls is None and args.tokens is None:return state.get('usage')
         if not state.get('session') or not state.get('usage'):raise ClientError('자동모드 실행 한도를 먼저 설정하세요.')
         return client.request('/api/control/automatic',dict(project_id=project['id'],action='limits',session_id=state['session']['id'],max_model_calls=args.calls if args.calls is not None else state['usage']['max_calls'],token_budget=args.tokens if args.tokens is not None else state['usage']['token_budget']))
     if command=='auto':
         payload=dict(project_id=project['id'],action=args.action)
         if args.action=='start':
-            payload.update(max_cycles=args.cycles,max_model_calls=args.calls,token_budget=args.tokens,context_path=args.context,mode=args.mode)
+            payload.update(**time_options(args),max_cycles=args.cycles,max_model_calls=args.calls,token_budget=args.tokens,context_path=args.context,mode=args.mode)
             if args.reuse_research:payload['reuse_research']=True
         return client.request('/api/control/automatic',payload)
     if command=='chat':
@@ -399,7 +413,11 @@ def output(value,args,project=None):
     elif args.command in {'auto','limits','scout'}:
         usage=value.get('usage',value) if value else None
         if args.command in {'auto','scout'}:print(status_text(project,value))
-        elif usage:print('모델 호출 '+str(usage['calls'])+' / '+str(usage['max_calls'])+' · 토큰 예상·예약 '+str(usage['charged_tokens'])+' / '+str(usage['token_budget']))
+        elif usage:
+            if usage.get('policy')=='until_deadline':
+                from terminal_presenter import deadline_text
+                print(deadline_text(usage['deadline_epoch'])+' · 호출 '+str(usage['calls'])+'회 · 보고된 토큰 '+str(usage['observed_tokens'])+' · 횟수·토큰 제한 없음')
+            else:print('모델 호출 '+str(usage['calls'])+' / '+str(usage['max_calls'])+' · 토큰 예상·예약 '+str(usage['charged_tokens'])+' / '+str(usage['token_budget']))
         else:print('자동모드 실행 한도가 아직 없습니다.')
     elif args.command=='connections':
         for profile in value:print(safe_text(profile['name'])+' · '+profile['kind']+' · '+profile['id'])
@@ -460,7 +478,8 @@ class Console:
                     state=await asyncio.to_thread(self.client.control,project)
                     if not self.project or project['id']!=self.project['id']:continue
                     usage=state.get('usage');session=state.get('session')
-                    self.toolbar=project['title']+' · '+(session['status'] if session else '수동')+(' · 호출 '+str(usage['calls'])+'/'+str(usage['max_calls']) if usage else '')
+                    from terminal_presenter import deadline_text
+                    self.toolbar=project['title']+' · '+(session['status'] if session else '수동')+(' · 호출 '+str(usage['calls'])+('회 · '+deadline_text(usage['deadline_epoch']) if usage.get('policy')=='until_deadline' else '/'+str(usage['max_calls'])) if usage else '')
                     if getattr(self,'prompt_session',None):self.prompt_session.app.invalidate()
                     self.error=None
             except (ClientError,urllib.error.URLError,TimeoutError,OSError) as error:

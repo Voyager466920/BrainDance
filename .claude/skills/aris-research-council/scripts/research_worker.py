@@ -80,7 +80,9 @@ When no usable papers can be retrieved, write the actual failure to LITERATURE.m
           '--permission-mode','acceptEdits','--permission-prompts','none',
           '--tools','Skill,Read,Write,Glob,Grep,WebSearch,WebFetch',
           '--allowedTools','Skill,Read,Write,Glob,Grep,WebSearch,WebFetch',
-          '--disallowedTools','Bash,Agent','--max-budget-usd',str(job['claude_budget_usd'])]
+          '--disallowedTools','Bash,Agent']
+    from session_budget import time_only
+    if not time_only(job):argv+=['--max-budget-usd',str(job['claude_budget_usd'])]
     progress.emit('literature','논문을 탐색하고 근거를 수집합니다.')
     env=os.environ.copy();env['CLAUDE_CODE_MAX_OUTPUT_TOKENS']='7000';env['ARIS_REPO']=str(aris)
     budget=council.Budget({**council.MODES[job['mode']],**({'session_budget':job['session_budget']} if job.get('session_budget') else {})},root/'literature-admission.json')
