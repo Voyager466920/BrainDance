@@ -305,6 +305,19 @@ def dispatch(client,args,project=None):
     if command=='connections':return client.request('/api/compute')['profiles']
     if command=='connection':return client.request('/api/compute/profile',dict(name=args.name or args.alias,kind='ssh',host=args.alias,user='',port=None,identity_file=''))
     if command=='devices':return client.request('/api/compute/probe',dict(profile_id=profile_for(client,args.profile)['id']))
+    if command=='slack':
+        if args.action=='status':return client.request('/api/slack')
+        if args.action=='disconnect':return client.request('/api/slack/disconnect',{})
+        if args.action in {'send','test'}:
+            payload=dict(request_id=args.request_id or str(uuid.uuid4()),test=args.action=='test')
+            if args.action=='send':payload['project_id']=client.project(args.project or (project or {}).get('id'))['id']
+            return client.request('/api/slack/send',payload)
+        import getpass
+        if not sys.stdin.isatty() and not args.token_stdin:raise ClientError('/slack 숨김 입력 또는 --token-stdin으로 봇 토큰을 등록하세요.')
+        if args.token_stdin and not args.member:raise ClientError('--token-stdin을 사용할 때는 --member에 본인 멤버 ID를 입력하세요.')
+        member=args.member or input('본인 Slack 멤버 ID: ').strip()
+        token=sys.stdin.read().strip() if args.token_stdin else getpass.getpass('Slack 봇 토큰(xoxb-, 숨김): ').strip()
+        return client.request('/api/slack/configure',dict(member_id=member,token=token,enabled=True))
     if command=='new':
         record=client.request('/api/project',dict(name=args.name,goal=args.goal,research_preferences=dict(style=args.style,interests=args.interest,bridge_fields=args.bridge),compute=dict(profile_id=profile_for(client,args.target)['id'],device_ids=args.devices.split(','),max_parallel_runs=1,time_budget_minutes=args.minutes,auto_run=False)))
         if args.start:
@@ -343,15 +356,6 @@ def dispatch(client,args,project=None):
             import webbrowser
             webbrowser.open(client.url+'/api/reports/preview'+query)
         return state
-    if command=='slack':
-        if args.action=='status':return client.request('/api/slack?'+urllib.parse.urlencode(dict(project_id=project['id'])))
-        if args.action=='disconnect':return client.request('/api/slack/disconnect',{})
-        if args.action in {'send','test'}:return client.request('/api/slack/send',dict(project_id=project['id'],request_id=args.request_id or str(uuid.uuid4()),test=args.action=='test'))
-        import getpass
-        if not sys.stdin.isatty() and not args.token_stdin:raise ClientError('/slack 숨김 입력 또는 --token-stdin으로 봇 토큰을 등록하세요.')
-        member=args.member or input('본인 Slack 멤버 ID: ').strip()
-        token=sys.stdin.read().strip() if args.token_stdin else getpass.getpass('Slack 봇 토큰(xoxb-, 숨김): ').strip()
-        return client.request('/api/slack/configure',dict(project_id=project['id'],member_id=member,token=token,enabled=True))
     if command=='tasks':return client.control(project).get('tasks',[])
     if command=='task':return client.request('/api/control/task',dict(project_id=project['id'],task_id=args.id,action=args.action))
     if command=='status':
@@ -411,7 +415,7 @@ def output(value,args,project=None):
     if getattr(args,'json',False):print(json.dumps(value,ensure_ascii=False,allow_nan=False));return
     if args.command=='slack':
         if 'state' in value:print('개인 DM 전송 '+value['state'])
-        else:print('Slack 개인 DM '+('연결됨 · '+str(value.get('workspace') or '') if value.get('connected') else '연결 전'));print('자동 결과 알림 '+('ON' if value.get('enabled') else 'OFF'))
+        else:print('Slack 개인 DM '+('연결됨 · '+str(value.get('workspace') or '') if value.get('connected') else '연결 전'));print('전체 프로젝트 자동 결과 알림 '+('ON' if value.get('enabled') else 'OFF'))
         return
     if args.command in {'report','notion'}:
         if 'id' in value and 'state' in value:print('처리 대기 · 결과 탭 또는 report status로 확인하세요.')
@@ -476,6 +480,7 @@ HELP='''/projects · /use 번호 또는 이름 · /new 이름 --goal "연구 목
 /ask 질문 · /next 다음 단계 지시 · /restart 중지 후 재준비 지시
 /reply job:ID 메시지 · /logs job|run ID · /exit (종료)
 /report status|build|open · /notion status|setup|sync|disconnect
+/slack status|setup|test|disconnect · 전체 프로젝트 개인 DM 알림
 그냥 입력하면 같은 프로젝트 대화로 전송됩니다. Enter 전송 · Alt+Enter 줄바꿈.'''
 
 
@@ -544,7 +549,7 @@ class Console:
         except SystemExit:return True
         if args.command is None:print(HELP);return True
         value=await asyncio.to_thread(dispatch,self.client,args,self.project)
-        selected=None if command in {'delete','trash','restore','purge'} else self.client.project(args.project) if hasattr(args,'project') else self.project
+        selected=None if command in {'delete','trash','restore','purge','slack'} else self.client.project(args.project) if hasattr(args,'project') else self.project
         output(value,args,selected)
         if command=='new':await asyncio.to_thread(self.select,value['project_id'])
         if command=='delete' and self.project and self.project['id']==value['project_id']:
@@ -563,7 +568,7 @@ class Console:
         def newline(event):event.current_buffer.insert_text('\n')
         colored=not getattr(self.args,'no_color',False) and 'NO_COLOR' not in os.environ and os.environ.get('TERM')!='dumb'
         style=Style.from_dict({'prompt':'#7bb594','toolbar':'#899c91'}) if colored else Style.from_dict({})
-        session=PromptSession(key_bindings=kb,completer=WordCompleter(['/projects','/use','/new','/delete','/trash','/restore','/purge','/status','/history','/tree','/connections','/devices','/target','/auto','/limits','/ask','/next','/restart','/reply','/logs','/report','/notion','/exit','/quit','/help']),complete_while_typing=False,style=style)
+        session=PromptSession(key_bindings=kb,completer=WordCompleter(['/projects','/use','/new','/delete','/trash','/restore','/purge','/status','/history','/tree','/connections','/devices','/target','/auto','/limits','/ask','/next','/restart','/reply','/logs','/report','/notion','/slack','/exit','/quit','/help']),complete_while_typing=False,style=style)
         self.prompt_session=session
         print('/help 도움말 · /exit 종료 (연구 작업은 유지)')
         selector=getattr(self.args,'project',None)
@@ -604,7 +609,7 @@ def main(argv=None):
                     asyncio.run(ResearchTerminal(client,args).run())
             except ImportError:raise ClientError('대화형 CLI에는 prompt-toolkit이 필요합니다. requirements-cli.txt를 설치하거나 패키지 앱의 braindance 명령을 사용하세요.')
             return 0
-        project=None if args.command in {'projects','connections','connection','devices','new','delete','trash','restore','purge'} else client.project(getattr(args,'project',None))
+        project=None if args.command in {'projects','connections','connection','devices','new','delete','trash','restore','purge','slack'} else client.project(getattr(args,'project',None))
         result=dispatch(client,args,project);output(result,args,project)
         return 1 if (args.command=='chat' and result['state'] in {'failed','interrupted'}) or (args.command=='purge' and result.get('cleanup_pending')) else 0
     except KeyboardInterrupt:

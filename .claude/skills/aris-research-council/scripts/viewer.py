@@ -117,12 +117,10 @@ class ViewerHandler(BaseHTTPRequestHandler):
             return
         path = urlsplit(self.path).path
         if path == '/api/health':
-            self._reply(200, {'app': 'BrainDance', 'version': '0.19.0', 'pid': os.getpid(),
+            self._reply(200, {'app': 'BrainDance', 'version': '0.19.1', 'pid': os.getpid(),
                              'workspace_id': hashlib.sha256(str(Path(self.server.store.db_path).resolve()).encode()).hexdigest()})
         elif path=='/api/slack':
-            project=parse_qs(urlsplit(self.path).query).get('project_id',[''])[0]
-            try:self.server.autopilot.root(project);self._reply(200,self.server.notifications.state(project))
-            except (KeyError,ValueError):self._reply(404,{'error':'프로젝트를 찾을 수 없습니다.'})
+            self._reply(200,self.server.notifications.state())
         elif path=='/api/chat':
             try:self._reply(200,self.server.chat.messages(parse_qs(urlsplit(self.path).query).get('project_id',[''])[0]))
             except (KeyError,ValueError) as error:self._reply(400,{'error':str(error)})
@@ -311,7 +309,8 @@ class ViewerHandler(BaseHTTPRequestHandler):
             result=self.server.notifications.disconnect()
         elif path=='/api/slack/send':
             if set(payload)-{'project_id','request_id','test'} or not isinstance(payload.get('request_id'),str) or len(payload['request_id'])>80:raise ValueError('전송 대상을 확인하세요.')
-            result=self.server.notifications.enqueue(payload['project_id'],'manual:'+payload['project_id']+':'+payload['request_id'],test=payload.get('test',False))
+            test=payload.get('test',False);project_id=payload.get('project_id')
+            result=self.server.notifications.enqueue(project_id,'manual:'+('connection' if test else str(project_id))+':'+payload['request_id'],test=test)
         elif path=='/api/control/task':
             from research_tasks import control
             result=control(self.server,**payload)

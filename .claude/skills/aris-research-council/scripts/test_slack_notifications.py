@@ -4,6 +4,11 @@ from pathlib import Path
 import unittest
 from unittest.mock import patch
 import os
+import io
+import subprocess
+import sys
+import terminal
+from tree_store import now
 
 from slack_notifications import SlackAPI,SlackError,SlackNotifications,message_for
 import test_terminal as fixtures
@@ -26,6 +31,12 @@ class SlackNotificationTests(unittest.TestCase):
     def setup(self):return self.client.request('/api/slack/configure',dict(project_id=self.pid,member_id=MEMBER,token=TOKEN,enabled=True))
     def row(self,id):
         with self.service.connect() as c:return dict(c.execute('SELECT * FROM deliveries WHERE id=?',(id,)).fetchone())
+    def completed_study(self,identity,project,finished_at=None,role='hypothesis'):
+        folder=Path(self.server.store.db_path).parent/'council-runs'/identity;folder.mkdir(parents=True)
+        (folder/'native-completion.json').write_text(json.dumps(dict(job_id=identity,run_ids=[])))
+        (folder/'research-brief.json').write_text(json.dumps(dict(problem='OFFLINE fixture',approach='No real model or experiment',findings='OFFLINE result')))
+        finished_at=finished_at or now();node=self.client.root(project)
+        with self.server.store._connect() as c:c.execute('INSERT INTO research_jobs VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)',(identity,project['id'],node['id'],'OFFLINE study','completed','native-completed','OFFLINE fixture','lite',json.dumps(dict(task_role=role)),str(folder),finished_at,finished_at,finished_at,None))
     def test_personal_dm_setup_keeps_secret_local_and_does_not_send_a_message(self):
         state=self.setup();self.assertTrue(state['connected']);self.assertTrue(state['enabled']);self.assertEqual(self.sent,[])
         self.assertNotIn(TOKEN,json.dumps(state));self.assertEqual(os.stat(self.service.secret).st_mode&0o777,0o600)
@@ -65,3 +76,46 @@ class SlackNotificationTests(unittest.TestCase):
         self.service.publications.state.return_value=dict(jobs=[dict(state='completed',digest='OFFLINE digest',page_url='https://www.notion.so/OFFLINE')])
         self.service.process(self.row(job['id']));self.assertEqual(len(self.sent),1)
         self.assertIn('https://www.notion.so/OFFLINE',self.sent[0]['text']);self.assertFalse(any(k.startswith('_') for k in self.sent[0]))
+    def test_setup_status_and_connection_test_need_no_project(self):
+        self.server.store.set_project_deleted(self.pid,True)
+        with patch.object(self.client,'project',side_effect=AssertionError('global Slack must not select projects')),patch('sys.stdin',io.StringIO(TOKEN)):
+            state=terminal.dispatch(self.client,terminal.parser().parse_args(['slack','setup','--member',MEMBER,'--token-stdin']))
+            self.assertEqual(state['scope'],'all_projects');self.assertTrue(state['enabled'])
+            result=terminal.dispatch(self.client,terminal.parser().parse_args(['slack','test','--request-id','OFFLINE-global-test']))
+            self.service.process(self.row(result['id']))
+        self.assertEqual(len(self.sent),1);self.assertEqual(self.row(result['id'])['project_id'],'')
+        result=subprocess.run([sys.executable,str(fixtures.ROOT/'braindance.py'),'slack','status','--json','--db',str(self.server.store.db_path),'--server',self.client.url],capture_output=True,text=True,timeout=15)
+        self.assertEqual(result.returncode,0,result.stderr);self.assertEqual(json.loads(result.stdout)['scope'],'all_projects')
+    def test_one_connection_notifies_existing_and_future_projects_once(self):
+        other=self.client.project(terminal.dispatch(self.client,terminal.parser().parse_args(['new','Existing other','--goal','OFFLINE']))['project_id'])
+        self.completed_study('OFFLINE-historical',self.fixture.project,finished_at='2020-01-01T00:00:00+00:00');self.setup()
+        future=self.client.project(terminal.dispatch(self.client,terminal.parser().parse_args(['new','Future project','--goal','OFFLINE']))['project_id'])
+        self.completed_study('OFFLINE-existing',other);self.completed_study('OFFLINE-future',future)
+        self.completed_study('OFFLINE-discovery',other,role='discovery')
+        self.completed_study('OFFLINE-trash',self.fixture.project);self.server.store.set_project_deleted(self.pid,True)
+        with patch('council.claude_call',side_effect=AssertionError('no model')),patch('council.codex_call',side_effect=AssertionError('no model')):
+            self.service.tick();self.service.tick()
+            with self.service.connect() as c:rows=[dict(r) for r in c.execute('SELECT * FROM deliveries')]
+            self.assertEqual({r['event_key'] for r in rows},{'study:OFFLINE-existing','study:OFFLINE-future'})
+            for row in rows:self.service.process(row)
+        self.assertEqual(len(self.sent),2);self.assertTrue(any('Existing other' in p['text'] for p in self.sent));self.assertTrue(any('Future project' in p['text'] for p in self.sent))
+    def test_upgrade_preserves_credentials_queue_and_enables_all_projects_without_backfill(self):
+        self.setup();queued=self.service.enqueue(self.pid,'OFFLINE-preserved');secret=self.service.secret.read_bytes()
+        with self.service.connect() as c:
+            c.execute('DROP TABLE notification_settings');c.execute('INSERT INTO subscriptions VALUES(?,?,?)',(self.pid,1,'2020-01-01T00:00:00+00:00'))
+        before=now();upgraded=SlackNotifications(self.server.store,autostart=False);self.addCleanup(upgraded.close)
+        state=upgraded.state();self.assertTrue(state['enabled']);self.assertEqual(state['scope'],'all_projects');self.assertGreaterEqual(state['since'],before)
+        self.assertEqual(secret,upgraded.secret.read_bytes());self.assertEqual(state['deliveries'][0]['id'],queued['id'])
+    def test_resaving_keeps_cursor_but_reconnect_starts_with_new_results(self):
+        state=self.setup();again=self.client.request('/api/slack/configure',dict(member_id=MEMBER))
+        self.assertEqual(state['since'],again['since']);self.service.disconnect()
+        self.completed_study('OFFLINE-while-disconnected',self.fixture.project)
+        reconnected=self.client.request('/api/slack/configure',dict(member_id=MEMBER,token=TOKEN))
+        self.assertGreater(reconnected['since'],state['since']);self.service.tick()
+        self.assertEqual(reconnected['deliveries'],[]);self.assertEqual(self.sent,[])
+    def test_deleted_project_does_not_block_other_projects_while_waiting_for_notion(self):
+        from unittest.mock import Mock
+        self.setup();self.service.publications=Mock();self.service.publications.state.return_value=dict(connected=True,link=dict(auto_sync=True),jobs=[])
+        pending=self.service.enqueue(self.pid,'OFFLINE deleted pending Notion');self.server.store.set_project_deleted(self.pid,True)
+        self.service.publications.state.side_effect=AssertionError('Deleted project must not block global notifications')
+        self.service.process(self.row(pending['id']));self.assertEqual(self.row(pending['id'])['state'],'cancelled');self.assertEqual(self.sent,[])

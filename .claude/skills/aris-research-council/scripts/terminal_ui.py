@@ -790,17 +790,17 @@ class ResearchTerminal:
         await self.call(webbrowser.open,url);self.notice='시각화 보고서: '+url
 
     async def slack_dialog(self):
-        pid=self.require_project();state=await self.call(self.client.request,'/api/slack?'+urllib.parse.urlencode(dict(project_id=pid)))
+        state=await self.call(self.client.request,'/api/slack')
         member=TextArea(text=state.get('member_id') or '',multiline=False);token=TextArea(multiline=False,password=True)
         async def save():
-            await self.call(self.client.request,'/api/slack/configure',dict(project_id=pid,member_id=member.text.strip(),token=token.text.strip(),enabled=True))
-            token.text='';self.close_dialog();self.notice='개인 Slack DM 연결을 저장했습니다. 새 연구 결과부터 자동 알림을 보냅니다.'
+            await self.call(self.client.request,'/api/slack/configure',dict(member_id=member.text.strip(),token=token.text.strip(),enabled=True))
+            token.text='';self.close_dialog();self.notice='모든 프로젝트의 새 연구 결과를 개인 Slack DM으로 받습니다.'
         async def test():
-            await self.call(self.client.request,'/api/slack/send',dict(project_id=pid,request_id=str(uuid.uuid4()),test=True));self.notice='개인 DM 연결 테스트를 전송 대기열에 넣었습니다.'
+            await self.call(self.client.request,'/api/slack/send',dict(request_id=str(uuid.uuid4()),test=True));self.notice='개인 DM 연결 테스트를 전송 대기열에 넣었습니다.'
         async def disconnect():
             await self.call(self.client.request,'/api/slack/disconnect',{});token.text='';self.close_dialog();self.notice='Slack 개인 DM 연결을 해제했습니다.'
         recent='\n'.join(d['state']+(' · '+d['error'] if d.get('error') else '') for d in state.get('deliveries',[])[:3])
-        self.dialog('Slack · 개인 DM 결과 알림',HSplit([Label('연결됨 · '+str(state.get('workspace') or '') if state['connected'] else 'Slack 봇 연결 전'),Label('본인 멤버 ID · 프로필에서 멤버 ID 복사'),member,Label('Bot User OAuth Token · 숨김 입력 · 기존 토큰 유지 시 비우기'),token,Label('봇 권한: chat:write, im:write · 토큰은 이 Mac에만 저장합니다.'),Label('연구 완료 요약과 보고서·그래프 링크를 보냅니다. 알림 작성에 LLM을 호출하지 않습니다.'),Label(recent)]),[('연결 저장',lambda:self.spawn(save())),('테스트 DM',lambda:self.spawn(test())),('연결 해제',lambda:self.spawn(disconnect())),('닫기',self.close_dialog)],member)
+        self.dialog('Slack · 전체 프로젝트 개인 DM 알림',HSplit([Label('연결됨 · '+str(state.get('workspace') or '') if state['connected'] else 'Slack 봇 연결 전'),Label('한 번 연결하면 기존·새 프로젝트의 새 연구 결과를 모두 받습니다.'),Label('본인 멤버 ID · 프로필에서 멤버 ID 복사'),member,Label('Bot User OAuth Token · 숨김 입력 · 기존 토큰 유지 시 비우기'),token,Label('봇 권한: chat:write, im:write · 토큰은 이 Mac에만 저장합니다.'),Label('보고서·그래프 링크 포함 · 추가 LLM 호출 없음'),Label(recent)]),[('연결 저장',lambda:self.spawn(save())),('테스트 DM',lambda:self.spawn(test())),('연결 해제',lambda:self.spawn(disconnect())),('닫기',self.close_dialog)],member)
 
     async def notion_dialog(self):
         if not self.project:raise ClientError('프로젝트를 먼저 선택하세요.')

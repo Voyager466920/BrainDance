@@ -50,13 +50,15 @@ def main():
             # contain the detached server's only copies of GUI/experiment assets.
             assert 'BrainDance' in get('/')
             assert 'code' in json.loads(get('/api/experiment-template'))
+            slack=json.loads(run('slack','status','--json','--db',str(database),'--server',address))
+            assert slack['scope']=='all_projects' and not slack['connected']
             project=json.loads(run('new','Bundle fixture','--goal','Offline CPU fixture','--json','--db',str(database),'--server',address))
             interests=json.loads(run('interests','--project',project['project_id'],'--interest','edge adaptation','--bridge','control','--style','scout','--seconds','20','--pilots','1','--json','--db',str(database),'--server',address))
             assert interests['style']=='scout' and interests['interests']==['edge adaptation'] and interests['pilot_seconds']==20
             saved=json.loads(run('interests','--project',project['project_id'],'--json','--db',str(database),'--server',address));assert saved==interests
             status=json.loads(run('status','--project',project['project_id'],'--json','--db',str(database),'--server',address))
             assert status['session'] is None and not status['runs']
-            slack=json.loads(run('slack','status','--project',project['project_id'],'--json','--db',str(database),'--server',address))
+            slack=json.loads(run('slack','status','--json','--db',str(database),'--server',address))
             assert not slack['connected'] and not slack['enabled'] and not slack['deliveries']
             assert json.loads(get('/api/health'))['pid']==pid
             assert 'BrainDance' in get('/')

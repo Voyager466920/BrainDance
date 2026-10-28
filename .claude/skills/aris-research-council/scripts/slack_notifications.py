@@ -74,6 +74,10 @@ class SlackNotifications:
         self.db=self.root/'slack.sqlite3';self.secret=self.root/'slack-credentials.json';self.closed=threading.Event();self.lock=threading.RLock()
         with self.connect() as c:
             c.execute('CREATE TABLE IF NOT EXISTS subscriptions(project_id TEXT PRIMARY KEY,enabled INTEGER NOT NULL,since TEXT NOT NULL)')
+            c.execute('CREATE TABLE IF NOT EXISTS notification_settings(id INTEGER PRIMARY KEY CHECK(id=1),enabled INTEGER NOT NULL,since TEXT NOT NULL)')
+            # Upgrade existing connections once, without replaying other projects' history.
+            legacy_enabled=c.execute('SELECT count(*) FROM subscriptions WHERE enabled=1').fetchone()[0]>0
+            c.execute('INSERT OR IGNORE INTO notification_settings VALUES(1,?,?)',(int(self.secret.is_file() and legacy_enabled),now()))
             c.execute('''CREATE TABLE IF NOT EXISTS deliveries(id TEXT PRIMARY KEY,project_id TEXT NOT NULL,event_key TEXT NOT NULL UNIQUE,state TEXT NOT NULL,payload TEXT NOT NULL,target TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,retry_at REAL NOT NULL,ts TEXT,error TEXT)''')
             c.execute("UPDATE deliveries SET state='uncertain',error='이전 전송의 완료 여부를 확인하지 못했습니다. 중복 DM을 방지해 자동 재전송하지 않습니다.' WHERE state='sending'")
         self.thread=threading.Thread(target=self.loop,daemon=True,name='braindance-slack')
@@ -85,9 +89,12 @@ class SlackNotifications:
             with c:yield c
         finally:c.close()
     def credentials(self):return json.loads(self.secret.read_text()) if self.secret.is_file() else {}
-    def configure(self,project_id,member_id,token='',enabled=True):
-        project_data(self.store,project_id)
+    def settings(self):
+        with self.connect() as c:return dict(c.execute('SELECT enabled,since FROM notification_settings WHERE id=1').fetchone())
+    def configure(self,project_id=None,member_id=None,token='',enabled=True):
+        # project_id remains accepted for older clients; the connection is global.
         if not re.fullmatch(r'[UW][A-Z0-9]{8,24}',member_id or ''):raise ValueError('본인 Slack 멤버 ID(U로 시작)를 입력하세요.')
+        if type(enabled) is not bool:raise ValueError('자동 결과 알림 설정을 확인하세요.')
         with self.lock:
             old=self.credentials();token=token or old.get('token','');api=SlackAPI(token);auth=api.request('auth.test')
             if auth.get('user_id')==member_id:raise ValueError('봇 ID 대신 본인의 Slack 멤버 ID를 입력하세요.')
@@ -97,25 +104,30 @@ class SlackNotifications:
             fd,name=tempfile.mkstemp(dir=self.root,prefix='.slack-');os.fchmod(fd,0o600)
             with os.fdopen(fd,'w') as stream:json.dump(record,stream)
             os.replace(name,self.secret)
-            if old.get('channel') and old['channel']!=channel:
+            target_changed=(old.get('team_id'),old.get('channel'))!=(record.get('team_id'),channel)
+            if target_changed or not enabled:
                 with self.connect() as c:c.execute("UPDATE deliveries SET state='cancelled',error='DM 연결 대상이 변경되었습니다.' WHERE state='queued'")
-            with self.connect() as c:c.execute('INSERT INTO subscriptions VALUES(?,?,?) ON CONFLICT(project_id) DO UPDATE SET enabled=excluded.enabled',(project_id,int(enabled),now()))
-        return self.state(project_id)
-    def state(self,project_id):
+            settings=self.settings();since=now() if target_changed or not settings['enabled'] else settings['since']
+            with self.connect() as c:c.execute('UPDATE notification_settings SET enabled=?,since=? WHERE id=1',(int(enabled),since))
+        return self.state()
+    def state(self,project_id=None):
         data=self.credentials()
         with self.connect() as c:
-            sub=c.execute('SELECT * FROM subscriptions WHERE project_id=?',(project_id,)).fetchone();rows=c.execute('SELECT id,event_key,state,created_at,ts,error FROM deliveries WHERE project_id=? ORDER BY rowid DESC LIMIT 8',(project_id,)).fetchall()
-        return dict(connected=bool(data),enabled=bool(sub and sub['enabled']),member_id=data.get('member_id'),workspace=data.get('team'),deliveries=[dict(r) for r in rows])
+            settings=c.execute('SELECT enabled,since FROM notification_settings WHERE id=1').fetchone();rows=c.execute('SELECT id,project_id,event_key,state,created_at,ts,error FROM deliveries ORDER BY rowid DESC LIMIT 8').fetchall()
+        return dict(connected=bool(data),enabled=bool(data and settings['enabled']),scope='all_projects',since=settings['since'],member_id=data.get('member_id'),workspace=data.get('team'),deliveries=[dict(r) for r in rows])
     def disconnect(self):
         with self.lock:
             self.secret.unlink(missing_ok=True)
-            with self.connect() as c:c.execute('UPDATE subscriptions SET enabled=0');c.execute("UPDATE deliveries SET state='cancelled' WHERE state='queued'")
+            with self.connect() as c:
+                c.execute('UPDATE subscriptions SET enabled=0');c.execute('UPDATE notification_settings SET enabled=0 WHERE id=1');c.execute("UPDATE deliveries SET state='cancelled' WHERE state='queued'")
         return dict(connected=False)
     def enqueue(self,project_id,event_key,test=False,job=None):
         with self.connect() as c:prior=c.execute('SELECT id,state FROM deliveries WHERE event_key=?',(event_key,)).fetchone()
         if prior:return dict(prior)
-        data=project_data(self.store,project_id);project_digest=signature(data);creds=self.credentials()
-        if job:
+        if type(test) is not bool:raise ValueError('DM 테스트 설정을 확인하세요.')
+        if not test and not project_id:raise ValueError('결과를 보낼 프로젝트를 선택하세요. Slack 연결·테스트에는 프로젝트가 필요하지 않습니다.')
+        data=project_data(self.store,project_id) if not test else None;project_digest=signature(data) if data else None;creds=self.credentials()
+        if job and not test:
             folder=Path(job['run_dir'])
             if not folder.resolve().is_relative_to((Path(self.store.db_path).parent/'council-runs').resolve()):raise ValueError('관리되는 연구 보고서가 아닙니다.')
             done=json.loads((folder/'native-completion.json').read_text())
@@ -129,27 +141,28 @@ class SlackNotifications:
                     data['brief']=validate_brief(json.loads(brief.read_text()))
         if not creds:raise ValueError('먼저 /slack에서 개인 DM 연결을 등록하세요.')
         url=None;wait_for_report=False
-        if self.publications:
+        if self.publications and not test:
             state=self.publications.state(project_id)
             url=next((j.get('page_url') for j in state['jobs'] if j['state']=='completed' and j.get('page_url') and j.get('digest')==project_digest),None)
             if not test and not url and state.get('connected') and (state.get('link') or {}).get('auto_sync'):
                 self.publications.enqueue(project_id,True);wait_for_report=True
-        identity=str(uuid.uuid4());payload=dict(text='BrainDance 개인 DM 연결 테스트입니다. 연구는 자동으로 재개되지 않습니다.',unfurl_links=False,unfurl_media=False) if test else message_for(data,url);payload.update(channel=creds['channel'])
+        identity=str(uuid.uuid4());payload=dict(text='BrainDance 개인 DM 연결 테스트입니다. 모든 프로젝트의 새 연구 결과를 이 DM으로 받습니다. 연구는 자동으로 재개되지 않습니다.',unfurl_links=False,unfurl_media=False,_connection_test=True) if test else message_for(data,url);payload.update(channel=creds['channel'])
         if wait_for_report:payload.update(_report_digest=project_digest,_await_notion=True)
         with self.connect() as c:
-            c.execute('INSERT OR IGNORE INTO deliveries VALUES(?,?,?,?,?,?,?,?,?,?,?)',(identity,project_id,event_key,'queued',json.dumps(payload,ensure_ascii=False),creds['channel'],now(),now(),0,None,None))
+            c.execute('INSERT OR IGNORE INTO deliveries VALUES(?,?,?,?,?,?,?,?,?,?,?)',(identity,'' if test else project_id,event_key,'queued',json.dumps(payload,ensure_ascii=False),creds['channel'],now(),now(),0,None,None))
             return dict(c.execute('SELECT id,state FROM deliveries WHERE event_key=?',(event_key,)).fetchone())
     def tick(self):
-        if not self.credentials():return
-        with self.connect() as c:subs=[dict(r) for r in c.execute('SELECT * FROM subscriptions WHERE enabled=1')]
-        for sub in subs:
+        settings=self.settings()
+        if not self.credentials() or not settings['enabled']:return
+        with self.store._connect() as c:jobs=[dict(r) for r in c.execute("""SELECT j.id,j.project_id,j.node_id,j.run_dir,j.config,j.finished_at
+            FROM research_jobs j JOIN projects p ON p.id=j.project_id LEFT JOIN project_lifecycle l ON l.project_id=p.id
+            WHERE l.deleted_at IS NULL AND j.state='completed' AND j.phase='native-completed' AND j.finished_at>=?
+            ORDER BY j.finished_at,j.rowid""",(settings['since'],))]
+        for job in jobs:
             try:
-                project_data(self.store,sub['project_id'])
-                with self.store._connect() as c:jobs=[dict(r) for r in c.execute("SELECT id,node_id,run_dir,config,finished_at FROM research_jobs WHERE project_id=? AND state='completed' AND phase='native-completed' AND finished_at>=?",(sub['project_id'],sub['since']))]
-                for job in jobs:
-                    if json.loads(job['config']).get('task_role')=='discovery':continue
-                    self.enqueue(sub['project_id'],'study:'+job['id'],job=job)
-            except (ValueError,KeyError):continue
+                if json.loads(job['config']).get('task_role')=='discovery':continue
+                self.enqueue(job['project_id'],'study:'+job['id'],job=job)
+            except (ValueError,KeyError,OSError):continue
     def process(self,row):
         with self.lock:
             creds=self.credentials()
@@ -157,6 +170,15 @@ class SlackNotifications:
                 with self.connect() as c:c.execute("UPDATE deliveries SET state='cancelled',error='Slack 연결 대상이 변경되었습니다.' WHERE id=?",(row['id'],))
                 return
             payload=json.loads(row['payload'])
+            connection_test=payload.get('_connection_test',False)
+            if not connection_test and not self.settings()['enabled']:
+                with self.connect() as c:c.execute("UPDATE deliveries SET state='cancelled',error='전체 프로젝트 자동 알림이 꺼졌습니다.' WHERE id=?",(row['id'],))
+                return
+            if not connection_test:
+                try:project_data(self.store,row['project_id'])
+                except (ValueError,KeyError):
+                    with self.connect() as c:c.execute("UPDATE deliveries SET state='cancelled',error='프로젝트 기록을 확인할 수 없어 알림을 중지했습니다.',updated_at=? WHERE id=?",(now(),row['id']))
+                    return
             if payload.get('_await_notion') and self.publications:
                 from datetime import datetime,timezone
                 state=self.publications.state(row['project_id'])
@@ -168,7 +190,7 @@ class SlackNotifications:
             payload={k:v for k,v in payload.items() if not k.startswith('_')}
             with self.connect() as c:c.execute("UPDATE deliveries SET state='sending',updated_at=? WHERE id=?",(now(),row['id']))
             try:
-                project_data(self.store,row['project_id']);response=SlackAPI(creds['token']).request('chat.postMessage',payload)
+                response=SlackAPI(creds['token']).request('chat.postMessage',payload)
                 with self.connect() as c:c.execute("UPDATE deliveries SET state='sent',ts=?,updated_at=?,error=NULL WHERE id=?",(response['ts'],now(),row['id']))
             except ValueError as error:
                 if not isinstance(error,SlackError):
