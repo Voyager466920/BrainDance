@@ -89,7 +89,7 @@ def tick(controller,item):
         if task['state']!='queued' or task['retry_at']>time.time():continue
         device=available.pop(0)
         config=item['config']
-        job=server.research.start(dict(node_id=task['node_id'],task='native',confirm=True,mode=config['mode'],context_path=config['context_path']),internal=dict(auto_session_id=item['id'],session_budget=config['session_budget'],native_workspace=task['workspace'],research_style='focused',scout_preferences=config.get('scout_preferences',{}),execution_policy=config.get('execution_policy','bounded'),deadline_epoch=config.get('deadline_epoch'),native_cycle=p.get('native_cycle',0),task_role='study',hypothesis_task_id=task['id'],allocated_devices=device))
+        job=server.research.start(dict(node_id=task['node_id'],task='native',confirm=True,mode=config['mode'],context_path=config['context_path']),internal=dict(cost_profile=config.get('cost_profile','standard'),auto_session_id=item['id'],session_budget=config['session_budget'],native_workspace=task['workspace'],research_style='focused',scout_preferences=config.get('scout_preferences',{}),execution_policy=config.get('execution_policy','bounded'),deadline_epoch=config.get('deadline_epoch'),native_cycle=p.get('native_cycle',0),task_role='study',hypothesis_task_id=task['id'],allocated_devices=device))
         update(store,task['id'],state='running',job_id=job['id'],devices=json.dumps(device),message='공식 연구 파이프라인이 이 가설을 검증합니다.')
     active=[r for r in listing(store,item['id']) if r['round']==p.get('native_cycle',0)]
     controller.save(item,message='가설별 공식 연구 · 진행 '+str(sum(r['state']=='running' for r in active))+' · 대기 '+str(sum(r['state']=='queued' for r in active)),phase='tasks')

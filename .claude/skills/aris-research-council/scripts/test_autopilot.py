@@ -72,6 +72,13 @@ class AutomaticTests(unittest.TestCase):
         for field,value,label in [('token_budget',1000000001,'토큰 한도'),('max_model_calls',301,'모델 호출 한도')]:
             with self.assertRaisesRegex(ValueError,label):self.start(**{field:value})
 
+    def test_economy_setting_preserves_stopped_state_and_usage(self):
+        item=self.start();self.automatic.control(dict(project_id=self.node['project_id'],action='stop'))
+        before=self.automatic.state(self.node['project_id'])
+        after=self.automatic.control(dict(project_id=self.node['project_id'],action='cost_profile',cost_profile='economy'))
+        self.assertEqual(after['session']['status'],'stopped');self.assertEqual(after['session']['config']['cost_profile'],'economy')
+        self.assertEqual(before['usage'],after['usage']);self.assertEqual(after['runs'],[]);self.assertIsNone(self.research.active_id)
+
     def drive(self,seconds=10):
         deadline=time.monotonic()+seconds
         while time.monotonic()<deadline:

@@ -70,7 +70,7 @@ class Autopilot:
         if current:
             path=Path(current['config']['session_budget'])
             if path.is_file():
-                raw=json.loads(path.read_text());usage=dict(calls=raw['calls'],max_calls=raw['max_calls'],charged_tokens=sum(raw['charges'].values()),observed_tokens=sum(raw.get('observed',{}).values()),token_budget=raw['token_budget'],policy=raw.get('policy','bounded'),deadline_epoch=raw.get('deadline_epoch'))
+                raw=json.loads(path.read_text());usage=dict(calls=raw['calls'],max_calls=raw['max_calls'],charged_tokens=sum(raw['charges'].values()),observed_tokens=sum(raw.get('observed',{}).values()),token_budget=raw['token_budget'],policy=raw.get('policy','bounded'),deadline_epoch=raw.get('deadline_epoch'),anthropic_usage={key:sum(v.get(key,0) for v in raw.get('anthropic_usage',{}).values()) for key in ['input_tokens','output_tokens','cache_read_input_tokens','cache_creation_input_tokens']})
         from research_tasks import listing
         return dict(session=current,directions=directions,runs=runs,reports=reports,usage=usage,tasks=listing(self.store,current['id']) if current else [])
 
@@ -83,15 +83,23 @@ class Autopilot:
                 (item['status'],item['message'],json.dumps(item['progress']),now(),item['id']))
 
     def control(self,payload):
-        if set(payload)-{'project_id','action','max_cycles','max_model_calls','token_budget','context_path','mode','session_id','reuse_research','research_style','execution_policy','duration_seconds','deadline_epoch','experiment_timeout_seconds','orchestration'}:raise ValueError('지원하지 않는 자동모드 설정입니다.')
+        if set(payload)-{'project_id','action','max_cycles','max_model_calls','token_budget','context_path','mode','session_id','reuse_research','research_style','execution_policy','duration_seconds','deadline_epoch','experiment_timeout_seconds','orchestration','cost_profile'}:raise ValueError('지원하지 않는 자동모드 설정입니다.')
         project_id=payload['project_id'];action=payload['action'];root=self.root(project_id);self.store.get_node(root['id'])
         if 'experiment_timeout_seconds' in payload:
             value=payload['experiment_timeout_seconds']
             if value is not None and (type(value) is not int or not 1<=value<=86400):raise ValueError('실험당 제한 시간은 1초–24시간 또는 자동 배분으로 설정하세요.')
         if payload.get('orchestration','single') not in {'single','hypothesis-tasks'}:raise ValueError('연구 작업 구성을 확인하세요.')
-        if action not in {'start','pause','resume','stop','limits','time_only','deadline','portfolio'}:raise ValueError('자동모드 동작을 확인하세요.')
+        if payload.get('cost_profile','standard') not in {'economy','standard'}:raise ValueError('절약 또는 표준 사용량 설정을 선택하세요.')
+        if action not in {'start','pause','resume','stop','limits','time_only','deadline','portfolio','cost_profile'}:raise ValueError('자동모드 동작을 확인하세요.')
         with self.lock:
             old=self.sessions(project_id);item=old[0] if old else None
+            if action=='cost_profile':
+                if not item:raise ValueError('자동 연구 세션을 먼저 선택하세요.')
+                profile=payload.get('cost_profile')
+                if profile not in {'economy','standard'}:raise ValueError('절약 또는 표준 사용량 설정을 선택하세요.')
+                item['config']['cost_profile']=profile
+                with self.store._connect() as conn:conn.execute('UPDATE automatic_sessions SET config=? WHERE id=?',(json.dumps(item['config']),item['id']))
+                return self.state(project_id)
             if action=='portfolio':
                 if not item:raise ValueError('먼저 시간 제한 자율 연구를 시작하세요.')
                 if item['config'].get('execution_policy')!='until_deadline':raise ValueError('시간 제한 자율 연구에서 가설별 작업을 사용하세요.')
@@ -162,6 +170,7 @@ class Autopilot:
                                 session_budget=str(ledger),native_workspace=str(native_workspace)),progress=dict(phase='prepare',discovery_completed=False,cycles=0,revision=steering.snapshot(self.store,project_id)['revision'],code_hashes=[],failures=0),created_at=now(),updated_at=now())
                 item['config']['execution_policy']=policy
                 item['config']['orchestration']=payload.get('orchestration','single')
+                item['config']['cost_profile']=payload.get('cost_profile','standard')
                 item['config']['experiment_timeout_seconds']=payload.get('experiment_timeout_seconds')
                 if policy=='until_deadline':
                     clock=self.deadline_spec(payload,assignment['time_budget_minutes']*60);item['config'].update(clock,pipeline='aris-native')
@@ -299,7 +308,7 @@ class Autopilot:
                 sessions=self.sessions(action['project_id']);item=sessions[0] if sessions else None
                 previous=self.research.list(action['project_id'])['jobs']
                 context=item['config']['context_path'] if item else next((j['config']['context_path'] for j in previous if j['config'].get('context_path')),'')
-                internal=dict(auto_session_id=item['id'],session_budget=item['config']['session_budget']) if item and (item['status'] in {'running','paused','blocked'} or item['config'].get('execution_policy')=='until_deadline') else {}
+                internal=dict(cost_profile=item['config'].get('cost_profile','standard'),auto_session_id=item['id'],session_budget=item['config']['session_budget']) if item and (item['status'] in {'running','paused','blocked'} or item['config'].get('execution_policy')=='until_deadline') else {}
                 if internal:
                     from session_budget import update
                     update(internal['session_budget'],'check')
@@ -332,7 +341,7 @@ class Autopilot:
         with self.store._connect() as conn:budget=self.experiments._budget(item['project_id'],assignment['updated_at'],assignment['time_budget_minutes']*60,conn)
         return self.research.start(dict(node_id=node_id or item['node_id'],task=task,run_id=run_id,confirm=True,
             mode=item['config']['mode'],context_path=item['config']['context_path'],reuse_literature=task!='research'),
-            internal=dict(auto_session_id=item['id'],session_budget=item['config']['session_budget'],remaining_experiment_seconds=int(budget['remaining_seconds'])))
+            internal=dict(cost_profile=item['config'].get('cost_profile','standard'),auto_session_id=item['id'],session_budget=item['config']['session_budget'],remaining_experiment_seconds=int(budget['remaining_seconds'])))
 
     def tick(self,item):
         if item['status']!='running':return
@@ -442,7 +451,7 @@ class Autopilot:
                 return
         if self.research.active_id is not None or self.busy(item['project_id']):return
         job=self.research.start(dict(node_id=item['node_id'],task='native',confirm=True,mode=item['config']['mode'],context_path=item['config']['context_path']),
-            internal=dict(auto_session_id=item['id'],session_budget=item['config']['session_budget'],native_workspace=str(Path(item['config']['native_workspace'])/'discovery'/str(p.get('native_cycle',0))) if portfolio else item['config']['native_workspace'],task_role='discovery' if portfolio else 'single',research_style=item['config'].get('research_style','focused'),scout_preferences=item['config'].get('scout_preferences',{}),execution_policy=item['config'].get('execution_policy','bounded'),deadline_epoch=item['config'].get('deadline_epoch'),native_cycle=p.get('native_cycle',0)))
+            internal=dict(cost_profile=item['config'].get('cost_profile','standard'),auto_session_id=item['id'],session_budget=item['config']['session_budget'],native_workspace=str(Path(item['config']['native_workspace'])/'discovery'/str(p.get('native_cycle',0))) if portfolio else item['config']['native_workspace'],task_role='discovery' if portfolio else 'single',research_style=item['config'].get('research_style','focused'),scout_preferences=item['config'].get('scout_preferences',{}),execution_policy=item['config'].get('execution_policy','bounded'),deadline_epoch=item['config'].get('deadline_epoch'),native_cycle=p.get('native_cycle',0)))
         self.save(item,message='메인 자율 연구 세션이 탐색·구현·실험·리뷰를 이어갑니다.',phase='native',job_id=job['id'],recovery_after=0)
 
     def _loop(self):

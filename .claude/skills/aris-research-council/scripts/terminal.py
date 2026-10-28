@@ -204,6 +204,8 @@ def status_text(project,state):
         lines.append('연구 '+job['state']+' · '+PHASES.get(job['phase'],job['phase'])+' · job:'+job['id'])
     if session and session['status']=='blocked':lines.append('답글 대상: session:'+session['id'])
     for run in state['runs']:lines.append('실험 '+run['state']+' · '+run['title']+' · '+run['id'])
+    anth=(usage or {}).get('anthropic_usage',{})
+    if any(anth.values()):lines.append('메인 Claude 확인분 · 새 입력 '+format(anth.get('input_tokens',0),',')+' · 출력 '+format(anth.get('output_tokens',0),',')+' · 캐시 읽기 '+format(anth.get('cache_read_input_tokens',0),',')+' · 캐시 쓰기 '+format(anth.get('cache_creation_input_tokens',0),','))
     return safe_text('\n'.join(lines))
 
 
@@ -264,19 +266,20 @@ def parser():
     q=sub.add_parser('chat',parents=[common]);q.add_argument('message');q.add_argument('--mode',choices=['auto','ask','next','restart'],default='auto');q.add_argument('--no-wait',action='store_true');q.add_argument('--timeout',type=int,default=300);q.add_argument('--request-id');q.add_argument('--reply-to',help='job:ID, session:ID 또는 run:ID')
     q=sub.add_parser('limits',parents=[common]);q.add_argument('--calls',type=int);q.add_argument('--tokens',type=int)
     q.add_argument('--hours',type=float);q.add_argument('--experiment-minutes',type=float,help='Optional maximum minutes per experiment; 0 selects automatic allocation')
-    q=sub.add_parser('auto',parents=[common]);q.add_argument('action',choices=['start','pause','resume','stop']);q.add_argument('--cycles',type=int,default=3);q.add_argument('--calls',type=int,default=40);q.add_argument('--tokens',type=int,default=1500000);q.add_argument('--context',default='');q.add_argument('--mode',choices=['lite','balanced','deep'],default='balanced');q.add_argument('--reuse-research',action='store_true',help='Reuse this project\'s completed Council and verified literature; re-author and review the next experiment')
-    q.add_argument('--hours',type=float);q.add_argument('--experiment-minutes',type=float,help='Optional maximum minutes per experiment; 0 selects automatic allocation');q.add_argument('--bounded',action='store_true',help='Legacy count-budget mode instead of deadline-only autonomous research')
+    q=sub.add_parser('auto',parents=[common]);q.add_argument('action',choices=['start','pause','resume','stop','economy','standard']);q.add_argument('--cycles',type=int,default=3);q.add_argument('--calls',type=int,default=40);q.add_argument('--tokens',type=int,default=1500000);q.add_argument('--context',default='');q.add_argument('--mode',choices=['lite','balanced','deep'],default='balanced');q.add_argument('--reuse-research',action='store_true',help='Reuse this project\'s completed Council and verified literature; re-author and review the next experiment')
+    q.add_argument('--hours',type=float);q.add_argument('--experiment-minutes',type=float,help='Optional maximum minutes per experiment; 0 selects automatic allocation');q.add_argument('--standard',action='store_true',help='Use standard discovery/review models instead of the economy default');q.add_argument('--bounded',action='store_true',help='Legacy count-budget mode instead of deadline-only autonomous research')
     q=sub.add_parser('interests',parents=[common]);q.add_argument('--interest',action='append');q.add_argument('--bridge',action='append');q.add_argument('--clear-bridges',action='store_true');q.add_argument('--style',choices=['focused','scout']);q.add_argument('--days',type=int);q.add_argument('--papers',type=int);q.add_argument('--pilots',type=int);q.add_argument('--seconds',type=int);q.add_argument('--gain',type=float);q.add_argument('--seeds',type=int)
     q.add_argument('--runtime-policy',choices=['auto','fixed'],help='Auto allocates remaining project time; fixed enforces --seconds as a hard cap')
     q=sub.add_parser('scout',parents=[common]);q.add_argument('action',choices=['start','status','pause','resume','stop'],default='status',nargs='?');q.add_argument('--calls',type=int,default=80);q.add_argument('--tokens',type=int,default=3000000);q.add_argument('--context',default='');q.add_argument('--mode',choices=['lite','balanced','deep'],default='lite')
-    q.add_argument('--hours',type=float);q.add_argument('--experiment-minutes',type=float,help='Optional maximum minutes per experiment; 0 selects automatic allocation');q.add_argument('--bounded',action='store_true')
+    q.add_argument('--hours',type=float);q.add_argument('--experiment-minutes',type=float,help='Optional maximum minutes per experiment; 0 selects automatic allocation');q.add_argument('--standard',action='store_true',help='Use standard discovery/review models instead of the economy default');q.add_argument('--bounded',action='store_true')
     q=sub.add_parser('new',parents=[common]);q.add_argument('name');q.add_argument('--goal',required=True);q.add_argument('--target',default='local');q.add_argument('--devices',default='cpu');q.add_argument('--minutes',type=int,default=30);q.add_argument('--interest',action='append',default=[]);q.add_argument('--bridge',action='append',default=[]);q.add_argument('--style',choices=['focused','scout'],default='focused')
     q.add_argument('--start',action='store_true',help='Create and immediately start automatic research within the selected limits');q.add_argument('--calls',type=int);q.add_argument('--tokens',type=int);q.add_argument('--cycles',type=int);q.add_argument('--context',default='');q.add_argument('--mode',choices=['lite','balanced','deep'])
-    q.add_argument('--hours',type=float);q.add_argument('--experiment-minutes',type=float,help='Optional maximum minutes per experiment; 0 selects automatic allocation');q.add_argument('--bounded',action='store_true')
+    q.add_argument('--hours',type=float);q.add_argument('--experiment-minutes',type=float,help='Optional maximum minutes per experiment; 0 selects automatic allocation');q.add_argument('--standard',action='store_true',help='Use standard discovery/review models instead of the economy default');q.add_argument('--bounded',action='store_true')
     q=sub.add_parser('target',parents=[common]);q.add_argument('profile');q.add_argument('--devices',required=True);q.add_argument('--minutes',type=int,default=30)
     q=sub.add_parser('connection',parents=[common]);q.add_argument('alias');q.add_argument('--name')
     q=sub.add_parser('logs',parents=[common]);q.add_argument('kind',choices=['job','run']);q.add_argument('id')
     q=sub.add_parser('report',parents=[common]);q.add_argument('action',choices=['status','build','open'],default='status',nargs='?')
+    q=sub.add_parser('slack',parents=[common]);q.add_argument('action',choices=['status','setup','send','test','disconnect'],default='status',nargs='?');q.add_argument('--member');q.add_argument('--token-stdin',action='store_true');q.add_argument('--request-id')
     q=sub.add_parser('task',parents=[common]);q.add_argument('action',choices=['stop','resume']);q.add_argument('id')
     q=sub.add_parser('notion',parents=[common]);q.add_argument('action',choices=['status','setup','sync','disconnect'],default='status',nargs='?');q.add_argument('--parent');q.add_argument('--auto',action=argparse.BooleanOptionalAction,default=None)
     return p
@@ -289,7 +292,7 @@ def profile_for(client,selector):
 
 
 def time_options(args):
-    result=dict(execution_policy='bounded' if args.bounded else 'until_deadline',orchestration='single' if args.bounded else 'hypothesis-tasks')
+    result=dict(execution_policy='bounded' if args.bounded else 'until_deadline',orchestration='single' if args.bounded else 'hypothesis-tasks',cost_profile='standard' if args.standard else 'economy')
     if args.hours is not None:result['duration_seconds']=int(args.hours*3600)
     if args.experiment_minutes is not None:result['experiment_timeout_seconds']=int(args.experiment_minutes*60) if args.experiment_minutes else None
     return result
@@ -340,6 +343,15 @@ def dispatch(client,args,project=None):
             import webbrowser
             webbrowser.open(client.url+'/api/reports/preview'+query)
         return state
+    if command=='slack':
+        if args.action=='status':return client.request('/api/slack?'+urllib.parse.urlencode(dict(project_id=project['id'])))
+        if args.action=='disconnect':return client.request('/api/slack/disconnect',{})
+        if args.action in {'send','test'}:return client.request('/api/slack/send',dict(project_id=project['id'],request_id=args.request_id or str(uuid.uuid4()),test=args.action=='test'))
+        import getpass
+        if not sys.stdin.isatty() and not args.token_stdin:raise ClientError('/slack 숨김 입력 또는 --token-stdin으로 봇 토큰을 등록하세요.')
+        member=args.member or input('본인 Slack 멤버 ID: ').strip()
+        token=sys.stdin.read().strip() if args.token_stdin else getpass.getpass('Slack 봇 토큰(xoxb-, 숨김): ').strip()
+        return client.request('/api/slack/configure',dict(project_id=project['id'],member_id=member,token=token,enabled=True))
     if command=='tasks':return client.control(project).get('tasks',[])
     if command=='task':return client.request('/api/control/task',dict(project_id=project['id'],task_id=args.id,action=args.action))
     if command=='status':
@@ -368,6 +380,7 @@ def dispatch(client,args,project=None):
         if not state.get('session') or not state.get('usage'):raise ClientError('자동모드 실행 한도를 먼저 설정하세요.')
         return client.request('/api/control/automatic',dict(project_id=project['id'],action='limits',session_id=state['session']['id'],max_model_calls=args.calls if args.calls is not None else state['usage']['max_calls'],token_budget=args.tokens if args.tokens is not None else state['usage']['token_budget']))
     if command=='auto':
+        if args.action in {'economy','standard'}:return client.request('/api/control/automatic',dict(project_id=project['id'],action='cost_profile',cost_profile=args.action))
         payload=dict(project_id=project['id'],action=args.action)
         if args.action=='start':
             payload.update(**time_options(args),max_cycles=args.cycles,max_model_calls=args.calls,token_budget=args.tokens,context_path=args.context,mode=args.mode)
@@ -396,6 +409,10 @@ def output(value,args,project=None):
         if not value:print('가설별 작업이 아직 없습니다.')
         return
     if getattr(args,'json',False):print(json.dumps(value,ensure_ascii=False,allow_nan=False));return
+    if args.command=='slack':
+        if 'state' in value:print('개인 DM 전송 '+value['state'])
+        else:print('Slack 개인 DM '+('연결됨 · '+str(value.get('workspace') or '') if value.get('connected') else '연결 전'));print('자동 결과 알림 '+('ON' if value.get('enabled') else 'OFF'))
+        return
     if args.command in {'report','notion'}:
         if 'id' in value and 'state' in value:print('처리 대기 · 결과 탭 또는 report status로 확인하세요.')
         elif value=={'connected':False}:print('Notion 연결을 해제했습니다.')

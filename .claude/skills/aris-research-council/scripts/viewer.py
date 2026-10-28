@@ -21,6 +21,7 @@ from research import ResearchEngine
 from autopilot import Autopilot
 from research_chat import ResearchChat
 from notion_reports import PublicationService
+from slack_notifications import SlackNotifications
 from research_reports import report_html
 
 ASSET = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parent.parent)) / 'assets' / 'viewer.html'
@@ -48,8 +49,10 @@ class ViewerServer(ThreadingHTTPServer):
             self.autopilot.deadline_callback=self.chat.cancel_project
             self.publications=PublicationService(store)
             self.chat.publications=self.publications
+            self.notifications=SlackNotifications(store,self.publications)
             self.cleanup=ProjectCleanup(store,self.experiments,self.compute,self.research)
         except Exception:
+            if hasattr(self,'notifications'):self.notifications.close()
             if hasattr(self,'publications'):self.publications.close()
             if hasattr(self,'chat'):self.chat.close()
             if hasattr(self,'autopilot'):self.autopilot.close()
@@ -59,6 +62,7 @@ class ViewerServer(ThreadingHTTPServer):
             raise
 
     def server_close(self):
+        if hasattr(self,'notifications'):self.notifications.close()
         if hasattr(self,'publications'):self.publications.close()
         if hasattr(self,'chat'):self.chat.close()
         if hasattr(self,'autopilot'):self.autopilot.close()
@@ -113,8 +117,12 @@ class ViewerHandler(BaseHTTPRequestHandler):
             return
         path = urlsplit(self.path).path
         if path == '/api/health':
-            self._reply(200, {'app': 'BrainDance', 'version': '0.18.0', 'pid': os.getpid(),
+            self._reply(200, {'app': 'BrainDance', 'version': '0.19.0', 'pid': os.getpid(),
                              'workspace_id': hashlib.sha256(str(Path(self.server.store.db_path).resolve()).encode()).hexdigest()})
+        elif path=='/api/slack':
+            project=parse_qs(urlsplit(self.path).query).get('project_id',[''])[0]
+            try:self.server.autopilot.root(project);self._reply(200,self.server.notifications.state(project))
+            except (KeyError,ValueError):self._reply(404,{'error':'프로젝트를 찾을 수 없습니다.'})
         elif path=='/api/chat':
             try:self._reply(200,self.server.chat.messages(parse_qs(urlsplit(self.path).query).get('project_id',[''])[0]))
             except (KeyError,ValueError) as error:self._reply(400,{'error':str(error)})
@@ -295,6 +303,15 @@ class ViewerHandler(BaseHTTPRequestHandler):
             result=self.server.chat.send(payload)
         elif path=='/api/control/automatic':
             result=self.server.autopilot.control(payload)
+        elif path=='/api/slack/configure':
+            if set(payload)-{'project_id','member_id','token','enabled'}:raise ValueError('Slack 연결 항목을 확인하세요.')
+            result=self.server.notifications.configure(**payload)
+        elif path=='/api/slack/disconnect':
+            if payload:raise ValueError('Expected empty object')
+            result=self.server.notifications.disconnect()
+        elif path=='/api/slack/send':
+            if set(payload)-{'project_id','request_id','test'} or not isinstance(payload.get('request_id'),str) or len(payload['request_id'])>80:raise ValueError('전송 대상을 확인하세요.')
+            result=self.server.notifications.enqueue(payload['project_id'],'manual:'+payload['project_id']+':'+payload['request_id'],test=payload.get('test',False))
         elif path=='/api/control/task':
             from research_tasks import control
             result=control(self.server,**payload)

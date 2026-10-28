@@ -172,6 +172,20 @@ The **실험 실행** (Experiments) tab keeps immutable plans, source code, and 
 
 Use **한도** (Limits), `/limits`, or `braindance limits --hours 8 --project "My project"` to change the remaining time. Recorded usage, scientific history, device selection and the shared project conversation remain intact. The new end time is measured from the moment the change is saved. Paused or stopped work still requires an explicit resume/start.
 
+## Personal Slack DM result notifications
+
+BrainDance can send completed-study summaries directly to your personal Slack DM without making any extra model calls. Each message uses the retained study problem, method, actual measurements and limitations; a matching Notion report links the full implementation references and charts. With Notion auto-sync enabled, notifications wait briefly for its matching report. Discovery-only progress and every small retry are not sent. Each study is queued once; ambiguous network responses are held for inspection instead of blindly posting duplicate DMs. Known rate limits retry after Slack's delay.
+
+Create a Slack app from [the included manifest](.claude/skills/aris-research-council/assets/slack-app-manifest.json), grant its bot **chat:write** and **im:write**, and install it in your workspace. Copy its **Bot User OAuth Token** and your own **member ID** from your Slack profile. In the terminal, open `/slack` (or Settings → Slack DM), enter your member ID and the token in the hidden field, and save. Saving checks authentication and opens the personal bot DM; it sends no test message. The **테스트 DM** button explicitly sends a test. This local background integration is separate from the Codex chat's Slack connection and keeps its token in a private file on your Mac, never in Git, research prompts or result reports.
+
+One-shot commands are `braindance slack setup --member U…`, `slack status`, `slack test`, `slack send` and `slack disconnect`, with your usual `--project` selector. Token input is hidden; scripts can explicitly use `--token-stdin`. Automatic notifications start from the saved subscription time and do not replay historical research. Slack connection or notification settings never resume stopped research.
+
+## Usage accounting and economy profile
+
+Claude resume responses may report cumulative per-session `modelUsage`. BrainDance counts the increment for each invocation, retains the original provider aggregate, and displays fresh input/output separately from cache reads and cache creation. Historical corrections preserve original receipts, calls, scientific results and stopped/running state, with an audit trail. These are processing counters, not a subscription-limit percentage or a cash invoice.
+
+New CLI/UI runs default to the economy profile: **four Haiku exploratory roles and two Sonnet roles** (problem discovery and new principles), six independent agents in total. Source excerpts and per-agent outputs are shorter; full evidence remains local. Advisory peer reviews use Haiku and the Chairman uses Sonnet. The original implementation executor and independent Reviewer keep their models and scientific workflow. `braindance auto economy` or `auto standard` changes a session's future profile without resuming it; `--standard` opts out when starting. Role-level and provider receipts remain available; no unmeasured token-saving percentage is claimed.
+
 ## Broad discovery and independent preliminary studies
 
 Normal timed CLI/UI starts use six independent exploratory agents by default: trends, problem discovery, cross-field principles, problem reframing, adversarial alternatives and falsifiable pilots. Routine trend/pilot roles use Haiku; the more demanding roles use the selected mode's generation model. They work from verified source excerpts in isolated contexts, without seeing one another's proposals. Their actual native Agent receipts are retained. The supplied broad-exploration prompt guides a five-idea synthesis and normally two shortlisted studies, with fresh prior-art checks before selection.

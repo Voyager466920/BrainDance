@@ -56,6 +56,8 @@ def main():
             saved=json.loads(run('interests','--project',project['project_id'],'--json','--db',str(database),'--server',address));assert saved==interests
             status=json.loads(run('status','--project',project['project_id'],'--json','--db',str(database),'--server',address))
             assert status['session'] is None and not status['runs']
+            slack=json.loads(run('slack','status','--project',project['project_id'],'--json','--db',str(database),'--server',address))
+            assert not slack['connected'] and not slack['enabled'] and not slack['deliveries']
             assert json.loads(get('/api/health'))['pid']==pid
             assert 'BrainDance' in get('/')
             csrf=re.search(r"const csrf='([^']+)'",get('/')).group(1)

@@ -222,6 +222,8 @@ def progress_view(state,jobs,job_info,experiments):
     usage=state.get('usage')
     if usage and usage.get('policy')=='until_deadline':lines.extend([deadline_text(usage['deadline_epoch']),f"모델 호출 {usage['calls']:,}회 · 보고된 토큰 {usage['observed_tokens']:,} · 횟수·토큰 제한 없음",''])
     elif usage:lines.extend([f"모델 호출 {usage['calls']:,} / {usage['max_calls']:,}회",f"토큰 예상·예약 {usage['charged_tokens']:,} / {usage['token_budget']:,}",''])
+    anth=(usage or {}).get('anthropic_usage',{})
+    if any(anth.values()):lines.extend(['메인 Claude 확인분 · 새 입력 '+format(anth.get('input_tokens',0),',')+' · 출력 '+format(anth.get('output_tokens',0),',')+' · 캐시 읽기 '+format(anth.get('cache_read_input_tokens',0),',')+' · 캐시 쓰기 '+format(anth.get('cache_creation_input_tokens',0),','),''])
     budget=experiments.get('budget')
     if budget:lines.extend(['실험 시간 예산','사용 '+duration(budget['spent_seconds'])+' · 예약 '+duration(budget['reserved_seconds'])+' · 남은 '+duration(budget['remaining_seconds']),''])
     if session:

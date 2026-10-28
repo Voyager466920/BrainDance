@@ -137,6 +137,8 @@ def run(job,root,progress):
         contract+='\nTIME-ONLY CONTINUOUS RESEARCH: The human authorized research until the absolute deadline '+str(deadline_for(job))+'. There are NO project model-call, token, dollar or experiment-count caps. Usage is still recorded. context.max_runs=null means unlimited; do not stop because of previous numeric defaults. Follow the official pipeline and its artifact-driven internal review loop, not a timer-based fresh review. Finish each scientifically coherent cycle with its real reviewed report using finish; the host then continues the next exploration cycle automatically until the deadline. A successful or negative experiment is information, not permission to terminate the whole project. Explore the next unresolved hypothesis or a new cross-field connection; preserve failures and avoid repeating unchanged completed pilots. When the host says a new cycle starts, create a NEW upstream pipeline run in the SAME shared project conversation/workspace, reusing evidence and reviewer context appropriately.\n'
     (work/'CLAUDE.md').write_text(contract)
     statefile=work/'native-session.json';state=council.read_json(statefile) if statefile.exists() else {}
+    from usage_accounting import prior_baseline,stream_usage,calculate,total as usage_total
+    usage_baseline=prior_baseline(TreeStore(job['db']),job,state.get('session_id'))
     argv=['claude','-p','--verbose','--output-format','stream-json','--model',job['literature_model'],
           '--append-system-prompt',advisor_prompt(),'--plugin-dir',str(plugin),'--restricted','--setting-sources','project','--strict-mcp-config','--mcp-config',str(mcp),
           '--permission-mode','acceptEdits','--permission-prompts','none',
@@ -181,8 +183,8 @@ def run(job,root,progress):
                                 update(job['session_budget'],'reserve',key=str(root/'native-usage.json'),calls=1,estimate=0);reserved+=1
                             messages[ident]=msg.get('usage',{})
                             total=sum(council.tokens(u) for u in messages.values())
-                            update(job['session_budget'],'record',key=str(root/'native-usage.json'),tokens=total)
-                            council.dump(root/'native-usage.json',dict(model=job['literature_model'],messages=len(messages),tokens=total,usage=messages))
+                            update(job['session_budget'],'record',key=str(root/'native-usage.json'),tokens=total,breakdown=stream_usage(messages))
+                            council.dump(root/'native-usage.json',dict(model=job['literature_model'],messages=len(messages),tokens=total,token_breakdown=stream_usage(messages),accounting_version=2,accounting_source='per_invocation_stream',usage=messages))
                         for b in msg.get('content',[]) if isinstance(msg.get('content'),list) else []:
                             if b.get('type')=='tool_use' and b.get('name')=='mcp__codex__finish':finish_ids.add(b['id'])
                             if b.get('type')=='tool_result' and b.get('tool_use_id') in finish_ids and not b.get('is_error'):
@@ -209,9 +211,10 @@ def run(job,root,progress):
             except subprocess.TimeoutExpired:os.killpg(p.pid,signal.SIGKILL);p.wait(timeout=3)
             if host_finished:council.dump(root/'native-usage.json',dict(model=job['literature_model'],messages=len(messages),tokens=sum(council.tokens(u) for u in messages.values()),usage=messages,source='stream_until_validated_host_finish',closing_response_not_required=True))
             if results:
-                result=results[-1];observed=max(sum(council.tokens(u) for u in messages.values()),council.claude_tokens(result.get('modelUsage'),result.get('usage',{})))
-                update(job['session_budget'],'record',key=str(root/'native-usage.json'),tokens=observed)
-                council.dump(root/'native-usage.json',dict(model=job['literature_model'],messages=len(messages),tokens=observed,usage=messages,model_usage=result.get('modelUsage'),provider_usage=result.get('usage'),total_cost_usd=result.get('total_cost_usd')))
+                result=results[-1];breakdown,accounting_source=calculate(stream_usage(messages),result.get('modelUsage'),usage_baseline)
+                observed=usage_total(breakdown)
+                update(job['session_budget'],'record',key=str(root/'native-usage.json'),tokens=observed,breakdown=breakdown)
+                council.dump(root/'native-usage.json',dict(model=job['literature_model'],messages=len(messages),tokens=observed,token_breakdown=breakdown,accounting_source=accounting_source,accounting_version=2,usage=messages,model_usage=result.get('modelUsage'),provider_usage=result.get('usage'),total_cost_usd=result.get('total_cost_usd')))
             current_skills={requested[i].split(':')[-1] for i in requested.keys() & succeeded}
             skills,sources,_=session_skill_receipts(job)
             council.dump(root/'native-skill-receipts.json',dict(invoked=sorted(skills),current_invoked=sorted(current_skills),source_jobs=sources,requested=requested,succeeded=sorted(succeeded)))
@@ -343,13 +346,14 @@ class Host:
             fingerprint=hashlib.sha256(json.dumps(dict(runs=context['completed_runs'] if stage=='results' else [],revision=context['revision'],evidence=(source/'source-evidence.json').read_text(),literature=(source/'LITERATURE.md').read_text()),sort_keys=True).encode()).hexdigest()
             verification=self.root/('native-verification-'+stage+'-'+fingerprint[:12]);verification.mkdir(exist_ok=True)
             evidence=verify(self.job,verification,source,Progress())
-            folder=self.work/('council-'+stage+'-'+fingerprint[:12]+'-novelty-v1')
+            folder=self.work/('council-'+stage+'-'+fingerprint[:12]+'-novelty-v1'+('-economy' if self.job.get('cost_profile')=='economy' else ''))
             frozen=self.work/('advisory-topic-'+stage+'-'+fingerprint[:12]+'.json')
             if (folder/'status.json').is_file() and council.read_json(folder/'status.json').get('status')=='completed':
                 council.dump(self.work/('advice-'+stage+'.json'),dict(stage=stage,native_cycle=self.job.get('native_cycle',0),path=str(folder),fingerprint=fingerprint,run_ids=[r['id'] for r in context['completed_runs']]))
                 report=(folder/'round-1/COUNCIL_REPORT.md').read_text();(self.root/('advisory-'+stage+'.md')).write_text(report)
                 return dict(report=report,reused=True)
             cfg={k:v for k,v in self.cfg.items() if k in council.DEFAULTS or k in council.MODES[self.job['mode']] or k=='session_budget'}
+            if self.job.get('cost_profile')=='economy':cfg.update(peer_model='haiku',chairman_model='sonnet')
             cfg.update(rounds=1,max_councils=1,result_evidence_ids=[r['id'] for r in context['completed_runs']] if stage=='results' else []);council.dump(self.root/'native-result-evidence.json',context['completed_runs']);config=self.root/('native-council-'+stage+'.json');council.dump(config,cfg)
             advisory_context={k:context.get(k) for k in ['research_style','research_preferences','completed_runs','max_runs']}
             advisory_context['human_directions']=context.get('shared_project',{}).get('directions',[])

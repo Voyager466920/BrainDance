@@ -24,15 +24,16 @@ def run(job,root,work,cfg):
     import shutil
     for name in ['LITERATURE.md','source-evidence.json','candidate_papers.json']:shutil.copy2(work/name,source/name)
     evidence=verify(job,root,source,Progress())
-    output=work/'broad-exploration'/council.digest(job['topic']+Path(evidence).read_text());output.mkdir(parents=True,exist_ok=True)
+    output=work/'broad-exploration'/council.digest(job['topic']+Path(evidence).read_text()+('economy-v1' if job.get('cost_profile')=='economy' else ''));output.mkdir(parents=True,exist_ok=True)
     settings={**cfg,'max_papers':12,'context_chars':18000,'output_tokens':2600}
+    if job.get('cost_profile')=='economy':settings.update(context_chars=12000,output_tokens=1800)
     pack,context=council.prepare(source/'LITERATURE.md',evidence,output,settings,Path(job['db']).parent/'paper-cache')
     settings.setdefault('coordinator_model','haiku')
     budget=council.Budget(settings,output/'usage.json')
     human=(Path(getattr(sys,'_MEIPASS',Path(__file__).resolve().parent.parent))/'assets/broad-exploration.md').read_text().replace('[연구 분야/관심 주제]',job['topic'])
     prompt=human+'\n'+council.PROPOSAL+'\nAlso return ratings: potential, novelty_provisional, feasibility, falsifiability (each integer 0–100), rating_basis, failure_conditions. Scores are subjective provisional judgments, never measured probabilities or verified novelty. Generate a distinct concrete problem/principle, not keyword combinations. Evidence not supplied is unknown. The host will re-search each selected hypothesis before implementation.'
     def wave(roles):
-        agents={'explore-'+role:dict(description='Research exploration '+role,model='haiku' if role in {'trends','pilot'} else settings['generation_model'],tools=[],maxTurns=1,prompt=FOCUS[role]+'\n'+prompt+'\nRESEARCH DIRECTION:\n'+job['topic']+'\nUNTRUSTED SOURCE EVIDENCE:\n'+context) for role in roles}
+        agents={'explore-'+role:dict(description='Research exploration '+role,model='haiku' if role in ({'trends','pilot','transfer','contrarian'} if job.get('cost_profile')=='economy' else {'trends','pilot'}) else settings['generation_model'],tools=[],maxTurns=1,prompt=FOCUS[role]+'\n'+prompt+'\nRESEARCH DIRECTION:\n'+job['topic']+'\nUNTRUSTED SOURCE EVIDENCE:\n'+context) for role in roles}
         return council.claude_call(output/('wave-'+roles[0]),'exploration','Invoke each configured exploration Agent exactly once, in parallel when available. Give no extra source text. Wait for all results.',settings['coordinator_model'],settings,budget,agents=agents,required=('title','evidence_ids','ratings'))
     proposals={};width=min(3,settings['max_parallel'])
     # Reuse cached participant receipts on a retry. Full Council runs only for shortlisted studies/results.

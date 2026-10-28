@@ -36,7 +36,7 @@ from terminal_presenter import (STATES,readable,short,clock,duration,provider_li
 
 TABS=['대화','진행','아이디어','계획','실험','설정','결과']
 MODES=[('auto','대화'),('ask','질문만'),('next','다음 방향'),('restart','중지 후 재준비')]
-SLASH=['/tasks','/interests','/scout','/settings','/gpt','/claude','/ssh','/gpu','/notion','/reports','/projects','/new','/delete','/trash','/restore','/purge','/keys','/help','/exit','/quit']
+SLASH=['/slack','/tasks','/interests','/scout','/settings','/gpt','/claude','/ssh','/gpu','/notion','/reports','/projects','/new','/delete','/trash','/restore','/purge','/keys','/help','/exit','/quit']
 
 
 def whitespace_boundary(text,position,direction):
@@ -149,7 +149,7 @@ class ResearchTerminal:
             ConditionalContainer(self.buttons([('가설에 지시',self.direct_idea),('활성',lambda:self.spawn(self.node_status('active'))),('보류',lambda:self.spawn(self.node_status('held'))),('폐기',lambda:self.spawn(self.node_status('discarded')))]),Condition(lambda:self.tab==2)),
             ConditionalContainer(self.buttons([('계획에 지시',self.direct_plan),('코드 보기',self.code_dialog)]),Condition(lambda:self.tab==3)),
             ConditionalContainer(self.buttons([('실험에 지시',self.direct_run),('이 실험 중지',lambda:self.spawn(self.cancel_run()))]),Condition(lambda:self.tab==4)),
-            ConditionalContainer(HSplit([self.buttons([('GPT 연결',lambda:self.provider_dialog('GPT')),('Claude 연결',lambda:self.provider_dialog('Claude')),('SSH 추가',self.ssh_dialog),('서버·GPU',self.resource_dialog)]),self.buttons([('연결 갱신',lambda:self.spawn(self.refresh_providers(True))),('장치 조회',lambda:self.spawn(self.probe_selected())),('한도',self.limits_dialog),('새 프로젝트',self.new_project_dialog),('관심 분야',lambda:self.spawn(self.interests_dialog())),('Notion',lambda:self.spawn(self.notion_dialog()))])]),Condition(lambda:self.tab==5)),
+            ConditionalContainer(HSplit([self.buttons([('GPT 연결',lambda:self.provider_dialog('GPT')),('Claude 연결',lambda:self.provider_dialog('Claude')),('SSH 추가',self.ssh_dialog),('서버·GPU',self.resource_dialog)]),self.buttons([('연결 갱신',lambda:self.spawn(self.refresh_providers(True))),('장치 조회',lambda:self.spawn(self.probe_selected())),('한도',self.limits_dialog),('새 프로젝트',self.new_project_dialog),('관심 분야',lambda:self.spawn(self.interests_dialog())),('Notion',lambda:self.spawn(self.notion_dialog())),('Slack DM',lambda:self.spawn(self.slack_dialog()))])]),Condition(lambda:self.tab==5)),
             ConditionalContainer(self.buttons([('보고서 만들기',lambda:self.spawn(self.report_action(False))),('시각화 열기',lambda:self.spawn(self.open_report())),('Notion 동기화',lambda:self.spawn(self.report_action(True))),('Notion 설정',lambda:self.spawn(self.notion_dialog()))]),Condition(lambda:self.tab==6))]
         lists=HSplit([
             ConditionalContainer(Box(self.idea_list,padding=0),Condition(lambda:self.tab==2)),
@@ -548,6 +548,7 @@ class ResearchTerminal:
         elif command in {'gpt','claude'}:self.provider_dialog('GPT' if command=='gpt' else 'Claude')
         elif command=='ssh':self.ssh_dialog()
         elif command=='gpu':self.resource_dialog()
+        elif command=='slack':await self.slack_dialog()
         elif command=='notion':
             if len(words)>1 and words[1]=='sync':await self.report_action(True)
             else:await self.notion_dialog()
@@ -788,6 +789,19 @@ class ResearchTerminal:
         url=self.client.url+'/api/reports/preview?'+urllib.parse.urlencode(dict(project_id=self.project['id']))
         await self.call(webbrowser.open,url);self.notice='시각화 보고서: '+url
 
+    async def slack_dialog(self):
+        pid=self.require_project();state=await self.call(self.client.request,'/api/slack?'+urllib.parse.urlencode(dict(project_id=pid)))
+        member=TextArea(text=state.get('member_id') or '',multiline=False);token=TextArea(multiline=False,password=True)
+        async def save():
+            await self.call(self.client.request,'/api/slack/configure',dict(project_id=pid,member_id=member.text.strip(),token=token.text.strip(),enabled=True))
+            token.text='';self.close_dialog();self.notice='개인 Slack DM 연결을 저장했습니다. 새 연구 결과부터 자동 알림을 보냅니다.'
+        async def test():
+            await self.call(self.client.request,'/api/slack/send',dict(project_id=pid,request_id=str(uuid.uuid4()),test=True));self.notice='개인 DM 연결 테스트를 전송 대기열에 넣었습니다.'
+        async def disconnect():
+            await self.call(self.client.request,'/api/slack/disconnect',{});token.text='';self.close_dialog();self.notice='Slack 개인 DM 연결을 해제했습니다.'
+        recent='\n'.join(d['state']+(' · '+d['error'] if d.get('error') else '') for d in state.get('deliveries',[])[:3])
+        self.dialog('Slack · 개인 DM 결과 알림',HSplit([Label('연결됨 · '+str(state.get('workspace') or '') if state['connected'] else 'Slack 봇 연결 전'),Label('본인 멤버 ID · 프로필에서 멤버 ID 복사'),member,Label('Bot User OAuth Token · 숨김 입력 · 기존 토큰 유지 시 비우기'),token,Label('봇 권한: chat:write, im:write · 토큰은 이 Mac에만 저장합니다.'),Label('연구 완료 요약과 보고서·그래프 링크를 보냅니다. 알림 작성에 LLM을 호출하지 않습니다.'),Label(recent)]),[('연결 저장',lambda:self.spawn(save())),('테스트 DM',lambda:self.spawn(test())),('연결 해제',lambda:self.spawn(disconnect())),('닫기',self.close_dialog)],member)
+
     async def notion_dialog(self):
         if not self.project:raise ClientError('프로젝트를 먼저 선택하세요.')
         project=dict(self.project);state=await self.call(self.client.request,'/api/notion?'+urllib.parse.urlencode(dict(project_id=project['id'])))
@@ -828,7 +842,7 @@ class ResearchTerminal:
         mode=self.navigable_list(RadioList([('lite','Lite'),('balanced','Balanced'),('deep','Deep')],default='lite' if scouting else 'balanced',select_on_focus=True))
         async def start():
             nonlocal pid
-            limits=dict(execution_policy='until_deadline',orchestration='hypothesis-tasks',duration_seconds=int(float(hours.text)*3600),experiment_timeout_seconds=int(float(per_run.text)*60) if float(per_run.text) else None)
+            limits=dict(cost_profile='economy',execution_policy='until_deadline',orchestration='hypothesis-tasks',duration_seconds=int(float(hours.text)*3600),experiment_timeout_seconds=int(float(per_run.text)*60) if float(per_run.text) else None)
             if pid is None:
                 record=await self.call(self.client.request,'/api/project',create_project)
                 pid=record['project_id']
@@ -837,7 +851,7 @@ class ResearchTerminal:
             await self.call(self.client.request,'/api/control/automatic',dict(project_id=pid,action='start',**limits,context_path=folder.text,mode=mode.current_value,research_style=style.current_value))
             self.close_dialog();self.select_tab(1);self.notice='프로젝트 자동 연구를 시작했습니다.'
         hardware=self.resource_header() if not create_project else create_project['name']+' · '+create_project['compute']['profile_id']+' · '+', '.join(create_project['compute']['device_ids'])+' · '+str(create_project['compute']['time_budget_minutes'])+'분'
-        self.dialog('새 프로젝트 · 만들고 자동 시작' if create_project else '프로젝트 자동 연구 시작',HSplit([Label(hardware),Box(style,height=2,padding=0),Label('종료 시각까지 탐색·실험·오류 수정·다음 연구를 계속합니다.'),Label('대상 서버의 연구 폴더'),folder,Label('종료까지 시간 · 시간 단위'),hours,Label('실험 한 번의 최대 시간 · 분 단위 · 0=자동 배분'),per_run,Label('모델 호출·토큰·실험 횟수 제한 없음'),Box(mode,height=3,padding=0)]),[('만들고 자동 시작' if create_project else '자동 시작',lambda:self.spawn(start())),('취소',self.close_dialog)],folder)
+        self.dialog('새 프로젝트 · 만들고 자동 시작' if create_project else '프로젝트 자동 연구 시작',HSplit([Label(hardware),Box(style,height=2,padding=0),Label('종료 시각까지 탐색·실험·오류 수정·다음 연구를 계속합니다.'),Label('대상 서버의 연구 폴더'),folder,Label('종료까지 시간 · 시간 단위'),hours,Label('실험 한 번의 최대 시간 · 분 단위 · 0=자동 배분'),per_run,Label('절약 모드 · 탐색 Haiku 4 + Sonnet 2 · 구현·검증은 기존 모델 유지'),Box(mode,height=3,padding=0)]),[('만들고 자동 시작' if create_project else '자동 시작',lambda:self.spawn(start())),('취소',self.close_dialog)],folder)
 
     async def tasks_dialog(self):
         pid=self.require_project();state=await self.call(self.client.control,self.project);rows=state.get('tasks',[])

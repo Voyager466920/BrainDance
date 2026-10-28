@@ -58,10 +58,17 @@ def update(path,operation,**values):
                 if data['calls']+values['calls']>data['max_calls']:raise RuntimeError('자동모드 모델 호출 한도를 소진했습니다.')
                 if sum(data['charges'].values())+values['estimate']>data['token_budget']:raise RuntimeError('자동모드 토큰 예상 한도를 소진했습니다.')
             data['calls']+=values['calls'];data['charges'][values['key']]=data['charges'].get(values['key'],0)+values['estimate']
+        elif operation=='correct_observation':
+            key=values['key'];before=dict(observed=data.get('observed',{}).get(key),charged=data['charges'].get(key))
+            data.setdefault('observed',{})[key]=values['tokens']
+            data['charges'][key]=max(values['tokens'],min(data['charges'].get(key,0),50000))
+            data.setdefault('anthropic_usage',{})[key]=values['breakdown']
+            data.setdefault('usage_corrections',[]).append(dict(key=key,before=before,after=dict(observed=values['tokens'],charged=data['charges'][key]),reason=values['reason'],at=datetime.now(timezone.utc).isoformat()))
         elif operation=='record':
             # Includes parallel native subagents: don't release a reserved estimate.
             data['charges'][values['key']]=max(data['charges'].get(values['key'],0),values['tokens'])
             data.setdefault('observed',{})[values['key']]=values['tokens']
+            if values.get('breakdown'):data.setdefault('anthropic_usage',{})[values['key']]=values['breakdown']
         else:raise ValueError('Unknown session budget operation')
         temp=path.with_suffix('.tmp');temp.write_text(json.dumps(data));temp.replace(path)
         return data

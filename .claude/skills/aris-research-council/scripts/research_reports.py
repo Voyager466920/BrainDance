@@ -19,7 +19,7 @@ def clean(value):
     if isinstance(value,dict):return {k:clean(v) for k,v in value.items() if k.lower().replace('-','_') not in SECRET_KEYS and not k.lower().endswith(('_password','_secret','_api_key'))}
     if isinstance(value,list):return [clean(v) for v in value]
     if isinstance(value,str):
-        value=re.sub(r'\b(?:ntn_|secret_|sk-)[A-Za-z0-9_-]{12,}','[credential removed]',value)
+        value=re.sub(r'\b(?:ntn_|secret_|sk-|xoxb-|xoxp-)[A-Za-z0-9_-]{12,}','[credential removed]',value)
         value=re.sub(r'GPU-[a-fA-F0-9-]{16,}','[device ID removed]',value)
         return re.sub(r'(?i)(bearer\s+)[A-Za-z0-9_.-]{12,}',r'\1[credential removed]',value)
     return value
