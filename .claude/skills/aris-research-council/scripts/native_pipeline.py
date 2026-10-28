@@ -55,7 +55,7 @@ def command(flag,*args):
     return [sys.executable,flag,*map(str,args)] if getattr(sys,'frozen',False) else [sys.executable,str(Path(__file__).resolve()),flag,*map(str,args)]
 
 
-CONTRACT='''You are the main autonomous BrainDance research executor. Invoke Skill aris-official:research-pipeline; follow its real idea-discovery -> experiment-bridge -> auto-review-loop -> summary workflow. AUTO_PROCEED=true, HUMAN_CHECKPOINT=false, AUTO_WRITE=false. ARIS owns implementation, debugging, interpretation and next-experiment decisions; do not replace its loop with a different staged planner. Load its actual nested Skills with the Skill tool at their boundaries. Existing measured results and completed stage artifacts remain reusable: loading a missing Skill is not permission to discard them or rerun a completed experiment. Use sequential fallback where Agent is unavailable.
+CONTRACT='''You are the main autonomous BrainDance research executor. Invoke Skill aris-official:research-pipeline; follow its real idea-discovery -> experiment-bridge -> auto-review-loop -> summary workflow. AUTO_PROCEED=true, HUMAN_CHECKPOINT=false, AUTO_WRITE=false, COMPACT=true. ARIS owns implementation, debugging, interpretation and next-experiment decisions; do not replace its loop with a different staged planner. Load its actual nested Skills with the Skill tool at their boundaries. Existing measured results and completed stage artifacts remain reusable: loading a missing Skill is not permission to discard them or rerun a completed experiment. Use sequential fallback where Agent is unavailable.
 Keep the normal ARIS Reviewer: call mcp__codex__codex for its independent novelty/code/result reviews, then implement its feedback and re-review per the original Skill. Council is ADDITIONAL ADVICE, not the Reviewer or its stop/quality gate. Call mcp__codex__council(stage=ideas) after literature/idea discovery and before the first experiment; call stage=results after measured results, before the next experiment and final summary. Council advice can be challenged with evidence; retain disagreement. Do not repeat an identical reviewer question just to fill a stage.
 HOST TOOL ADAPTATION ONLY: Bash/SSH/Agent are unavailable in this managed session. Use mcp__codex__helper for the real upstream Python bookkeeping helpers; mcp__codex__target for read-only existing target inventory/source reads. Read/Write/Edit operate on this dedicated local project workspace. For all pilots, sanity checks, real experiments, retries and ablations use mcp__codex__experiment. It applies the already selected local/SSH device UUID, current direction, code review, run count and cumulative runtime budget. Never execute model code through a helper or call an external shell. No package installation, GPU reassignment or budget changes. Missing prerequisites should be investigated through target reads and repaired in experiment source where possible; do not invent interfaces or results.
 Write a self-contained Python source file defining self_test() with real assertions and run_experiment(); omit __main__ (host appends it). Use the observed Python interpreter, existing project/data paths, BRAINDANCE_DEVICE/CUDA_VISIBLE_DEVICES, BRAINDANCE_METRICS_PATH and BRAINDANCE_ARTIFACT_DIR. Metrics JSON: baseline/candidate objects with the exact metric key. Experiment source can import the existing target repository. The experiment tool itself performs the original Reviewer code-review check; do not ask an identical extra code-review question before submitting the same source. The tool returns a real queued run; poll with mcp__codex__receipt and use its exit state/metrics/logs to debug and continue yourself. A rejected code review or failed execution is feedback to fix and resubmit, not a forced whole-project stop. Diagnose missing modules by checking existing observed Python environments before changing the experiment. Failed attempts do not consume the measured-experiment quota; they still consume actual runtime and model usage. Continue debugging within existing limits without asking the human for each repair. Negative but correctly measured results are valid completed experiments; never keep retrying just to obtain a positive scientific result.
@@ -72,7 +72,7 @@ def session_skill_receipts(job):
         rows=conn.execute('SELECT id,config,run_dir,state,error,message FROM research_jobs WHERE project_id=? ORDER BY created_at',(job['project_id'],)).fetchall()
     for row in rows:
         config=json.loads(row['config'])
-        if config.get('auto_session_id')!=job.get('auto_session_id') or config.get('native_workspace')!=job.get('native_workspace') or config.get('native_cycle',0)!=job.get('native_cycle',0):continue
+        if config.get('auto_session_id')!=job.get('auto_session_id') or config.get('native_workspace')!=job.get('native_workspace') or config.get('native_cycle',0)!=job.get('native_cycle',0) or config.get('hypothesis_task_id')!=job.get('hypothesis_task_id') or config.get('task_role','single')!=job.get('task_role','single'):continue
         trace=Path(row['run_dir'])/'native.stdout.jsonl'
         if not trace.is_file():continue
         requested={};succeeded=set();finish_request=None
@@ -103,6 +103,14 @@ FRESH NOVELTY RECHECK: Invoke original aris-official:novelty-check for each new 
 """
 
 
+DISCOVERY_CONTRACT="""You are the BrainDance broad discovery coordinator, before the official per-hypothesis research pipeline. Load the unmodified aris-official:research-lit and idea-discovery Skills. Use paper_search for real 3–5 year trend and cross-field source retrieval, including older foundational prior art; vary the fields between rounds using shared negative results. Write LITERATURE.md/source-evidence.json/candidate_papers.json, then call exploration_council once: it supplies SIX independent isolated exploratory agents by default (trends, problem discovery, cross-field transfer, new principles, adversarial alternatives, falsifiable pilots). Synthesize FIVE diverse concrete hypotheses; do not pad the count if evidence is insufficient. Use the original novelty-check Skill and novelty_check tool to re-search and independently review each shortlisted mechanism. When interests are empty use context.discovery_interest. Register hypotheses with scout_candidates, including novelty_receipt and ratings={potential,novelty_provisional,feasibility,falsifiability} (integers 0–100) and rating_basis. Scores are reasoned provisional judgments, not measured probabilities; unverified novelty remains explicitly provisional. Prefer a new problem, structural insight or mechanism over a simple combination/performance tweak. Shortlist normally TWO, up to five only with evidence and useful execution capacity. Finish with node_ids=[shortlisted IDs], report='NARRATIVE_REPORT.md'. This finishes discovery ONLY, not scientific verification. The host gives EACH hypothesis its own workspace, native session and unmodified official research-pipeline. Do not run experiments here or write experimental code. Original ARIS research-pipeline, experiment-bridge, auto-review-loop, implementation, debugging and reporting run inside those separate studies. Keep project human conversation shared. References in readable reports are URLs only. No human selection checkpoint during authorized automatic mode.
+"""
+
+STUDY_CONTRACT="""
+This is ONE independent preliminary study, not the broad discovery coordinator. Read HYPOTHESIS.json. Invoke the unmodified official aris-official:research-pipeline for this selected problem/hypothesis, preserving its idea-discovery, experiment-bridge, original Reviewer, auto-review-loop, debugging and summary. Reuse supplied literature as a starting point, check it, refine the selected hypothesis without switching to unrelated topics. ARIS authors real experiment source itself. Report this study's observations, failures and limitations in its own NARRATIVE_REPORT.md and RESEARCH_BRIEF.json. Other tasks' results are shared context, never this task's measured receipts. Original ARIS Reviewer and its internal loops remain required. The six-agent front end already supplied idea advice; the extra full Council is optional for ideas and negative preliminary results, required for a promising measured pilot before final reporting. Avoid repeating broad ideation inside this fixed study. The project host starts other hypotheses/new discovery after your completed study; do not force this one hypothesis to run until the global deadline or fabricate a positive outcome.
+"""
+
+
 def run(job,root,progress):
     work,plugin=install(job)
     known,sources,pending_finish=session_skill_receipts(job)
@@ -115,7 +123,11 @@ def run(job,root,progress):
     host=command('--native-host',str(root/'job.json'))
     mcp=work/'.host-mcp.json';council.dump(mcp,dict(mcpServers={'codex':dict(command=host[0],args=host[1:])}))
     contract=CONTRACT+REPORT_CONTRACT+NOVELTY_CONTRACT
-    if job.get('research_style')=='scout':
+    if job.get('task_role')=='discovery':
+        human=(Path(getattr(sys,'_MEIPASS',Path(__file__).resolve().parent.parent))/'assets/broad-exploration.md').read_text().replace('[연구 분야/관심 주제]',job['topic'])
+        contract=human+'\n'+DISCOVERY_CONTRACT+NOVELTY_CONTRACT
+    elif job.get('hypothesis_task_id'):contract+=STUDY_CONTRACT
+    if job.get('research_style')=='scout' and job.get('task_role')!='discovery':
         from scout import CONTRACT as scout_contract
         contract+='\n'+scout_contract
         council.dump(root/'scout-settings.json',job.get('scout_preferences',{}))
@@ -204,8 +216,8 @@ def run(job,root,progress):
             skills,sources,_=session_skill_receipts(job)
             council.dump(root/'native-skill-receipts.json',dict(invoked=sorted(skills),current_invoked=sorted(current_skills),source_jobs=sources,requested=requested,succeeded=sorted(succeeded)))
             if not host_finished and (p.returncode or not results or results[-1].get('is_error') or results[-1].get('subtype')!='success'):raise RuntimeError('공식 연구 세션이 완료되지 않았습니다. 원본 세션·오류·사용량을 보존했습니다.')
-            required=set(SKILLS)
-            if job.get('research_style')=='scout':
+            required={'research-lit','idea-discovery','novelty-check'} if job.get('task_role')=='discovery' else set(SKILLS)
+            if job.get('research_style')=='scout' and job.get('task_role')!='discovery':
                 required.add('research-lit')
                 receipt_path=work/'native-completion.json'
                 if receipt_path.is_file() and not council.read_json(receipt_path).get('run_ids'):required={'research-pipeline','research-lit','idea-discovery'}
@@ -217,7 +229,7 @@ def run(job,root,progress):
             completed=council.read_json(receipt)
             if completed.get('job_id')!=job['id'] or completed.get('auto_session_id')!=job['auto_session_id']:raise RuntimeError('이전 실행의 완료 기록을 현재 연구의 완료로 재사용하지 않습니다.')
             council.dump(root/'native-completion.json',completed)
-            progress.emit('native-completed','자율 연구와 Reviewer·Council 평가·실험 결과 보고를 완료했습니다.',state='completed')
+            progress.emit('native-completed','넓은 탐색을 마치고 가설별 공식 연구 작업을 선정했습니다.' if job.get('task_role')=='discovery' else '자율 연구와 Reviewer 검토·실험 결과 보고를 완료했습니다.',state='completed')
         finally:
             if p.poll() is None:
                 os.killpg(p.pid,signal.SIGTERM)
@@ -249,6 +261,11 @@ class Host:
         if name not in {'context','receipt','scout_triage','finish'}:update(self.job['session_budget'],'check')
         context=self.api('context');self.latest_context=context
         if name=='context':return context
+        if name=='exploration_council':
+            self.require_skill('idea-discovery');self.require_skill('research-lit')
+            from exploration import run
+            self.event('broad-exploration','6개 탐색 에이전트가 다른 관점에서 문제와 가설을 발굴합니다.')
+            return run(self.job,self.root,self.work,self.cfg)
         if name=='paper_search':
             self.require_skill('research-lit')
             from scout import search
@@ -347,9 +364,10 @@ class Host:
             self.store.add_note(self.job['node_id'],'analysis','아이디어 Council 의견' if stage=='ideas' else '결과 Council 의견',report[:99000])
             return dict(report=report,receipt=receipt)
         if name=='experiment':
+            if self.job.get('task_role')=='discovery':raise ValueError('넓은 탐색에서는 가설만 선정합니다. 실험은 독립 공식 연구 작업에서 수행합니다.')
             if self.last_delivered_revision>=0 and context['revision']>self.last_delivered_revision:raise ValueError('새 사용자 지시가 있습니다. context를 읽고 실행 소스에 반영하세요.')
             self.require_skill('experiment-bridge')
-            if self.job.get('research_style')!='scout' and (not (self.work/'advice-ideas.json').is_file() or council.read_json(self.work/'advice-ideas.json').get('native_cycle',0)!=self.job.get('native_cycle',0)):raise ValueError('먼저 아이디어 Council 의견을 받아야 합니다.')
+            if self.job.get('research_style')!='scout' and not self.job.get('hypothesis_task_id') and (not (self.work/'advice-ideas.json').is_file() or council.read_json(self.work/'advice-ideas.json').get('native_cycle',0)!=self.job.get('native_cycle',0)):raise ValueError('먼저 아이디어 Council 의견을 받아야 합니다.')
             from lab_worker import check_code
             code=check_code(self.path(args.pop('source')).read_text())
             allocation=context['execution_budget'];cap=allocation['max_timeout_seconds']
@@ -379,6 +397,9 @@ class Host:
             return self.api('experiment',payload=spec,review_receipt=str(folder/'usage.json'),direction_revision=context['revision'])
         if name=='receipt':return self.api('receipt',run_id=args['run_id'])
         if name=='finish':
+            if self.job.get('task_role')=='discovery':
+                for skill in ['research-lit','idea-discovery','novelty-check']:self.require_skill(skill)
+                return self.api('finish',node_ids=args.get('node_ids',[]),report=str(self.path(args['report'])))
             brief=self.work/'RESEARCH_BRIEF.json'
             if brief.is_file() and not brief.is_symlink():
                 from research_reports import validate_brief
@@ -397,7 +418,7 @@ class Host:
 
 def serve(jobfile):
     host=Host(council.read_json(jobfile))
-    tools=[('novelty_check','Fresh multi-source prior-art retrieval, no-cache existence checks and independent Reviewer comparison',{'hypothesis':{'type':'string'},'queries':{'type':'array','items':{'type':'string'}}}),('paper_search','Retrieve real recent or cross-domain papers with project duplicate tracking',{'query':{'type':'string'},'source':{'type':'string','enum':['arxiv','openalex']},'kind':{'type':'string','enum':['recent','cross-domain']},'domain':{'type':'string'},'limit':{'type':'integer'}}),('scout_candidates','Connect retrieved canonical paper IDs to a project interest and small experiment',{'paper_ids':{'type':'array','items':{'type':'string'}},'interest':{'type':'string'},'mechanism':{'type':'string'},'hypothesis':{'type':'string'},'experiment':{'type':'string'},'novelty_receipt':{'type':'string'}}),('scout_triage','Evaluate actual baseline/candidate and seed receipts against project thresholds',{}),('context','Shared project conversation, directions, limits and resources',{}),('target','Read-only selected target inventory or source query',{'op':{'type':'string'},'path':{'type':'string'},'start':{'type':'integer'},'lines':{'type':'integer'}}),('helper','Execute an allowed unmodified upstream bookkeeping/paper helper',{'name':{'type':'string'},'args':{'type':'array','items':{'type':'string'}}}),('codex','Original ARIS independent Reviewer; preserve Skill model/effort overrides',{'prompt':{'type':'string'},'model':{'type':'string'},'config':{'type':'object'}}),('codex-reply','Continue original project Reviewer',{'prompt':{'type':'string'},'threadId':{'type':'string'}}),('council','Additional advisory Council at ideas/results boundary',{'stage':{'type':'string','enum':['ideas','results']}}),('experiment','Review and submit immutable Python experiment to selected project resources',{'source':{'type':'string'},'title':{'type':'string'},'interpreter':{'type':'string'},'cwd':{'type':'string'},'args':{'type':'array','items':{'type':'string'}},'timeout_seconds':{'type':'integer'},'metric':{'type':'string'},'direction':{'type':'string','enum':['maximize','minimize']}}),('receipt','Poll actual run metrics/logs',{'run_id':{'type':'string'}}),('finish','Persist native final report after real Reviewer, Council and experiments',{'report':{'type':'string'}})]
+    tools=[('exploration_council','Six independent broad-discovery agents using verified literature',{}),('novelty_check','Fresh multi-source prior-art retrieval, no-cache existence checks and independent Reviewer comparison',{'hypothesis':{'type':'string'},'queries':{'type':'array','items':{'type':'string'}}}),('paper_search','Retrieve real recent or cross-domain papers with project duplicate tracking',{'query':{'type':'string'},'source':{'type':'string','enum':['arxiv','openalex']},'kind':{'type':'string','enum':['recent','cross-domain']},'domain':{'type':'string'},'limit':{'type':'integer'}}),('scout_candidates','Connect retrieved canonical paper IDs to a project interest and small experiment',{'paper_ids':{'type':'array','items':{'type':'string'}},'interest':{'type':'string'},'mechanism':{'type':'string'},'hypothesis':{'type':'string'},'experiment':{'type':'string'},'novelty_receipt':{'type':'string'},'ratings':{'type':'object'},'rating_basis':{'type':'string'}}),('scout_triage','Evaluate actual baseline/candidate and seed receipts against project thresholds',{}),('context','Shared project conversation, directions, limits and resources',{}),('target','Read-only selected target inventory or source query',{'op':{'type':'string'},'path':{'type':'string'},'start':{'type':'integer'},'lines':{'type':'integer'}}),('helper','Execute an allowed unmodified upstream bookkeeping/paper helper',{'name':{'type':'string'},'args':{'type':'array','items':{'type':'string'}}}),('codex','Original ARIS independent Reviewer; preserve Skill model/effort overrides',{'prompt':{'type':'string'},'model':{'type':'string'},'config':{'type':'object'}}),('codex-reply','Continue original project Reviewer',{'prompt':{'type':'string'},'threadId':{'type':'string'}}),('council','Additional advisory Council at ideas/results boundary',{'stage':{'type':'string','enum':['ideas','results']}}),('experiment','Review and submit immutable Python experiment to selected project resources',{'source':{'type':'string'},'title':{'type':'string'},'interpreter':{'type':'string'},'cwd':{'type':'string'},'args':{'type':'array','items':{'type':'string'}},'timeout_seconds':{'type':'integer'},'metric':{'type':'string'},'direction':{'type':'string','enum':['maximize','minimize']}}),('receipt','Poll actual run metrics/logs',{'run_id':{'type':'string'}}),('finish','Persist native final report after real Reviewer, Council and experiments',{'report':{'type':'string'},'node_ids':{'type':'array','items':{'type':'string'}}})]
     def stop(*_):
         with council.PROCESS_LOCK:
             for p in council.ACTIVE_PROCESSES:
@@ -443,14 +464,14 @@ def action(server,payload):
     work=workspace(config)
     with server.store._connect() as conn:
         rows=[dict(r) for r in conn.execute('SELECT r.*,e.spec FROM experiment_runs r JOIN experiments e ON r.experiment_id=e.id WHERE r.project_id=? ORDER BY r.queued_at',(job['project_id'],))]
-    rows=[r for r in rows if json.loads(r['spec']).get('generation',{}).get('native_session_id')==session['id'] and json.loads(r['spec']).get('generation',{}).get('native_cycle',0)==config.get('native_cycle',0)]
+    rows=[r for r in rows if json.loads(r['spec']).get('generation',{}).get('native_session_id')==session['id'] and json.loads(r['spec']).get('generation',{}).get('native_cycle',0)==config.get('native_cycle',0) and json.loads(r['spec']).get('generation',{}).get('hypothesis_task_id')==config.get('hypothesis_task_id')]
     from experiments import completed_run_count
     completed_count=completed_run_count(rows)
     def receipt(row):
         run=server.experiments.run_info(row['id'])
         return {k:run.get(k) for k in ['id','state','result','stdout_tail','stderr_tail','queued_at','finished_at']}
     if payload['action']=='scout_candidates':
-        if config.get('research_style')!='scout':raise ValueError('탐색 모드에서만 논문 연결을 등록할 수 있습니다.')
+        if config.get('research_style')!='scout' and config.get('task_role')!='discovery':raise ValueError('탐색 모드에서만 논문 연결을 등록할 수 있습니다.')
         from scout import candidate
         from novelty import calibrated
         args=payload['candidate'];proof=Path(args.get('novelty_receipt','')).resolve()
@@ -459,7 +480,12 @@ def action(server,payload):
         if checked['idea']['hypothesis']!=args['hypothesis'] or not proof.with_name('review.json').is_file():raise ValueError('현재 가설의 신규성 재검색·리뷰 기록이 필요합니다.')
         chosen=candidate(server.store,job['project_id'],job['node_id'],session['id'],args,cycle=config.get('native_cycle',0))
         review=calibrated(council.read_json(proof.with_name('review.json')),checked)
-        server.store.update_node(chosen['node_id'],metadata=dict(novelty_recheck=review,novelty=dict(assessment=review['novelty_status'],closest_prior_work=review.get('closest_prior_work',[]),technical_delta=review.get('technical_delta',''),uncertainty=review['novelty_limitations'])))
+        ratings=args.get('ratings',{})
+        if config.get('task_role')=='discovery':
+            if not isinstance(args.get('rating_basis'),str) or not args['rating_basis'].strip() or len(args['rating_basis'])>3000:raise ValueError('점수 판단의 근거와 불확실성을 간결하게 기록하세요.')
+            for field in ['potential','novelty_provisional','feasibility','falsifiability']:
+                if type(ratings.get(field)) is not int or not 0<=ratings[field]<=100:raise ValueError('유망도·참신도·실현 가능성·검증 가능성을 0–100으로 평가하세요.')
+        server.store.update_node(chosen['node_id'],metadata=dict(research_ratings=ratings,rating_basis=args.get('rating_basis',''),novelty_recheck=review,novelty=dict(assessment=review['novelty_status'],closest_prior_work=review.get('closest_prior_work',[]),technical_delta=review.get('technical_delta',''),uncertainty=review['novelty_limitations'])))
         return {**chosen,'novelty_recheck':review}
     if payload['action']=='scout_triage':
         from scout import triage,settings
@@ -471,9 +497,9 @@ def action(server,payload):
         with server.store._connect() as conn:time_budget=server.experiments._budget(job['project_id'],assignment['updated_at'],assignment['time_budget_minutes']*60,conn)
         continuous=session['config'].get('execution_policy')=='until_deadline'
         allocation=runtime_budget(settings(server.store,job['project_id']),config.get('scout_preferences',{}),time_budget['remaining_seconds'],None if continuous else session['config']['max_cycles']-completed_count,config.get('research_style','focused'),until_deadline=continuous,experiment_timeout_seconds=session['config'].get('experiment_timeout_seconds'))
-        return dict(research_style=config.get('research_style','focused'),research_preferences=settings(server.store,job['project_id']),shared_project=current,revision=current['revision'],usage=server.autopilot.state(job['project_id'])['usage'],
+        return dict(discovery_interest=server.autopilot.root(job['project_id'])['title'][:200],hypothesis_task_id=config.get('hypothesis_task_id'),task_role=config.get('task_role','single'),research_style=config.get('research_style','focused'),research_preferences=settings(server.store,job['project_id']),shared_project=current,revision=current['revision'],usage=server.autopilot.state(job['project_id'])['usage'],
                     execution_budget=allocation,execution_policy=session['config'].get('execution_policy','bounded'),deadline_epoch=session['config'].get('deadline_epoch'),native_cycle=config.get('native_cycle',0),resource_signature=resource_signature(profile,assignment),
-                    target=dict(profile=profile['name'],kind=profile['kind'],device_ids=assignment['device_ids'],time_budget_minutes=assignment['time_budget_minutes'],context_path=config['context_path']),
+                    target=dict(profile=profile['name'],kind=profile['kind'],device_ids=config.get('allocated_devices',assignment['device_ids']),time_budget_minutes=assignment['time_budget_minutes'],context_path=config['context_path']),
                     max_runs=session['config']['max_cycles'],runs_started=completed_count+sum(r['state'] in {'queued','running'} for r in rows),attempts_started=len(rows),completed_experiments=completed_count,completed_runs=[receipt(r) for r in rows if r['state'] not in {'queued','running'}])
     if payload['action']=='receipt':
         row=next((r for r in rows if r['id']==payload['run_id']),None)
@@ -483,7 +509,7 @@ def action(server,payload):
         with server.autopilot.lock:
             with server.store._connect() as conn:
                 rows=[dict(r) for r in conn.execute('SELECT r.*,e.spec FROM experiment_runs r JOIN experiments e ON r.experiment_id=e.id WHERE r.project_id=? ORDER BY r.queued_at',(job['project_id'],))]
-            rows=[r for r in rows if json.loads(r['spec']).get('generation',{}).get('native_session_id')==session['id'] and json.loads(r['spec']).get('generation',{}).get('native_cycle',0)==config.get('native_cycle',0)]
+            rows=[r for r in rows if json.loads(r['spec']).get('generation',{}).get('native_session_id')==session['id'] and json.loads(r['spec']).get('generation',{}).get('native_cycle',0)==config.get('native_cycle',0) and json.loads(r['spec']).get('generation',{}).get('hypothesis_task_id')==config.get('hypothesis_task_id')]
             if server.autopilot.get(session['id'])['status']!='running':raise ValueError('자동 연구가 실행 중이 아닙니다.')
             completed_count=completed_run_count(rows)
             continuous=session['config'].get('execution_policy')=='until_deadline'
@@ -505,21 +531,37 @@ def action(server,payload):
             reviewroot=review_directory(job['run_dir'],spec,revision,resource_signature(profile,assignment))
             if Path(payload['review_receipt'])!=reviewroot/'usage.json' or not (reviewroot/'usage.json').is_file():raise ValueError('실행할 코드에 대한 실제 Reviewer 영수증이 없습니다.')
             if council.parse_object((reviewroot/'response.txt').read_text()).get('verdict')!='pass':raise ValueError('코드 검토가 통과하지 않았습니다.')
-            generation=dict(job_id=job['id'],auto_session_id=session['id'],native_session_id=session['id'],native_cycle=config.get('native_cycle',0),direction_revision=revision,review_receipt=str(reviewroot/'usage.json'),automatic_analysis=False,runtime_allocation={**allocation,'granted_seconds':spec['timeout_seconds']})
+            generation=dict(hypothesis_task_id=config.get('hypothesis_task_id'),allocated_devices=config.get('allocated_devices'),job_id=job['id'],auto_session_id=session['id'],native_session_id=session['id'],native_cycle=config.get('native_cycle',0),direction_revision=revision,review_receipt=str(reviewroot/'usage.json'),automatic_analysis=False,runtime_allocation={**allocation,'granted_seconds':spec['timeout_seconds']})
             experiment=server.experiments.create(spec,provenance=generation)
             approval=server.experiments.approve(experiment['id'],experiment['digest'],True,authority='automatic:'+session['id'])
             run=server.experiments.enqueue(experiment['id'],approval['id'])
             server.autopilot.save(session,message='자율 연구가 선택한 실험을 실행합니다.',cycles=completed_count,attempts=len(rows)+1,run_id=run['id'])
             return dict(run_id=run['id'],state=run['state'],experiment_id=experiment['id'],digest=experiment['digest'])
     if payload['action']=='finish':
+        if config.get('task_role')=='discovery':
+            from research_tasks import stage
+            report=Path(payload['report'])
+            if report.is_symlink() or not report.resolve().is_relative_to(work) or not report.is_file():raise ValueError('현재 탐색의 보고서가 필요합니다.')
+            if not (Path(job['run_dir'])/'broad-exploration-receipt.json').is_file():raise ValueError('6개 탐색 에이전트의 실제 실행 기록이 필요합니다.')
+            tasks=stage(server,job,session,payload.get('node_ids',[]))
+            (Path(job['run_dir'])/'native-summary.md').write_text(report.read_text())
+            done=dict(job_id=job['id'],auto_session_id=session['id'],task_ids=[t['id'] for t in tasks],run_ids=[],discovery_only=True,completed_at=now())
+            council.dump(work/'native-completion.json',done)
+            server.store.add_note(job['node_id'],'analysis','넓은 탐색 · 가설별 연구 선정',report.read_text()[:99000])
+            return done
         if config.get('research_style')=='scout':
             from scout import finish
             return finish(server,job,session,rows,payload['report'])
         if not rows or any(r['state'] in {'queued','running'} for r in rows):raise ValueError('실제 실험 완료 후 보고할 수 있습니다.')
         if not any(r['state']=='succeeded' and json.loads(r['result']).get('analysis',{}).get('status') in {'measured','compared'} for r in rows):raise ValueError('측정된 실험 결과 없이 완료로 표시하지 않습니다. 실패 원인과 남은 항목을 보존하세요.')
-        advice=council.read_json(work/'advice-results.json')
-        if set(advice['run_ids'])!={r['id'] for r in rows}:raise ValueError('최신 실험 결과의 Council 평가가 필요합니다.')
-        if not (work/'advice-ideas.json').is_file() or council.read_json(work/'advice-ideas.json').get('native_cycle',0)!=config.get('native_cycle',0):raise ValueError('아이디어 Council의 실제 기록이 없습니다.')
+        require_council=not config.get('hypothesis_task_id')
+        if config.get('hypothesis_task_id'):
+            from scout import triage,settings
+            require_council=any(triage(server.experiments.run_info(r['id']),settings(server.store,job['project_id']))['promising'] for r in rows)
+        if require_council:
+            advice=council.read_json(work/'advice-results.json')
+            if set(advice['run_ids'])!={r['id'] for r in rows}:raise ValueError('최신 실험 결과의 Council 평가가 필요합니다.')
+        if not config.get('hypothesis_task_id') and (not (work/'advice-ideas.json').is_file() or council.read_json(work/'advice-ideas.json').get('native_cycle',0)!=config.get('native_cycle',0)):raise ValueError('아이디어 Council의 실제 기록이 없습니다.')
         if not (work/'reviewer-latest.json').is_file():raise ValueError('기존 Reviewer의 결과 검토 기록이 없습니다. codex 도구로 결과를 검토하세요. 완료된 Council은 반복할 필요가 없습니다.')
         reviewer=council.read_json(work/'reviewer-latest.json')
         if set(reviewer['run_ids'])!={r['id'] for r in rows} or not Path(reviewer['receipt']).is_file():raise ValueError('최신 실험 결과에 대한 기존 Reviewer 기록이 필요합니다.')

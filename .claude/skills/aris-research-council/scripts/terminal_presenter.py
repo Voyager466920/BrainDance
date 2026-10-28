@@ -226,6 +226,8 @@ def progress_view(state,jobs,job_info,experiments):
     if budget:lines.extend(['실험 시간 예산','사용 '+duration(budget['spent_seconds'])+' · 예약 '+duration(budget['reserved_seconds'])+' · 남은 '+duration(budget['remaining_seconds']),''])
     if session:
         message=readable(session['message']);lines.extend(['현재 보고',message,'']);seen.add(message)
+    for task in state.get('tasks',[]):
+        lines.extend(['가설 작업 · '+task['id'][:8]+' · '+STATES.get(task['state'],task['state']),task['title'],task['message'],''])
     for job in jobs[:4]:
         lines.append('연구 작업 · '+STATES.get(job['state'],job['state'])+' · '+clock(job['created_at']))
         message=readable(job.get('message',''))
@@ -243,7 +245,11 @@ def progress_view(state,jobs,job_info,experiments):
 def idea_view(node,tree):
     if not node:return '생성된 아이디어와 가설이 여기에 정리됩니다.'
     lines=[node['title'],STATES.get(node['status'],node['status'])+' · 우선순위 '+str(node['priority']),'']
-    meta={k:v for k,v in node.get('metadata',{}).items() if k not in {'run','council_run','compute_assignment','project_name','research_goal','title'}}
+    ratings=node.get('metadata',{}).get('research_ratings',{})
+    if ratings:
+        lines.extend(['평가 · 0–100점의 잠정 판단', '유망도 '+str(ratings.get('potential','—'))+' · 참신도 '+str(ratings.get('novelty_provisional','—'))+' · 실현 가능성 '+str(ratings.get('feasibility','—'))+' · 검증 가능성 '+str(ratings.get('falsifiability','—')), '신규성 상태: '+node.get('metadata',{}).get('novelty_recheck',{}).get('novelty_status','unverified'),''])
+    if node.get('metadata',{}).get('rating_basis'):lines.extend(['평가 근거',node['metadata']['rating_basis'],''])
+    meta={k:v for k,v in node.get('metadata',{}).items() if k not in {'run','council_run','compute_assignment','project_name','research_goal','title','research_ratings','rating_basis'}}
     if meta:lines.extend([readable(meta),''])
     if node.get('evidence'):lines.extend(['논문 근거',readable(node['evidence']),''])
     for evaluation in tree.get('evaluations',[]):

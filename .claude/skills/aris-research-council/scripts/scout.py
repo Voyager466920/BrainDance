@@ -177,7 +177,7 @@ def candidate(store,project_id,node_id,session_id,args,cycle=0):
     prefs=settings(store,project_id);ids=args.get('paper_ids',[])
     if not isinstance(ids,list) or not 1<=len(ids)<=5 or not all(isinstance(v,str) for v in ids):raise ValueError('연결할 조회 논문 식별자를 1–5개 선택하세요.')
     fields={k:args.get(k,'') for k in ['interest','mechanism','hypothesis','experiment']}
-    if fields['interest'] not in prefs['interests'] or any(not isinstance(v,str) or not v.strip() or len(v)>3000 for v in fields.values()):raise ValueError('프로젝트 관심 분야와 구체적인 연결 가설·실험 설계가 필요합니다.')
+    if fields['interest'] not in (prefs['interests'] or [root(store,project_id)['title'][:200]]) or any(not isinstance(v,str) or not v.strip() or len(v)>3000 for v in fields.values()):raise ValueError('프로젝트 관심 분야와 구체적인 연결 가설·실험 설계가 필요합니다.')
     initialize(store);papers=[]
     with store._connect() as conn:
         for pid in ids:

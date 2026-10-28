@@ -36,7 +36,7 @@ from terminal_presenter import (STATES,readable,short,clock,duration,provider_li
 
 TABS=['대화','진행','아이디어','계획','실험','설정','결과']
 MODES=[('auto','대화'),('ask','질문만'),('next','다음 방향'),('restart','중지 후 재준비')]
-SLASH=['/interests','/scout','/settings','/gpt','/claude','/ssh','/gpu','/notion','/reports','/projects','/new','/delete','/trash','/restore','/purge','/keys','/help','/exit','/quit']
+SLASH=['/tasks','/interests','/scout','/settings','/gpt','/claude','/ssh','/gpu','/notion','/reports','/projects','/new','/delete','/trash','/restore','/purge','/keys','/help','/exit','/quit']
 
 
 def whitespace_boundary(text,position,direction):
@@ -145,7 +145,7 @@ class ResearchTerminal:
         kb.add('escape',filter=Condition(lambda:bool(self.modals)))(lambda event:self.close_dialog())
         self.controls=[
             ConditionalContainer(self.buttons([('전체 대화',lambda:self.select_tab(0)),('프로젝트',self.project_dialog)]),Condition(lambda:self.tab==0 and self.welcome)),
-            ConditionalContainer(self.buttons([('자동 시작',self.start_dialog),('일시정지',lambda:self.spawn(self.automatic('pause'))),('재개',lambda:self.spawn(self.automatic('resume'))),('중지',lambda:self.spawn(self.automatic('stop'))),('한도',self.limits_dialog),('문제에 답글',self.reply_issue)]),Condition(lambda:self.tab==1)),
+            ConditionalContainer(self.buttons([('자동 시작',self.start_dialog),('일시정지',lambda:self.spawn(self.automatic('pause'))),('재개',lambda:self.spawn(self.automatic('resume'))),('중지',lambda:self.spawn(self.automatic('stop'))),('한도',self.limits_dialog),('가설 작업',lambda:self.spawn(self.tasks_dialog())),('문제에 답글',self.reply_issue)]),Condition(lambda:self.tab==1)),
             ConditionalContainer(self.buttons([('가설에 지시',self.direct_idea),('활성',lambda:self.spawn(self.node_status('active'))),('보류',lambda:self.spawn(self.node_status('held'))),('폐기',lambda:self.spawn(self.node_status('discarded')))]),Condition(lambda:self.tab==2)),
             ConditionalContainer(self.buttons([('계획에 지시',self.direct_plan),('코드 보기',self.code_dialog)]),Condition(lambda:self.tab==3)),
             ConditionalContainer(self.buttons([('실험에 지시',self.direct_run),('이 실험 중지',lambda:self.spawn(self.cancel_run()))]),Condition(lambda:self.tab==4)),
@@ -551,6 +551,7 @@ class ResearchTerminal:
         elif command=='notion':
             if len(words)>1 and words[1]=='sync':await self.report_action(True)
             else:await self.notion_dialog()
+        elif command=='tasks':await self.tasks_dialog()
         elif command in {'reports','report'}:self.select_tab(6)
         elif command in {'projects','project'}:self.project_dialog()
         elif command=='new':self.new_project_dialog()
@@ -827,7 +828,7 @@ class ResearchTerminal:
         mode=self.navigable_list(RadioList([('lite','Lite'),('balanced','Balanced'),('deep','Deep')],default='lite' if scouting else 'balanced',select_on_focus=True))
         async def start():
             nonlocal pid
-            limits=dict(execution_policy='until_deadline',duration_seconds=int(float(hours.text)*3600),experiment_timeout_seconds=int(float(per_run.text)*60) if float(per_run.text) else None)
+            limits=dict(execution_policy='until_deadline',orchestration='hypothesis-tasks',duration_seconds=int(float(hours.text)*3600),experiment_timeout_seconds=int(float(per_run.text)*60) if float(per_run.text) else None)
             if pid is None:
                 record=await self.call(self.client.request,'/api/project',create_project)
                 pid=record['project_id']
@@ -837,6 +838,18 @@ class ResearchTerminal:
             self.close_dialog();self.select_tab(1);self.notice='프로젝트 자동 연구를 시작했습니다.'
         hardware=self.resource_header() if not create_project else create_project['name']+' · '+create_project['compute']['profile_id']+' · '+', '.join(create_project['compute']['device_ids'])+' · '+str(create_project['compute']['time_budget_minutes'])+'분'
         self.dialog('새 프로젝트 · 만들고 자동 시작' if create_project else '프로젝트 자동 연구 시작',HSplit([Label(hardware),Box(style,height=2,padding=0),Label('종료 시각까지 탐색·실험·오류 수정·다음 연구를 계속합니다.'),Label('대상 서버의 연구 폴더'),folder,Label('종료까지 시간 · 시간 단위'),hours,Label('실험 한 번의 최대 시간 · 분 단위 · 0=자동 배분'),per_run,Label('모델 호출·토큰·실험 횟수 제한 없음'),Box(mode,height=3,padding=0)]),[('만들고 자동 시작' if create_project else '자동 시작',lambda:self.spawn(start())),('취소',self.close_dialog)],folder)
+
+    async def tasks_dialog(self):
+        pid=self.require_project();state=await self.call(self.client.control,self.project);rows=state.get('tasks',[])
+        if not rows:self.notice='탐색 후 선정한 가설이 여기에 독립 작업으로 표시됩니다.';return
+        choices=self.navigable_list(RadioList([(t['id'],STATES.get(t['state'],t['state'])+' · '+t['title']) for t in rows],select_on_focus=True))
+        async def change(action):
+            await self.call(self.client.request,'/api/control/task',dict(project_id=pid,task_id=choices.current_value,action=action))
+            self.close_dialog();self.notice='선택한 가설 작업을 '+('중지했습니다.' if action=='stop' else '재개 대기열에 넣었습니다.');self.wakeup.set()
+        def view():
+            task=next(t for t in rows if t['id']==choices.current_value)
+            self.idea_list.current_value=task['node_id'];self.close_dialog();self.select_tab(2)
+        self.dialog('가설별 공식 연구 작업',Box(choices,height=min(10,len(rows)+1),padding=0),[('가설 보기',view),('작업 중지',lambda:self.spawn(change('stop'))),('작업 재개',lambda:self.spawn(change('resume'))),('닫기',self.close_dialog)],choices)
 
     async def automatic(self,action):
         pid=self.require_project();await self.call(self.client.request,'/api/control/automatic',dict(project_id=pid,action=action));self.notice='자동 연구 '+{'pause':'일시정지','resume':'재개','stop':'중지'}[action]

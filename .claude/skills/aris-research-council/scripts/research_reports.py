@@ -52,7 +52,7 @@ def project_data(store,project_id):
     result=dict(schema_version=2,project_id=project_id,title=project['title'],nodes=[],notes=[],evaluations=[],runs=[])
     for n in nodes:
         m=n['metadata'];display=m.get('korean_display',{})
-        selected={k:display.get(k,m.get(k)) for k in ['idea','novelty','feasibility','experiment','expected_experiment'] if display.get(k,m.get(k)) is not None}
+        selected={k:display.get(k,m.get(k)) for k in ['idea','novelty','feasibility','experiment','expected_experiment','research_ratings'] if display.get(k,m.get(k)) is not None}
         result['nodes'].append(dict(id=n['id'],parent_id=n['parent_id'],title=n['title'],kind=n['kind'],status=n['status'],priority=n['priority'],evidence=n['evidence'],details=selected))
     result['notes']=[{**{k:n[k] for k in ['id','kind','title','created_at']},'content':narrative(n['content'])} for n in tree['notes'] if n['node_id'] in ids and n['kind'] in {'idea','literature','analysis','plan','finding','summary','decision','report','reflection','experiment_analysis'}]
     result['goal']=next((n['title'] for n in nodes if not n['parent_id']),project['title'])
@@ -215,4 +215,9 @@ def editorial_sections(data):
     steps=brief.get('next_steps') or ['다음 연구 단계는 최신 측정 결과와 Reviewer 검토에 따라 갱신합니다.']
     tail='\n'.join('- '+reader_prose(v) for v in limits)+'\n\n**다음 단계**\n\n'+'\n'.join(str(i)+'. '+reader_prose(v) for i,v in enumerate(steps[:3],1))
     urls=paper_urls([n.get('evidence',[]) for n in nodes])
-    return [('해결하려는 문제',reader_prose(problem)),('해결 방법',reader_prose(approach)),('살펴볼 코드',code),('결과','\n\n'.join(results)),('한계와 다음 단계',tail),('참고 논문','\n'.join(urls) or '아직 인용할 논문 URL이 없습니다.')]
+    score_rows=['| 가설 | 유망도 | 잠정 참신도 | 실현 가능성 | 검증 가능성 | 신규성 상태 |','| --- | ---: | ---: | ---: | ---: | --- |']
+    for n in nodes:
+        r=n.get('details',{}).get('research_ratings')
+        if r:score_rows.append('| '+n['title'].replace('|','/')+' | '+' | '.join(str(r.get(k,'—')) for k in ['potential','novelty_provisional','feasibility','falsifiability'])+' | '+str(n.get('details',{}).get('novelty',{}).get('assessment','미검증'))+' |')
+    scores=[('가설 평가','점수는 0–100점의 잠정 판단이며 성공 확률이나 실제 성능 측정값이 아닙니다.\n\n'+'\n'.join(score_rows))] if len(score_rows)>2 else []
+    return scores+[('해결하려는 문제',reader_prose(problem)),('해결 방법',reader_prose(approach)),('살펴볼 코드',code),('결과','\n\n'.join(results)),('한계와 다음 단계',tail),('참고 논문','\n'.join(urls) or '아직 인용할 논문 URL이 없습니다.')]

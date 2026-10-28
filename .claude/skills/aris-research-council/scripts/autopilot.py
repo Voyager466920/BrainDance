@@ -71,7 +71,8 @@ class Autopilot:
             path=Path(current['config']['session_budget'])
             if path.is_file():
                 raw=json.loads(path.read_text());usage=dict(calls=raw['calls'],max_calls=raw['max_calls'],charged_tokens=sum(raw['charges'].values()),observed_tokens=sum(raw.get('observed',{}).values()),token_budget=raw['token_budget'],policy=raw.get('policy','bounded'),deadline_epoch=raw.get('deadline_epoch'))
-        return dict(session=current,directions=directions,runs=runs,reports=reports,usage=usage)
+        from research_tasks import listing
+        return dict(session=current,directions=directions,runs=runs,reports=reports,usage=usage,tasks=listing(self.store,current['id']) if current else [])
 
     def save(self,item,status=None,message=None,**progress):
         item['progress'].update(progress)
@@ -82,14 +83,22 @@ class Autopilot:
                 (item['status'],item['message'],json.dumps(item['progress']),now(),item['id']))
 
     def control(self,payload):
-        if set(payload)-{'project_id','action','max_cycles','max_model_calls','token_budget','context_path','mode','session_id','reuse_research','research_style','execution_policy','duration_seconds','deadline_epoch','experiment_timeout_seconds'}:raise ValueError('지원하지 않는 자동모드 설정입니다.')
+        if set(payload)-{'project_id','action','max_cycles','max_model_calls','token_budget','context_path','mode','session_id','reuse_research','research_style','execution_policy','duration_seconds','deadline_epoch','experiment_timeout_seconds','orchestration'}:raise ValueError('지원하지 않는 자동모드 설정입니다.')
         project_id=payload['project_id'];action=payload['action'];root=self.root(project_id);self.store.get_node(root['id'])
         if 'experiment_timeout_seconds' in payload:
             value=payload['experiment_timeout_seconds']
             if value is not None and (type(value) is not int or not 1<=value<=86400):raise ValueError('실험당 제한 시간은 1초–24시간 또는 자동 배분으로 설정하세요.')
-        if action not in {'start','pause','resume','stop','limits','time_only','deadline'}:raise ValueError('자동모드 동작을 확인하세요.')
+        if payload.get('orchestration','single') not in {'single','hypothesis-tasks'}:raise ValueError('연구 작업 구성을 확인하세요.')
+        if action not in {'start','pause','resume','stop','limits','time_only','deadline','portfolio'}:raise ValueError('자동모드 동작을 확인하세요.')
         with self.lock:
             old=self.sessions(project_id);item=old[0] if old else None
+            if action=='portfolio':
+                if not item:raise ValueError('먼저 시간 제한 자율 연구를 시작하세요.')
+                if item['config'].get('execution_policy')!='until_deadline':raise ValueError('시간 제한 자율 연구에서 가설별 작업을 사용하세요.')
+                item['config']['orchestration']='hypothesis-tasks'
+                with self.store._connect() as conn:conn.execute('UPDATE automatic_sessions SET config=? WHERE id=?',(json.dumps(item['config']),item['id']))
+                self.save(item,message='넓은 탐색 후 가설별 공식 연구 작업으로 분리합니다.',phase='prepare',job_id=None)
+                return self.state(project_id)
             if action in {'time_only','deadline'}:
                 if not item:raise ValueError('먼저 프로젝트 자동모드를 시작하세요.')
                 if action=='deadline' and item['config'].get('execution_policy')!='until_deadline':raise ValueError('먼저 시간 제한 모드로 전환하세요.')
@@ -152,6 +161,7 @@ class Autopilot:
                     config=dict(scope='project',pipeline=self.default_pipeline,research_style=style,scout_preferences=preferences,max_cycles=cycles,mode=mode,context_path=context,resource_signature=resource_signature(profile,assignment),reuse_research=reuse,
                                 session_budget=str(ledger),native_workspace=str(native_workspace)),progress=dict(phase='prepare',discovery_completed=False,cycles=0,revision=steering.snapshot(self.store,project_id)['revision'],code_hashes=[],failures=0),created_at=now(),updated_at=now())
                 item['config']['execution_policy']=policy
+                item['config']['orchestration']=payload.get('orchestration','single')
                 item['config']['experiment_timeout_seconds']=payload.get('experiment_timeout_seconds')
                 if policy=='until_deadline':
                     clock=self.deadline_spec(payload,assignment['time_budget_minutes']*60);item['config'].update(clock,pipeline='aris-native')
@@ -180,7 +190,8 @@ class Autopilot:
                         conn.execute('UPDATE automatic_sessions SET config=? WHERE id=?',(json.dumps(item['config']),item['id']))
                         self.store._event(conn,root['id'],'native_pipeline_resumed',dict(session_id=item['id'],previous_pipeline=item['config']['previous_pipeline'],usage_preserved=True))
                     self.store.add_note(root['id'],'memo','자율 연구 흐름 전환','기존 결과·대화·사용량·장치·예산을 보존하고 공식 자율 파이프라인으로 재개합니다. 이전 진행 기록도 세션 설정에 보존했습니다.')
-                if item['config'].get('pipeline')=='aris-native':
+                keep_tasks=item['config'].get('orchestration')=='hypothesis-tasks' and p.get('phase')=='tasks'
+                if item['config'].get('pipeline')=='aris-native' and not keep_tasks:
                     current=self.research.get(p['job_id']) if p.get('job_id') else None
                     if current and current['state'] in {'queued','running'}:p['phase']='native'
                     else:p.update(phase='prepare',job_id=None)
@@ -213,6 +224,9 @@ class Autopilot:
         self.store.add_note(item['node_id'],'analysis','시간 제한 종료 보고',json.dumps(dict(deadline_epoch=item['config']['deadline_epoch'],completed_cycles=item['progress'].get('cycles_completed',0),usage=self.state(item['project_id'])['usage'],message='종료 시각 이후 새 모델 호출과 실험을 시작하지 않습니다. 원본 로그와 실제 결과를 보존합니다.'),ensure_ascii=False))
 
     def cancel_project(self,project_id):
+        from research_tasks import initialize
+        initialize(self.store)
+        with self.store._connect() as conn:conn.execute("UPDATE research_tasks SET state='stopped',message='프로젝트 중지 또는 종료 시각 도달' WHERE project_id=? AND state IN ('queued','running')",(project_id,))
         for job in self.research.list(project_id)['jobs']:
             if job['state'] in {'queued','running'}:self.research.stop(job['id'])
         with self.store._connect() as conn:ids=[r['id'] for r in conn.execute("SELECT id FROM experiment_runs WHERE project_id=? AND state IN ('queued','running')",(project_id,))]
@@ -260,7 +274,7 @@ class Autopilot:
                     result=self.intervene(dict(node_id=node_id,content=content,apply_mode='next'))
                     active=self.research.active_id is not None or self.busy(project_id)
                     progress=dict(discovery_completed=discovered,preferred_node=node_id)
-                    if not active:progress.update(phase='prepare',job_id=None,run_id=None,failures=0)
+                    if not active and not (item['config'].get('orchestration')=='hypothesis-tasks' and item['progress'].get('phase')=='tasks'):progress.update(phase='prepare',job_id=None,run_id=None,failures=0)
                     self.save(item,'running','대화 지시로 기존 서버·코드를 탐색하고 남은 한도에서 실험을 이어갑니다.',**progress)
                     receipt=dict(session_id=item['id'],direction_revision=result['revision'],status='running',limits_unchanged=True)
                     state='applied'
@@ -387,10 +401,19 @@ class Autopilot:
 
     def native_tick(self,item):
         p=item['progress']
+        portfolio=item['config'].get('orchestration')=='hypothesis-tasks'
+        if portfolio and p.get('phase')=='tasks':
+            from research_tasks import tick
+            return tick(self,item)
         if p.get('recovery_after',0)>time.time():return
         if p.get('job_id'):
             job=self.research.get(p['job_id'])
             if job['state'] in {'queued','running'}:return
+            if portfolio and job['state']=='completed' and job['config'].get('task_role')=='discovery':
+                from research_tasks import listing
+                selected=[t for t in listing(self.store,item['id']) if t['round']==p.get('native_cycle',0)]
+                self.save(item,message='탐색 가설을 독립 연구 작업으로 전달했습니다.' if selected else '새 가설 근거를 보강하며 다음 분야를 탐색합니다.',phase='tasks' if selected else 'prepare',job_id=None,native_cycle=p.get('native_cycle',0) if selected else p.get('native_cycle',0)+1)
+                return
             if job['state']=='completed' and job['phase']=='native-completed':
                 message='자율 연구의 실험·Reviewer·Council 평가와 최종 보고를 완료했습니다.'
                 if item['config'].get('research_style')=='scout':
@@ -419,7 +442,7 @@ class Autopilot:
                 return
         if self.research.active_id is not None or self.busy(item['project_id']):return
         job=self.research.start(dict(node_id=item['node_id'],task='native',confirm=True,mode=item['config']['mode'],context_path=item['config']['context_path']),
-            internal=dict(auto_session_id=item['id'],session_budget=item['config']['session_budget'],native_workspace=item['config']['native_workspace'],research_style=item['config'].get('research_style','focused'),scout_preferences=item['config'].get('scout_preferences',{}),execution_policy=item['config'].get('execution_policy','bounded'),deadline_epoch=item['config'].get('deadline_epoch'),native_cycle=p.get('native_cycle',0)))
+            internal=dict(auto_session_id=item['id'],session_budget=item['config']['session_budget'],native_workspace=str(Path(item['config']['native_workspace'])/'discovery'/str(p.get('native_cycle',0))) if portfolio else item['config']['native_workspace'],task_role='discovery' if portfolio else 'single',research_style=item['config'].get('research_style','focused'),scout_preferences=item['config'].get('scout_preferences',{}),execution_policy=item['config'].get('execution_policy','bounded'),deadline_epoch=item['config'].get('deadline_epoch'),native_cycle=p.get('native_cycle',0)))
         self.save(item,message='메인 자율 연구 세션이 탐색·구현·실험·리뷰를 이어갑니다.',phase='native',job_id=job['id'],recovery_after=0)
 
     def _loop(self):

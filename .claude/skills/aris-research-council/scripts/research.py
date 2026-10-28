@@ -23,7 +23,7 @@ class ResearchEngine:
         initialize(store)
         self.experiments=experiments
         self.root=self.workspace/'council-runs';self.root.mkdir(exist_ok=True,mode=0o700)
-        self.lock=threading.RLock();self.closed=threading.Event();self.process=None;self.active_id=None
+        self.lock=threading.RLock();self.closed=threading.Event();self.process=None;self.active_id=None;self.workers={}
         self.lease=(self.root/'.research.lock').open('a+')
         import fcntl
         try:fcntl.flock(self.lease,fcntl.LOCK_EX|fcntl.LOCK_NB)
@@ -88,7 +88,7 @@ class ResearchEngine:
             'council/usage.json','council/round-1/COUNCIL_REPORT.md','error.log',
             'worker.stderr.log','literature.stderr.log','verification.stderr.log','arxiv-fetch.stderr.log',
             'generated-experiment.py','generated-experiment.json','generated-proposal.json','environment.json','environment.stderr.log','context-discovery.json','resolved-context.json',
-            'native-request.txt','advisor-system-prompt.md','research-brief.json','native-argv.json','native.stdout.jsonl','native.stderr.log','native-usage.json','native-skill-receipts.json','native-completion.json','scout-triage.json','scout-settings.json','scout-ideas.md','native-result-evidence.json','native-summary.md','advisory-ideas.md','advisory-results.md','registered-experiment.json','analysis.json','lab-usage.json','explored-environment.json',
+            'broad-exploration-receipt.json','native-request.txt','advisor-system-prompt.md','research-brief.json','native-argv.json','native.stdout.jsonl','native.stderr.log','native-usage.json','native-skill-receipts.json','native-completion.json','scout-triage.json','scout-settings.json','scout-ideas.md','native-result-evidence.json','native-summary.md','advisory-ideas.md','advisory-results.md','registered-experiment.json','analysis.json','lab-usage.json','explored-environment.json',
             'exploration-1.json','exploration-2.json'] if (root/name).is_file()]
         for prefix in ['native-novelty','native-helpers','native-reviewer','native-code-review','scout-searches']:
             folder=root/prefix
@@ -138,15 +138,19 @@ class ResearchEngine:
                     raise ValueError('자동모드가 다음 작업을 관리 중입니다. 방향 수정 또는 일시정지를 사용하세요.')
         with self.lock,self.store._connect() as conn:
             if self.closed.is_set():raise ValueError('연구 실행기가 종료 중입니다.')
-            old=conn.execute("SELECT * FROM research_jobs WHERE project_id=? AND state IN ('queued','running')",(node['project_id'],)).fetchone()
+            parallel=bool(internal and internal.get('hypothesis_task_id'))
+            active=conn.execute("SELECT * FROM research_jobs WHERE project_id=? AND state IN ('queued','running')",(node['project_id'],)).fetchall()
+            old=next((r for r in active if not parallel or json.loads(r['config']).get('hypothesis_task_id')==internal['hypothesis_task_id']),None)
             if old:
                 old=self.decode(old)
                 if old['config'].get('task','research')!=task or (task=='analyze' and old['config'].get('run_id')!=payload.get('run_id')):
                     raise ValueError('이 프로젝트의 다른 작업이 진행 중입니다.')
                 return old
-            if self.active_id is not None:raise ValueError('다른 프로젝트가 연구 중입니다. 완료 또는 중지 후 시작하세요.')
+            if self.active_id is not None and not parallel:raise ValueError('다른 프로젝트가 연구 중입니다. 완료 또는 중지 후 시작하세요.')
+            if parallel and self.worker_count()>=4:raise ValueError('연구 작업 실행 슬롯을 기다려 주세요.')
             job_id=str(uuid.uuid4());root=self.root/job_id;root.mkdir(mode=0o700)
             topic=node['metadata'].get('research_goal') or node['metadata'].get('original_topic') or node['title']
+            if internal and internal.get('hypothesis_task_id'):topic=node['metadata'].get('hypothesis') or topic
             if task=='literature' and internal and internal.get('conversation_request'):
                 topic+='\n이번 논문 탐색을 요청한 원본 사용자 지시:\n'+internal['conversation_request']['content']
             reusable=None
@@ -183,7 +187,8 @@ class ResearchEngine:
             self.store._event(conn,node['id'],'research_started',{'job_id':job_id,'mode':mode})
             self.active_id=job_id
             self.cancel=threading.Event();self.thread=threading.Thread(target=self._execute,args=(record,),daemon=True)
-        self.thread.start()
+            self.workers[job_id]=dict(cancel=self.cancel,thread=self.thread)
+        self.workers[job_id]['thread'].start()
         return record
 
     def can_retry(self,record):
@@ -232,18 +237,19 @@ class ResearchEngine:
 
     def _execute(self,record):
         root=Path(record['run_dir']);progress=root/'progress.json';process=None;cancelled_at=None
+        cancel=self.workers.get(record['id'],{}).get('cancel',self.cancel)
         try:
             command=self.command()
             with (root/'worker.stdout.log').open('wb') as out,(root/'worker.stderr.log').open('wb') as err:
                 with self.lock:
-                    if self.cancel.is_set():raise InterruptedError()
+                    if cancel.is_set():raise InterruptedError()
                     process=subprocess.Popen(command+[str(root/'job.json')],stdout=out,stderr=err,start_new_session=True)
                     self.process=process
                 self._update(record['id'],dict(state='running',phase='preflight',message='연구 환경을 확인합니다.'))
                 start=time.monotonic();last=None
                 while process.poll() is None:
-                    if self.cancel.is_set() or self.closed.is_set() or not self._project_active(record):
-                        self.cancel.set()
+                    if cancel.is_set() or self.closed.is_set() or not self._project_active(record):
+                        cancel.set()
                         if cancelled_at is None:
                             cancelled_at=time.monotonic();os.killpg(process.pid,signal.SIGTERM)
                         elif time.monotonic()-cancelled_at>12:
@@ -251,8 +257,8 @@ class ResearchEngine:
                     from session_budget import deadline_for
                     end=deadline_for(record['config'])
                     if end is not None:
-                        if time.time()>=end:self.cancel.set()
-                    elif time.monotonic()-start>record['config']['phase_timeout_seconds']*7+300:self.cancel.set()
+                        if time.time()>=end:cancel.set()
+                    elif time.monotonic()-start>record['config']['phase_timeout_seconds']*7+300:cancel.set()
                     if progress.exists():
                         try:
                             raw=progress.read_text()
@@ -267,16 +273,16 @@ class ResearchEngine:
                 if progress.exists():
                     final=json.loads(progress.read_text())
                     if final.get('state') not in TERMINAL:
-                        if self.cancel.is_set():raise InterruptedError()
+                        if cancel.is_set():raise InterruptedError()
                         raise RuntimeError('연구 완료 영수증 없이 프로세스가 종료됐습니다.')
                     if process.returncode!=0 and final.get('state')=='completed':raise RuntimeError('연구 종료 코드와 완료 영수증이 일치하지 않습니다.')
                     if final.get('state')=='completed' and (root/'generated-experiment.json').is_file():
                         final=self._register_generated(record,final)
                     self._update(record['id'],final)
-                elif self.cancel.is_set():raise InterruptedError()
+                elif cancel.is_set():raise InterruptedError()
                 else:raise RuntimeError('연구 실행 영수증이 없습니다. 원본 worker 로그를 확인하세요.')
         except BaseException as error:
-            self._update(record['id'],dict(state='cancelled' if self.cancel.is_set() else 'failed',phase='stopped',message='연구를 중지했습니다.' if self.cancel.is_set() else str(error)[:2000]))
+            self._update(record['id'],dict(state='cancelled' if cancel.is_set() else 'failed',phase='stopped',message='연구를 중지했습니다.' if cancel.is_set() else str(error)[:2000]))
         finally:
             if process and process.poll() is None:
                 try:os.killpg(process.pid,signal.SIGTERM);process.wait(timeout=12)
@@ -286,7 +292,10 @@ class ResearchEngine:
             try:
                 self.store.export_json(Path(self.store.db_path).with_suffix('.json'))
             finally:
-                with self.lock:self.process=None;self.active_id=None
+                with self.lock:
+                    self.workers.pop(record['id'],None)
+                    if self.active_id==record['id']:self.active_id=next(iter(self.workers),None)
+                    if self.process is process:self.process=None
 
     def command(self):
         return [sys.executable,'--research-worker'] if getattr(sys,'frozen',False) else [sys.executable,'-u',str(Path(__file__).with_name('research_worker.py'))]
@@ -341,11 +350,20 @@ class ResearchEngine:
     def stop(self,job_id):
         item=self.get(job_id)
         with self.lock:
-            if item['state'] not in TERMINAL and self.active_id==job_id:self.cancel.set()
+            if item['state'] not in TERMINAL:
+                worker=self.workers.get(job_id)
+                if worker:worker['cancel'].set()
+                elif self.active_id==job_id:self.cancel.set()
         return item
+
+    def worker_count(self):
+        return len([w for w in self.workers.values() if w['thread'].is_alive()])
 
     def close(self):
         self.closed.set()
+        for worker in list(self.workers.values()):worker['cancel'].set()
+        for worker in list(self.workers.values()):
+            if worker['thread'].is_alive():worker['thread'].join(timeout=18)
         if self.analysis_thread and self.analysis_thread.is_alive():self.analysis_thread.join(timeout=2)
         if hasattr(self,'thread') and self.thread.is_alive():self.thread.join(timeout=18)
         self.lease.close()

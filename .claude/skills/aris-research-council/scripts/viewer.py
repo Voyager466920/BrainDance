@@ -113,7 +113,7 @@ class ViewerHandler(BaseHTTPRequestHandler):
             return
         path = urlsplit(self.path).path
         if path == '/api/health':
-            self._reply(200, {'app': 'BrainDance', 'version': '0.17.0', 'pid': os.getpid(),
+            self._reply(200, {'app': 'BrainDance', 'version': '0.18.0', 'pid': os.getpid(),
                              'workspace_id': hashlib.sha256(str(Path(self.server.store.db_path).resolve()).encode()).hexdigest()})
         elif path=='/api/chat':
             try:self._reply(200,self.server.chat.messages(parse_qs(urlsplit(self.path).query).get('project_id',[''])[0]))
@@ -295,6 +295,9 @@ class ViewerHandler(BaseHTTPRequestHandler):
             result=self.server.chat.send(payload)
         elif path=='/api/control/automatic':
             result=self.server.autopilot.control(payload)
+        elif path=='/api/control/task':
+            from research_tasks import control
+            result=control(self.server,**payload)
         elif path=='/api/control/direction':
             result=self.server.autopilot.intervene(payload)
         elif path=='/api/research/start':

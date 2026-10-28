@@ -19,7 +19,7 @@ import uuid
 
 
 LOGO_ASSETS=Path(getattr(sys,'_MEIPASS',Path(__file__).resolve().parent.parent))/'assets'
-PHASES={'scout-search':'논문 탐색','native-pipeline':'자율 연구','native-discovery':'아이디어 탐색','native-implementation':'자율 구현·실험','native-review':'Reviewer 검토·개선','native-council':'Council 추가 평가','native-completed':'자율 연구 완료','preflight':'준비','environment':'환경 확인','exploration':'서버·코드 탐색','inspected':'탐색 완료',
+PHASES={'broad-exploration':'6개 관점의 넓은 탐색','novelty-search':'선행연구 재검색·검증','scout-search':'논문 탐색','native-pipeline':'자율 연구','native-discovery':'아이디어 탐색','native-implementation':'자율 구현·실험','native-review':'Reviewer 검토·개선','native-council':'Council 추가 평가','native-completed':'자율 연구 완료','preflight':'준비','environment':'환경 확인','exploration':'서버·코드 탐색','inspected':'탐색 완료',
  'literature':'논문 탐색','verification':'논문 확인','generation':'가설 생성','peer-review':'교차 평가',
  'chairman':'종합','coding':'실험 코드 작성','code-review':'코드 검토','registering':'계획 등록',
  'experiment_approval':'실행 코드 준비','blocked':'확인 필요','analysis':'결과 분석','analyzed':'분석 완료'}
@@ -257,7 +257,7 @@ def parser():
         if name=='purge':
             q.add_argument('--preview',action='store_true',help='Show local records and files to remove without deleting')
             q.add_argument('--confirm-name',help='Exact project name required for permanent deletion without an interactive prompt')
-    for name in ['projects','status','tree','connections','devices']:
+    for name in ['projects','status','tree','connections','devices','tasks']:
         q=sub.add_parser(name,parents=[common]);
         if name=='devices':q.add_argument('profile')
     q=sub.add_parser('history',parents=[common]);q.add_argument('--full',action='store_true');q.add_argument('--last',type=int,default=10)
@@ -277,6 +277,7 @@ def parser():
     q=sub.add_parser('connection',parents=[common]);q.add_argument('alias');q.add_argument('--name')
     q=sub.add_parser('logs',parents=[common]);q.add_argument('kind',choices=['job','run']);q.add_argument('id')
     q=sub.add_parser('report',parents=[common]);q.add_argument('action',choices=['status','build','open'],default='status',nargs='?')
+    q=sub.add_parser('task',parents=[common]);q.add_argument('action',choices=['stop','resume']);q.add_argument('id')
     q=sub.add_parser('notion',parents=[common]);q.add_argument('action',choices=['status','setup','sync','disconnect'],default='status',nargs='?');q.add_argument('--parent');q.add_argument('--auto',action=argparse.BooleanOptionalAction,default=None)
     return p
 
@@ -288,7 +289,7 @@ def profile_for(client,selector):
 
 
 def time_options(args):
-    result=dict(execution_policy='bounded' if args.bounded else 'until_deadline')
+    result=dict(execution_policy='bounded' if args.bounded else 'until_deadline',orchestration='single' if args.bounded else 'hypothesis-tasks')
     if args.hours is not None:result['duration_seconds']=int(args.hours*3600)
     if args.experiment_minutes is not None:result['experiment_timeout_seconds']=int(args.experiment_minutes*60) if args.experiment_minutes else None
     return result
@@ -339,6 +340,8 @@ def dispatch(client,args,project=None):
             import webbrowser
             webbrowser.open(client.url+'/api/reports/preview'+query)
         return state
+    if command=='tasks':return client.control(project).get('tasks',[])
+    if command=='task':return client.request('/api/control/task',dict(project_id=project['id'],task_id=args.id,action=args.action))
     if command=='status':
         state=client.control(project)
         jobs=client.request('/api/research?'+urllib.parse.urlencode(dict(project_id=project['id'])))['jobs']
@@ -388,6 +391,10 @@ def dispatch(client,args,project=None):
 
 
 def output(value,args,project=None):
+    if args.command=='tasks' and not getattr(args,'json',False):
+        for task in value:print(task['id']+' · '+task['state']+' · '+task['title'])
+        if not value:print('가설별 작업이 아직 없습니다.')
+        return
     if getattr(args,'json',False):print(json.dumps(value,ensure_ascii=False,allow_nan=False));return
     if args.command in {'report','notion'}:
         if 'id' in value and 'state' in value:print('처리 대기 · 결과 탭 또는 report status로 확인하세요.')

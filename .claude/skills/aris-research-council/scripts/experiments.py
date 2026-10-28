@@ -135,7 +135,12 @@ class ExperimentEngine:
         spec=dict(node_id=node['id'],project_id=node['project_id'],title=title.strip(),code=code,
                   interpreter=interpreter,cwd=cwd,args=args,timeout_seconds=timeout,metric=metric.strip(),direction=direction,
                   profile=profile,device_ids=assignment['device_ids'],resource_signature=resource_signature(profile,assignment))
-        if provenance is not None:spec['generation']=provenance
+        if provenance is not None:
+            spec['generation']=provenance
+            selected=provenance.get('allocated_devices')
+            if selected:
+                if not isinstance(selected,list) or not set(selected)<=set(assignment['device_ids']):raise ValueError('선택한 프로젝트 장치 안에서만 가설 작업을 실행할 수 있습니다.')
+                spec['device_ids']=selected
         record=dict(id=str(uuid.uuid4()),node_id=node['id'],spec=spec,digest=digest(spec),created_at=timestamp())
         with self.lock,self.store._connect() as conn:
             self.store._ensure_active(conn,node['id'])
