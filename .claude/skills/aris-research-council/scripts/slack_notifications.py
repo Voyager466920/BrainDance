@@ -57,6 +57,9 @@ def escape(value,limit=500):
 def message_for(data,report_url=None):
     brief=data.get('brief') or {};runs=data['runs'];valid=[r for r in runs if r['state']=='succeeded' and r.get('analysis',{}).get('status') in {'measured','compared'}]
     lines=['*BrainDance 연구 결과*',escape(data['title'],180),'', '*문제*',escape(brief.get('problem') or data.get('goal') or data['title'],600), '*방법*',escape(brief.get('approach') or '자세한 구현과 비교 설정은 연구 보고서에 기록했습니다.',700),'*결과*',escape(brief.get('findings') or ('정상 측정 '+str(len(valid))+'회 · 전체 시도 '+str(len(runs))+'회'),850)]
+    if data.get('study_outcome')=='rejected':
+        lines[0]='*BrainDance 가설 기각 보고*'
+        lines[lines.index('*결과*')+1]=escape(data.get('rejection_reason') or brief.get('findings') or '독립 검토에 따라 실험 전에 기각했습니다.',850)+'\n실험 미실행 · 측정 결과 없음'
     for run in valid[-3:]:
         a=run['analysis'];values=(str(a.get('baseline'))+' → '+str(a.get('candidate'))) if a['status']=='compared' else str(a.get('value'))
         lines.append('• '+escape(run['title'],110)+' · '+escape(run['metric'],50)+' '+escape(values,90))
@@ -64,7 +67,7 @@ def message_for(data,report_url=None):
     lines.extend(['*한계*',escape(' / '.join(limits[:2]),550)])
     if report_url and report_url.startswith('https://www.notion.so/'):
         lines.extend(['', '<'+report_url+'|상세 보고서·코드 위치·그래프 보기>'])
-    else:lines.extend(['','전체 보고서·코드 위치·그래프는 BrainDance 결과 탭에 보존했습니다.'])
+    else:lines.extend(['','자세한 내용은 BrainDance 결과 탭의 보고서에서 확인할 수 있습니다.'])
     return dict(text='\n'.join(lines),unfurl_links=False,unfurl_media=False)
 
 
@@ -134,7 +137,7 @@ class SlackNotifications:
             if done.get('job_id')!=job['id']:raise ValueError('연구 보고서의 작업 식별자가 다릅니다.')
             selected=next((n for n in data['nodes'] if n['id']==job['node_id']),None)
             if selected:
-                data={**data,'title':data['title']+' · '+selected['title'],'goal':selected['title'],'nodes':[selected],'runs':[r for r in data['runs'] if r['id'] in done.get('run_ids',[])],'brief':{}}
+                data={**data,'title':data['title']+' · '+selected['title'],'goal':selected['title'],'nodes':[selected],'runs':[r for r in data['runs'] if r['id'] in done.get('run_ids',[])],'brief':{},'study_outcome':done.get('outcome'),'rejection_reason':done.get('reason')}
                 brief=folder/'research-brief.json'
                 if brief.is_file() and not brief.is_symlink():
                     from research_reports import validate_brief
@@ -183,7 +186,8 @@ class SlackNotifications:
                 from datetime import datetime,timezone
                 state=self.publications.state(row['project_id'])
                 url=next((j.get('page_url') for j in state['jobs'] if j['state']=='completed' and j.get('digest')==payload['_report_digest'] and j.get('page_url')),None)
-                if url:payload['text']=payload['text'].replace('전체 보고서·코드 위치·그래프는 BrainDance 결과 탭에 보존했습니다.','<'+url+'|상세 보고서·코드 위치·그래프 보기>')
+                if url:
+                    for footer in ['전체 보고서·코드 위치·그래프는 BrainDance 결과 탭에 보존했습니다.','자세한 내용은 BrainDance 결과 탭의 보고서에서 확인할 수 있습니다.']:payload['text']=payload['text'].replace(footer,'<'+url+'|상세 보고서 보기>')
                 elif (datetime.now(timezone.utc)-datetime.fromisoformat(row['created_at'])).total_seconds()<180:
                     with self.connect() as c:c.execute('UPDATE deliveries SET retry_at=? WHERE id=?',(time.time()+5,row['id']))
                     return

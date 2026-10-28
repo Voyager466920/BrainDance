@@ -122,6 +122,7 @@ DISCOVERY_CONTRACT="""You are the BrainDance broad discovery coordinator, before
 STUDY_CONTRACT="""
 This is ONE independent preliminary study, not the broad discovery coordinator. Read HYPOTHESIS.json. Invoke the unmodified official aris-official:research-pipeline for this selected problem/hypothesis, preserving its idea-discovery, experiment-bridge, original Reviewer, auto-review-loop, debugging and summary. Reuse supplied literature as a starting point, check it, refine the selected hypothesis without switching to unrelated topics. ARIS authors real experiment source itself. Report this study's observations, failures and limitations in its own NARRATIVE_REPORT.md and RESEARCH_BRIEF.json. Other tasks' results are shared context, never this task's measured receipts. Original ARIS Reviewer and its internal loops remain required. The six-agent front end already supplied idea advice; the extra full Council is optional for ideas and negative preliminary results, required for a promising measured pilot before final reporting. Avoid repeating broad ideation inside this fixed study. The project host starts other hypotheses/new discovery after your completed study; do not force this one hypothesis to run until the global deadline or fabricate a positive outcome.
 """
+STUDY_CONTRACT+='\nPRE-EXPERIMENT REJECTION: If actual prior-art comparison shows duplication, insufficient contribution or a genuinely infeasible premise, load the original novelty-check Skill and ask the existing independent codex Reviewer for an explicit disposition. Do not run a meaningless GPU experiment just to satisfy completion. After its justified reject decision, write a report and call finish(outcome="rejected", rejection_kind="duplicate"|"low_novelty"|"infeasible", reason=<specific reason>, report=<path>). The Reviewer must provide disposition="reject", matching rejection_kind, rationale, evidence_urls (actual compared paper URLs required for duplicate/low_novelty). Missing searches or low scores alone are not proof of duplication; temporary tool/auth/dependency errors are not scientific rejection. This closes only this hypothesis, with no measured-result claim; the project continues other work until its original deadline.\n'
 
 
 def run(job,root,progress):
@@ -233,6 +234,10 @@ def run(job,root,progress):
             council.dump(root/'native-skill-receipts.json',dict(invoked=sorted(skills),current_invoked=sorted(current_skills),source_jobs=sources,requested=requested,succeeded=sorted(succeeded)))
             if not host_finished and (p.returncode or not results or results[-1].get('is_error') or results[-1].get('subtype')!='success'):raise RuntimeError('공식 연구 세션이 완료되지 않았습니다. 원본 세션·오류·사용량을 보존했습니다.')
             required={'research-lit','idea-discovery','novelty-check'} if job.get('task_role')=='discovery' else set(SKILLS)
+            completion_path=work/'native-completion.json'
+            if completion_path.is_file() and council.read_json(completion_path).get('job_id')==job['id'] and council.read_json(completion_path).get('outcome')=='rejected':
+                from study_outcomes import REJECTION_SKILLS
+                required=REJECTION_SKILLS
             if job.get('research_style')=='scout' and job.get('task_role')!='discovery':
                 required.add('research-lit')
                 receipt_path=work/'native-completion.json'
@@ -245,7 +250,7 @@ def run(job,root,progress):
             completed=council.read_json(receipt)
             if completed.get('job_id')!=job['id'] or completed.get('auto_session_id')!=job['auto_session_id']:raise RuntimeError('이전 실행의 완료 기록을 현재 연구의 완료로 재사용하지 않습니다.')
             council.dump(root/'native-completion.json',completed)
-            progress.emit('native-completed','넓은 탐색을 마치고 가설별 공식 연구 작업을 선정했습니다.' if job.get('task_role')=='discovery' else '자율 연구와 Reviewer 검토·실험 결과 보고를 완료했습니다.',state='completed')
+            progress.emit('native-completed','넓은 탐색을 마치고 가설별 공식 연구 작업을 선정했습니다.' if job.get('task_role')=='discovery' else '독립 검토에 따른 실험 전 기각을 기록했습니다.' if completed.get('outcome')=='rejected' else '자율 연구와 Reviewer 검토·실험 결과 보고를 완료했습니다.',state='completed')
         finally:
             if p.poll() is None:
                 os.killpg(p.pid,signal.SIGTERM)
@@ -338,9 +343,10 @@ class Host:
             folder=self.root/'native-reviewer'/str(time.time_ns())
             self.event('native-review','메인 연구의 기존 Reviewer가 독립적으로 검토합니다.')
             prompt=args.get('prompt','')+'\nReturn ONLY JSON with your full review in review, score, verdict, weaknesses, minimum_fixes. Read-only inspection of the native project workspace is allowed; never execute experiments, mutate files or access credentials. This is the normal ARIS Reviewer, separate from advisory Council. Native workspace: '+str(self.work)+'\nCurrent project context:\n'+json.dumps(context,ensure_ascii=False)
+            if self.job.get('hypothesis_task_id') and not context['completed_runs']:prompt+='\nFor this pre-experiment review also include disposition (continue|reject), rejection_kind (duplicate|low_novelty|infeasible when rejecting), rationale (specific evidence-based reason), evidence_urls (array of actual compared primary-source URLs). A reject decision needs explicit grounds; unknown novelty or a low score alone is insufficient. Temporary authentication, dependency or tool errors are not scientific rejection. Paper URLs are mandatory for duplicate/low_novelty rejection.'
             cfg={**self.cfg,'output_tokens':6000,'codex_model':args.get('model'),'codex_effort':args.get('config',{}).get('model_reasoning_effort','xhigh')}
             result=council.codex_call(folder,prompt,cfg,council.Budget(cfg,folder/'budget.json'),self.job['aris_repo'])
-            council.dump(self.work/'reviewer-latest.json',dict(receipt=str(folder/'usage.json'),run_ids=[r['id'] for r in context['completed_runs']],review=result))
+            council.dump(self.work/'reviewer-latest.json',dict(receipt=str(folder/'usage.json'),run_ids=[r['id'] for r in context['completed_runs']],review=result,hypothesis_task_id=self.job.get('hypothesis_task_id'),native_cycle=self.job.get('native_cycle',0),direction_revision=context['revision']))
             self.store.add_note(self.job['node_id'],'analysis','독립 Reviewer 평가',json.dumps(result,ensure_ascii=False,indent=2)[:99000])
             return dict(review=result,receipt=str(folder/'usage.json'))
         if name=='council':
@@ -425,17 +431,22 @@ class Host:
                 summary=validate_brief(raw);summary['native_cycle']=self.job.get('native_cycle',0)
                 council.dump(self.root/'research-brief.json',summary)
             required=SKILLS
+            if args.get('outcome')=='rejected':
+                from study_outcomes import REJECTION_SKILLS
+                required=REJECTION_SKILLS
             if self.job.get('research_style')=='scout':required=(*SKILLS,'research-lit') if context['completed_runs'] else ('research-pipeline','research-lit','idea-discovery')
             for skill in required:self.require_skill(skill)
             report=self.path(args['report']);text=report.read_text()
             if not text.strip():raise ValueError('최종 연구 보고가 비어 있습니다.')
-            return self.api('finish',report=str(report))
+            return self.api('finish',report=str(report),**{k:args[k] for k in ['outcome','rejection_kind','reason'] if k in args})
         raise ValueError('Unknown host tool')
 
 
 def serve(jobfile):
     host=Host(council.read_json(jobfile))
     tools=[('exploration_council','Six independent broad-discovery agents using verified literature',{}),('novelty_check','Fresh multi-source prior-art retrieval, no-cache existence checks and independent Reviewer comparison',{'hypothesis':{'type':'string'},'queries':{'type':'array','items':{'type':'string'}}}),('paper_search','Retrieve real recent or cross-domain papers with project duplicate tracking',{'query':{'type':'string'},'source':{'type':'string','enum':['arxiv','openalex']},'kind':{'type':'string','enum':['recent','cross-domain']},'domain':{'type':'string'},'limit':{'type':'integer'}}),('scout_candidates','Connect retrieved canonical paper IDs to a project interest and small experiment',{'paper_ids':{'type':'array','items':{'type':'string'}},'interest':{'type':'string'},'mechanism':{'type':'string'},'hypothesis':{'type':'string'},'experiment':{'type':'string'},'novelty_receipt':{'type':'string'},'ratings':{'type':'object'},'rating_basis':{'type':'string'}}),('scout_triage','Evaluate actual baseline/candidate and seed receipts against project thresholds',{}),('context','Shared project conversation, directions, limits and resources',{}),('target','Read-only selected target inventory or source query',{'op':{'type':'string'},'path':{'type':'string'},'start':{'type':'integer'},'lines':{'type':'integer'}}),('helper','Execute an allowed unmodified upstream bookkeeping/paper helper',{'name':{'type':'string'},'args':{'type':'array','items':{'type':'string'}}}),('codex','Original ARIS independent Reviewer; preserve Skill model/effort overrides',{'prompt':{'type':'string'},'model':{'type':'string'},'config':{'type':'object'}}),('codex-reply','Continue original project Reviewer',{'prompt':{'type':'string'},'threadId':{'type':'string'}}),('council','Additional advisory Council at ideas/results boundary',{'stage':{'type':'string','enum':['ideas','results']}}),('experiment','Review and submit immutable Python experiment to selected project resources',{'source':{'type':'string'},'title':{'type':'string'},'interpreter':{'type':'string'},'cwd':{'type':'string'},'args':{'type':'array','items':{'type':'string'}},'timeout_seconds':{'type':'integer'},'metric':{'type':'string'},'direction':{'type':'string','enum':['maximize','minimize']}}),('receipt','Poll actual run metrics/logs',{'run_id':{'type':'string'}}),('finish','Persist native final report after real Reviewer, Council and experiments',{'report':{'type':'string'},'node_ids':{'type':'array','items':{'type':'string'}}})]
+    for name,_,properties in tools:
+        if name=='finish':properties.update(outcome={'type':'string','enum':['measured','rejected']},rejection_kind={'type':'string','enum':['duplicate','low_novelty','infeasible']},reason={'type':'string'})
     def stop(*_):
         with council.PROCESS_LOCK:
             for p in council.ACTIVE_PROCESSES:
@@ -555,6 +566,10 @@ def action(server,payload):
             server.autopilot.save(session,message='자율 연구가 선택한 실험을 실행합니다.',cycles=completed_count,attempts=len(rows)+1,run_id=run['id'])
             return dict(run_id=run['id'],state=run['state'],experiment_id=experiment['id'],digest=experiment['digest'])
     if payload['action']=='finish':
+        if payload.get('outcome') not in {None,'measured','rejected'}:raise ValueError('연구 결과 유형을 확인하세요.')
+        if payload.get('outcome')=='rejected':
+            from study_outcomes import reject
+            return reject(server,job,session,rows,payload)
         if config.get('task_role')=='discovery':
             from research_tasks import stage
             report=Path(payload['report'])

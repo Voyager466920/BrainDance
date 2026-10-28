@@ -119,3 +119,12 @@ class SlackNotificationTests(unittest.TestCase):
         pending=self.service.enqueue(self.pid,'OFFLINE deleted pending Notion');self.server.store.set_project_deleted(self.pid,True)
         self.service.publications.state.side_effect=AssertionError('Deleted project must not block global notifications')
         self.service.process(self.row(pending['id']));self.assertEqual(self.row(pending['id'])['state'],'cancelled');self.assertEqual(self.sent,[])
+
+    def test_rejected_study_is_reported_once_without_claiming_measurements(self):
+        self.setup();self.completed_study('OFFLINE-rejected-study',self.fixture.project)
+        with self.server.store._connect() as c:folder=Path(c.execute('SELECT run_dir FROM research_jobs WHERE id=?',('OFFLINE-rejected-study',)).fetchone()[0])
+        path=folder/'native-completion.json';done=json.loads(path.read_text());done.update(outcome='rejected',reason='OFFLINE duplicate study rejected before execution');path.write_text(json.dumps(done))
+        self.service.tick();self.service.tick()
+        with self.service.connect() as c:rows=[dict(r) for r in c.execute('SELECT * FROM deliveries')]
+        self.assertEqual(len(rows),1);self.service.process(rows[0]);self.assertEqual(len(self.sent),1)
+        self.assertIn('가설 기각 보고',self.sent[0]['text']);self.assertIn('실험 미실행',self.sent[0]['text']);self.assertIn('OFFLINE duplicate',self.sent[0]['text']);self.assertNotIn('정상 측정',self.sent[0]['text'])

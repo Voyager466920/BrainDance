@@ -69,7 +69,9 @@ def tick(controller,item):
         job=server.research.get(task['job_id'])
         if job['state'] in {'queued','running'}:continue
         if job['state']=='completed' and job['phase']=='native-completed':
-            update(store,task['id'],state='completed',message='공식 연구의 실험·Reviewer 검토·결과 보고 완료')
+            receipt=Path(job['run_dir'])/'native-completion.json';done=json.loads(receipt.read_text()) if receipt.is_file() else {}
+            rejected=done.get('outcome')=='rejected'
+            update(store,task['id'],state='rejected' if rejected else 'completed',message='실험 전 기각 · '+done.get('reason','') if rejected else '공식 연구의 실험·Reviewer 검토·결과 보고 완료')
         else:
             error=job.get('error') or job['message'];n=task['attempts']+1
             blocked=any(word in error.lower() for word in ['로그인','인증','unauthorized','authentication'])
@@ -77,7 +79,7 @@ def tick(controller,item):
     current=[r for r in listing(store,item['id']) if r['round']==p.get('native_cycle',0)]
     if current and all(r['state']=='blocked' for r in current):
         controller.save(item,'blocked','가설 작업의 인증 문제를 확인해야 합니다. 원본 작업과 로그를 보존했습니다.');return
-    if current and all(r['state'] in {'completed','stopped','blocked'} for r in current):
+    if current and all(r['state'] in {'completed','rejected','stopped','blocked'} for r in current):
         controller.save(item,message='가설별 보고를 저장했습니다. 새로운 분야와 미해결 문제 탐색을 이어갑니다.',phase='prepare',job_id=None,native_cycle=p.get('native_cycle',0)+1,cycles_completed=p.get('cycles_completed',0)+1)
         return
     _,assignment=server.experiments._resources(controller.root(item['project_id']))

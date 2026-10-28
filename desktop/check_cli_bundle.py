@@ -43,6 +43,8 @@ def main():
             assert native.returncode==0,native.stderr
             replies=[json.loads(line) for line in native.stdout.splitlines()]
             assert {'codex','council','experiment','context','finish'}<={tool['name'] for tool in replies[1]['result']['tools']}
+            finish=next(tool for tool in replies[1]['result']['tools'] if tool['name']=='finish')
+            assert {'outcome','rejection_kind','reason'}<=set(finish['inputSchema']['properties'])
             health=json.loads(get('/api/health'))
             assert health['workspace_id']==hashlib.sha256(str(database).encode()).hexdigest()
             pid=health['pid']

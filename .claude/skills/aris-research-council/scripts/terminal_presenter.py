@@ -14,7 +14,7 @@ def deadline_text(epoch):
     return '종료 '+end+' · 남은 '+duration(max(0,epoch-time.time()))
 
 STATES={'active':'활성','expanded':'확장','held':'보류','discarded':'폐기','queued':'대기','preparing':'준비',
- 'running':'진행 중','paused':'일시정지','blocked':'확인 필요','completed':'완료','succeeded':'성공',
+ 'running':'진행 중','paused':'일시정지','blocked':'확인 필요','completed':'완료','rejected':'기각','succeeded':'성공',
  'failed':'실패','cancelled':'취소','interrupted':'중단됨','stopped':'중지','timed_out':'시간 초과'}
 LABELS={'ready':'준비 여부','blockers':'필요한 항목','summary':'요약','title':'제목','hypothesis':'가설',
  'novelty_status':'신규성 재검증','plausible_delta':'기술적 차이 후보','overlap_found':'중복 가능성 있음','unverified':'미확인','novelty-search':'선행연구 재검색·검증','novelty':'신규성','feasibility':'실현 가능성','evidence':'논문 근거','reasons':'평가 근거','verdict':'평가',
