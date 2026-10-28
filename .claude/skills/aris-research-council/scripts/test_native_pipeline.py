@@ -7,7 +7,7 @@ import unittest
 from unittest.mock import patch
 
 import council
-from native_pipeline import Host,action,install,SKILLS
+from native_pipeline import Host,action,install,SKILLS,review_directory
 import test_terminal as fixtures
 import steering
 from terminal import ClientError
@@ -69,6 +69,33 @@ class NativePipelineTests(unittest.TestCase):
         self.assertIn('passed',receipt['stdout_tail'])
         with self.assertRaisesRegex(ClientError,'횟수'):self.experiment()
         self.assertEqual(len(self.call('context')['completed_runs']),1)
+
+    def test_review_receipt_cannot_be_reused_for_changed_runtime_arguments_or_source(self):
+        from lab_worker import check_code
+        context=self.host.execute('context',{})
+        spec=dict(node_id=self.node['id'],code=check_code('def self_test():\n assert True\ndef run_experiment():\n pass\n'),title='OFFLINE receipt binding',interpreter='builtin',timeout_seconds=30)
+        folder=review_directory(self.job['run_dir'],spec,context['revision'],context['resource_signature'])
+        self.fake_review(folder,'OFFLINE fixture')
+        for change in [dict(timeout_seconds=31),dict(args=['changed']),dict(code=spec['code']+'\n# changed source')]:
+            with self.assertRaisesRegex(ValueError,'영수증'):
+                self.call('experiment',payload={**spec,**change},review_receipt=str(folder/'usage.json'),direction_revision=context['revision'])
+        self.assertEqual(self.call('context')['runs_started'],0)
+
+    def test_identical_blocked_review_reuses_exact_receipt_without_another_model_call(self):
+        (self.work/'advice-ideas.json').write_text('{}')
+        (self.work/'cached.py').write_text('def self_test():\n assert True\ndef run_experiment():\n pass\n')
+        def blocked(folder,prompt,*args):
+            folder=Path(folder);folder.mkdir(parents=True,exist_ok=True)
+            result=dict(verdict='block',reasons=['OFFLINE correctness blocker'])
+            council.dump(folder/'usage.json',dict(fixture=True));council.dump(folder/'response.txt',result)
+            council.dump(folder/'request.json',dict(params=dict(arguments=dict(prompt=prompt))))
+            return result
+        spec=dict(source='cached.py',title='OFFLINE cached review',timeout_seconds=3)
+        with patch('native_pipeline.council.codex_call',side_effect=blocked):self.assertEqual(self.host.execute('experiment',dict(spec))['state'],'review_blocked')
+        ledger=Path(self.config['session_budget']);before=ledger.read_bytes()
+        with patch('council.subprocess.Popen',side_effect=AssertionError('Identical completed review must not dispatch another provider call')):
+            self.assertEqual(self.host.execute('experiment',dict(spec))['state'],'review_blocked')
+        self.assertEqual(ledger.read_bytes(),before)
     def test_paused_session_and_direction_changes_cannot_dispatch_stale_code(self):
         self.server.autopilot.control(dict(project_id=self.node['project_id'],action='pause'))
         with self.assertRaisesRegex(ClientError,'중지'):self.host.execute('context',{})

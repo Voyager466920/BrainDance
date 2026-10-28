@@ -18,6 +18,14 @@ def paper(identity='2601.12345',days=0):
 
 
 class ScoutUnitTests(unittest.TestCase):
+    def test_auto_time_allocation_uses_remaining_project_budget_and_keeps_fixed_caps(self):
+        prefs=scout.validate({})
+        allocation=scout.runtime_budget(prefs,{},7200,2,'scout')
+        self.assertEqual(allocation['policy'],'auto');self.assertEqual(allocation['max_timeout_seconds'],3600);self.assertEqual(allocation['recommended_timeout_seconds'],900)
+        self.assertEqual(scout.runtime_budget(prefs,{},80,2,'scout')['recommended_timeout_seconds'],40)
+        self.assertEqual(scout.runtime_budget(prefs,{},0,2,'scout')['max_timeout_seconds'],0)
+        self.assertEqual(scout.runtime_budget(prefs,dict(runtime_policy='fixed',pilot_seconds=3),7200,2,'scout')['max_timeout_seconds'],3)
+
     def test_seed_direction_consistency_and_relative_gain_are_measured(self):
         prefs=scout.validate(dict(style='scout',interests=['classification']))
         def run(a,b,seed_values,direction='maximize'):
@@ -85,7 +93,7 @@ class ScoutPilotTests(unittest.TestCase):
     fake_review=native_fixtures.NativePipelineTests.fake_review
     def setUp(self):
         native_fixtures.NativePipelineTests.setUp(self)
-        self.prefs=scout.save(self.server.store,self.node['project_id'],dict(style='scout',interests=['classification'],bridge_fields=['statistics'],max_pilots=1,pilot_seconds=3))
+        self.prefs=scout.save(self.server.store,self.node['project_id'],dict(style='scout',interests=['classification'],bridge_fields=['statistics'],max_pilots=1,pilot_seconds=3,runtime_policy='fixed'))
         self.config.update(research_style='scout',scout_preferences=self.prefs)
         with self.server.store._connect() as conn:conn.execute('UPDATE research_jobs SET config=? WHERE id=?',(json.dumps(self.config),self.job['id']))
         self.host=Host(self.config)
@@ -120,9 +128,29 @@ class ScoutPilotTests(unittest.TestCase):
         from terminal import ClientError
         (self.work/'too-long.py').write_text('def self_test():\n assert True\ndef run_experiment():\n pass\n')
         with patch('native_pipeline.council.codex_call',side_effect=self.fake_review):
-            with self.assertRaisesRegex(ClientError,'시간 한도'):
+            with self.assertRaisesRegex(ValueError,'시간 한도'):
                 self.host.execute('experiment',dict(source='too-long.py',title='Too long fixture',interpreter='builtin',timeout_seconds=4,metric='accuracy',direction='maximize'))
         self.assertEqual(self.call('context')['runs_started'],0)
+
+    def test_auto_allocates_time_before_review_and_supplies_real_deadline_to_cpu_worker(self):
+        self.prefs=scout.save(self.server.store,self.node['project_id'],dict(runtime_policy='auto'))
+        self.config['scout_preferences']=self.prefs
+        with self.server.store._connect() as conn:conn.execute('UPDATE research_jobs SET config=? WHERE id=?',(json.dumps(self.config),self.job['id']))
+        code='import os,json,time\nfrom pathlib import Path\nINTERNAL_GUARD_SECONDS=120\ndef self_test():\n assert float(os.environ["BRAINDANCE_TIMEOUT_SECONDS"])>3\n assert float(os.environ["BRAINDANCE_DEADLINE_UNIX"])>time.time()\ndef run_experiment():\n Path(os.environ["BRAINDANCE_METRICS_PATH"]).write_text(json.dumps({"baseline":{"accuracy":.5},"candidate":{"accuracy":.7},"granted_seconds":int(os.environ["BRAINDANCE_TIMEOUT_SECONDS"])}))\n'
+        (self.work/'auto.py').write_text(code)
+        prompts=[]
+        def review(folder,prompt,*args):
+            prompts.append(prompt);return self.fake_review(folder,prompt,*args)
+        with patch('native_pipeline.council.codex_call',side_effect=review):
+            run=self.host.execute('experiment',dict(source='auto.py',title='OFFLINE automatic time allocation',interpreter='builtin',timeout_seconds=3,metric='accuracy',direction='maximize'))
+        actual=self.wait_run(run['run_id']);self.assertEqual(actual['state'],'succeeded')
+        self.assertEqual(actual['result']['metrics']['granted_seconds'],900)
+        self.assertIn('allocated 900 seconds',prompts[0])
+        self.assertIn('Do not block solely because an internal time guard differs',prompts[0])
+        plan=self.server.experiments.experiment(run['experiment_id'])
+        self.assertEqual(plan['spec']['timeout_seconds'],900)
+        self.assertEqual(plan['spec']['generation']['runtime_allocation']['policy'],'auto')
+        self.assertLess(actual['result']['duration_seconds'],900)
 
     def test_negative_pilot_finishes_without_heavy_council_or_promising_report(self):
         run,receipt=self.pilot(False);self.reviewer(run)

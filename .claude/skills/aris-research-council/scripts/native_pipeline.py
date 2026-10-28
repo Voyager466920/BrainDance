@@ -28,6 +28,11 @@ HELPERS={'run_state.py','iteration_log.py','arxiv_fetch.py','verify_papers.py','
 def workspace(job):return Path(job['native_workspace']).resolve()
 
 
+def review_directory(root,spec,revision,signature):
+    binding=json.dumps(dict(spec=spec,revision=revision,resource_signature=signature),sort_keys=True,ensure_ascii=False)
+    return Path(root)/'native-code-review'/hashlib.sha256(spec['code'].encode()).hexdigest()/hashlib.sha256(binding.encode()).hexdigest()[:20]
+
+
 def install(job):
     repo=Path(job['aris_repo']);work=workspace(job);work.mkdir(parents=True,exist_ok=True,mode=0o700)
     plugin=work/'.aris-official';plugin.mkdir(exist_ok=True)
@@ -309,14 +314,31 @@ class Host:
             if self.job.get('research_style')!='scout' and not (self.work/'advice-ideas.json').is_file():raise ValueError('먼저 아이디어 Council 의견을 받아야 합니다.')
             from lab_worker import check_code
             code=check_code(self.path(args.pop('source')).read_text())
-            self.event('code-review','메인 연구 Reviewer가 실행할 코드 자체를 검토합니다.')
-            folder=self.root/'native-code-review'/hashlib.sha256(code.encode()).hexdigest()
-            cfg={**self.cfg,'output_tokens':4000,'codex_model':None,'codex_effort':'xhigh'}
-            review=council.codex_call(folder,'Review exact Python code before execution for correctness, leakage, metric integrity, dependencies and matching research design. Return ONLY JSON: verdict (pass/block), reasons (array). Never execute it.\n'+json.dumps(dict(code=code,context=context),ensure_ascii=False),cfg,council.Budget(cfg,folder/'budget.json'),self.job['aris_repo'])
-            if review.get('verdict')!='pass':return dict(state='review_blocked',review=review)
+            allocation=context['execution_budget'];cap=allocation['max_timeout_seconds']
+            if cap<1:raise ValueError('프로젝트의 남은 실행 시간 예산이 없습니다.')
+            requested=args.get('timeout_seconds')
+            if requested is not None and (type(requested) is not int or requested<1):raise ValueError('실험 시간은 양의 정수로 지정하거나 자동 배분하도록 생략하세요.')
+            if allocation['policy']=='fixed':
+                if requested is not None and requested>cap:raise ValueError('고정된 실험 시간 한도를 넘었습니다. 코드를 맞추거나 사용자가 자동 배분을 선택하세요.')
+                effective=requested or cap
+            else:effective=min(cap,max(requested or 0,allocation['recommended_timeout_seconds']))
+            args['timeout_seconds']=effective
             node_id=self.job['node_id']
             if self.job.get('research_style')=='scout':node_id=council.read_json(self.work/'scout-selection.json')['node_id']
-            return self.api('experiment',payload={**args,'node_id':node_id,'code':code},review_receipt=str(folder/'usage.json'),direction_revision=context['revision'])
+            spec={**args,'node_id':node_id,'code':code}
+            allocation={**allocation,'requested_seconds':requested,'granted_seconds':effective}
+            self.event('runtime-allocation','남은 프로젝트 예산 안에서 실험 시간을 '+str(effective)+'초로 '+('자동 배분했습니다.' if allocation['policy']=='auto' else '설정했습니다.'))
+            self.event('code-review','메인 연구 Reviewer가 실행할 코드 자체를 검토합니다.')
+            folder=review_directory(self.root,spec,context['revision'],context['resource_signature']);folder.mkdir(parents=True,exist_ok=True)
+            council.dump(folder/'runtime-allocation.json',allocation)
+            frozen=folder/'review-prompt.txt'
+            prompt='Review exact Python code before execution for correctness, leakage, metric integrity, dependencies and matching research design. Return ONLY JSON: verdict (pass/block), reasons (array). Never execute it. The host has allocated '+str(effective)+' seconds and enforces this timeout by terminating the process group on the target. This is the authoritative runtime limit. In auto policy, pilot_seconds is a scheduling hint, not a hard cap. Do not block solely because an internal time guard differs or is absent; no internal wall-clock guard is required for host enforcement. Check real code/data/metric correctness normally. If code uses an internal deadline, BRAINDANCE_TIMEOUT_SECONDS and BRAINDANCE_DEADLINE_UNIX are provided at execution.\n'+json.dumps(dict(code=code,execution_spec={k:v for k,v in spec.items() if k!='code'},runtime_allocation=allocation,context=context),ensure_ascii=False)
+            if frozen.exists():prompt=frozen.read_text()
+            else:frozen.write_text(prompt)
+            cfg={**self.cfg,'output_tokens':4000,'codex_model':None,'codex_effort':'xhigh'}
+            review=council.codex_call(folder,prompt,cfg,council.Budget(cfg,folder/'budget.json'),self.job['aris_repo'])
+            if review.get('verdict')!='pass':return dict(state='review_blocked',review=review,runtime_allocation=allocation)
+            return self.api('experiment',payload=spec,review_receipt=str(folder/'usage.json'),direction_revision=context['revision'])
         if name=='receipt':return self.api('receipt',run_id=args['run_id'])
         if name=='finish':
             required=SKILLS
@@ -388,10 +410,13 @@ def action(server,payload):
         from scout import triage,settings
         return dict(evaluations=[triage(server.experiments.run_info(r['id']),settings(server.store,job['project_id'])) for r in rows if r['state'] not in {'queued','running'}])
     if payload['action']=='context':
-        from scout import settings
+        from scout import settings,runtime_budget
         from steering import prompt_context
         current=prompt_context(server.store,job['project_id'])
+        with server.store._connect() as conn:time_budget=server.experiments._budget(job['project_id'],assignment['updated_at'],assignment['time_budget_minutes']*60,conn)
+        allocation=runtime_budget(settings(server.store,job['project_id']),config.get('scout_preferences',{}),time_budget['remaining_seconds'],session['config']['max_cycles']-len(rows),config.get('research_style','focused'))
         return dict(research_style=config.get('research_style','focused'),research_preferences=settings(server.store,job['project_id']),shared_project=current,revision=current['revision'],usage=server.autopilot.state(job['project_id'])['usage'],
+                    execution_budget=allocation,resource_signature=resource_signature(profile,assignment),
                     target=dict(profile=profile['name'],kind=profile['kind'],device_ids=assignment['device_ids'],time_budget_minutes=assignment['time_budget_minutes'],context_path=config['context_path']),
                     max_runs=session['config']['max_cycles'],runs_started=len(rows),completed_runs=[receipt(r) for r in rows if r['state'] not in {'queued','running'}])
     if payload['action']=='receipt':
@@ -414,13 +439,15 @@ def action(server,payload):
                 from scout import settings
                 prefs=settings(server.store,job['project_id']);selected=server.store.get_node(spec['node_id'])
                 if selected['project_id']!=job['project_id'] or selected['metadata'].get('scout_session')!=session['id']:raise ValueError('조회 논문과 연결한 이 탐색 세션의 가설을 먼저 등록하세요.')
-                if spec['timeout_seconds']>min(prefs['pilot_seconds'],config['scout_preferences']['pilot_seconds']):raise ValueError('작은 실험의 개별 시간 한도를 넘었습니다.')
             elif spec['node_id']!=job['node_id']:raise ValueError('프로젝트 노드가 일치하지 않습니다.')
-            digest=hashlib.sha256(spec['code'].encode()).hexdigest()
-            reviewroot=Path(job['run_dir'])/'native-code-review'/digest
+            from scout import settings,runtime_budget
+            with server.store._connect() as conn:time_budget=server.experiments._budget(job['project_id'],assignment['updated_at'],assignment['time_budget_minutes']*60,conn)
+            allocation=runtime_budget(settings(server.store,job['project_id']),config.get('scout_preferences',{}),time_budget['remaining_seconds'],session['config']['max_cycles']-len(rows),config.get('research_style','focused'))
+            if type(spec.get('timeout_seconds')) is not int or not 1<=spec['timeout_seconds']<=allocation['max_timeout_seconds']:raise ValueError('실험 시간이 현재 남은 프로젝트 예산의 배분 한도를 넘었습니다. 새 context로 다시 준비하세요.')
+            reviewroot=review_directory(job['run_dir'],spec,revision,resource_signature(profile,assignment))
             if Path(payload['review_receipt'])!=reviewroot/'usage.json' or not (reviewroot/'usage.json').is_file():raise ValueError('실행할 코드에 대한 실제 Reviewer 영수증이 없습니다.')
             if council.parse_object((reviewroot/'response.txt').read_text()).get('verdict')!='pass':raise ValueError('코드 검토가 통과하지 않았습니다.')
-            generation=dict(job_id=job['id'],auto_session_id=session['id'],native_session_id=session['id'],direction_revision=revision,review_receipt=str(reviewroot/'usage.json'),automatic_analysis=False)
+            generation=dict(job_id=job['id'],auto_session_id=session['id'],native_session_id=session['id'],direction_revision=revision,review_receipt=str(reviewroot/'usage.json'),automatic_analysis=False,runtime_allocation={**allocation,'granted_seconds':spec['timeout_seconds']})
             experiment=server.experiments.create(spec,provenance=generation)
             approval=server.experiments.approve(experiment['id'],experiment['digest'],True,authority='automatic:'+session['id'])
             run=server.experiments.enqueue(experiment['id'],approval['id'])

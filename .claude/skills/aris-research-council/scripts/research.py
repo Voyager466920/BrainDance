@@ -92,7 +92,7 @@ class ResearchEngine:
             'exploration-1.json','exploration-2.json'] if (root/name).is_file()]
         for prefix in ['native-helpers','native-reviewer','native-code-review','scout-searches']:
             folder=root/prefix
-            if folder.is_dir():item['files'].extend(str(p.relative_to(root)) for p in folder.glob('*/*') if p.is_file() and not p.is_symlink() and p.suffix in {'.json','.log','.txt'})
+            if folder.is_dir():item['files'].extend(str(p.relative_to(root)) for p in folder.rglob('*') if p.is_file() and not p.is_symlink() and p.suffix in {'.json','.log','.txt'})
         reads=root/'target-reads'
         if reads.is_dir():item['files'].extend(str(p.relative_to(root)) for p in reads.iterdir() if p.is_file() and not p.is_symlink() and p.suffix in {'.json','.log'})
         # Bounded, known phase paths expose error diagnostics without arbitrary files.

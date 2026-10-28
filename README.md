@@ -113,6 +113,8 @@ braindance new "Fresh pilot" --goal "Test paper transfers" --style scout --inter
 
 Use `/interests` and `/scout` in the terminal workspace. The app/browser provides the same project interest form and research-style selector. Promising reports appear in the same project conversation with source links, measured comparisons, seed values, limitations and next steps; negative pilots stay in the journal.
 
+Experiment time is allocated automatically by default. The host divides remaining project time across remaining experiment slots, starts scout pilots with up to 15 minutes (or less when the budget is smaller), and accommodates a longer requested pilot only within that share. Unused time returns to the project. There is no separate 60-second hard stop in automatic policy. Code receives `BRAINDANCE_TIMEOUT_SECONDS` and `BRAINDANCE_DEADLINE_UNIX`; the target supervisor enforces the granted limit. Code review uses that actual allocation rather than rejecting an internal timing guard alone. Total project time, selected devices, experiment count and model limits remain enforced. Advanced users can set `interests --runtime-policy fixed --seconds 60` for a strict per-experiment limit. Existing projects use automatic allocation unless fixed policy was explicitly selected.
+
 The default screen requires 5% relative improvement, three distinct measured seeds and improvement in at least two thirds of the seeds. Aggregate metrics must agree with seed means. This is pilot triage, not a significance test or novelty claim. Maximize/minimize metrics are supported; zero baselines remain inconclusive. Source errors and missing results stay explicit. Each start is one bounded batch; no recurring schedule is automatically created.
 
 ## Results, visualization, and Notion

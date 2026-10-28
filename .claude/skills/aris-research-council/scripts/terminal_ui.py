@@ -719,11 +719,12 @@ class ResearchTerminal:
         pid=self.require_project();prefs=await self.call(self.client.request,'/api/project/research-settings?'+urllib.parse.urlencode(dict(project_id=pid)))
         interests=TextArea(text='\n'.join(prefs['interests']),height=2);bridges=TextArea(text='\n'.join(prefs['bridge_fields']),height=2)
         days=TextArea(text=str(prefs['lookback_days']),multiline=False);pilots=TextArea(text=str(prefs['max_pilots']),multiline=False);seconds=TextArea(text=str(prefs['pilot_seconds']),multiline=False);gain=TextArea(text=str(prefs['min_improvement']),multiline=False)
+        runtime=self.navigable_list(RadioList([('auto','시간 자동 배분 · 프로젝트 예산 안에서'),('fixed','고급 · 실험별 시간 고정')],default=prefs['runtime_policy'],select_on_focus=True))
         style=self.navigable_list(RadioList([('focused','집중 연구'),('scout','논문 탐색 · 작은 실험')],default=prefs['style'],select_on_focus=True))
         async def save():
-            changes=dict(interests=[v.strip() for v in interests.text.replace('\n',',').split(',') if v.strip()],bridge_fields=[v.strip() for v in bridges.text.replace('\n',',').split(',') if v.strip()],style=style.current_value,lookback_days=int(days.text),max_pilots=int(pilots.text),pilot_seconds=int(seconds.text),min_improvement=float(gain.text))
+            changes=dict(interests=[v.strip() for v in interests.text.replace('\n',',').split(',') if v.strip()],bridge_fields=[v.strip() for v in bridges.text.replace('\n',',').split(',') if v.strip()],style=style.current_value,lookback_days=int(days.text),max_pilots=int(pilots.text),pilot_seconds=int(seconds.text),runtime_policy=runtime.current_value,min_improvement=float(gain.text))
             await self.call(self.client.request,'/api/project/research-settings',dict(project_id=pid,settings=changes));self.close_dialog();self.notice='프로젝트 관심 분야를 저장했습니다.'
-        self.dialog('프로젝트 관심 분야',HSplit([Label('관심 분야 · 쉼표/줄바꿈'),interests,Label('연결할 다른 분야 · 비우면 자동 선택'),bridges,Box(style,height=2,padding=0),VSplit([Label('최근 며칠'),days,Label('작은 실험 횟수'),pilots],height=1),VSplit([Label('실험당 최대 초'),seconds,Label('상대 개선 기준 · 0.05=5%'),gain],height=1)]),[('저장',lambda:self.spawn(save())),('취소',self.close_dialog)],interests)
+        self.dialog('프로젝트 관심 분야',HSplit([Label('관심 분야 · 쉼표/줄바꿈'),interests,Label('연결할 다른 분야 · 비우면 자동 선택'),bridges,Box(style,height=2,padding=0),VSplit([Label('최근 며칠'),days,Label('작은 실험 횟수'),pilots],height=1),Box(runtime,height=2,padding=0),ConditionalContainer(VSplit([Label('실험당 최대 초'),seconds],height=1),Condition(lambda:runtime.current_value=='fixed')),VSplit([Label('상대 개선 기준 · 0.05=5%'),gain],height=1)]),[('저장',lambda:self.spawn(save())),('취소',self.close_dialog)],interests)
 
     def resource_dialog(self,on_apply=None,title='서버와 GPU',on_start=None):
         if not self.project and on_apply is None:raise ClientError('프로젝트를 먼저 선택하세요.')

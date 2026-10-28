@@ -86,6 +86,8 @@ def run(spec):
     else:command=[os.path.expanduser(interpreter)]
     command += [str(script),*spec.get('args',[])]
     env=child_environment(spec['device_ids'],root)
+    env['BRAINDANCE_TIMEOUT_SECONDS']=str(timeout)
+    env['BRAINDANCE_DEADLINE_UNIX']=str(time.time()+timeout)
     if spec.get('cwd'):env['PYTHONPATH']=str(cwd)
     started=time.monotonic();process=None;threads=[]
     def pump(stream,name):

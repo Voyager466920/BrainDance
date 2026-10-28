@@ -9,18 +9,19 @@ import subprocess
 
 from tree_store import now
 
-DEFAULTS=dict(style='focused',interests=[],bridge_fields=[],lookback_days=30,max_papers=12,max_pilots=2,pilot_seconds=60,min_improvement=.05,min_seeds=3)
+DEFAULTS=dict(style='focused',interests=[],bridge_fields=[],lookback_days=30,max_papers=12,max_pilots=2,pilot_seconds=60,runtime_policy='auto',min_improvement=.05,min_seeds=3)
 
 
 def validate(value):
     if not isinstance(value,dict) or set(value)-set(DEFAULTS):raise ValueError('지원하지 않는 프로젝트 연구 설정입니다.')
     result={**DEFAULTS,**value}
     if result['style'] not in {'focused','scout'}:raise ValueError('focused 또는 scout 모드를 선택하세요.')
+    if result['runtime_policy'] not in {'auto','fixed'}:raise ValueError('실험 시간 배분은 auto 또는 fixed여야 합니다.')
     for key in ['interests','bridge_fields']:
         rows=result[key]
         if not isinstance(rows,list) or len(rows)>12 or any(not isinstance(v,str) or not v.strip() or len(v)>200 for v in rows):raise ValueError('관심 분야·연결 분야는 각각 최대 12개, 항목당 200자입니다.')
         result[key]=list(dict.fromkeys(v.strip() for v in rows))
-    for key,low,high in [('lookback_days',1,365),('max_papers',1,40),('max_pilots',1,10),('pilot_seconds',1,600),('min_seeds',2,20)]:
+    for key,low,high in [('lookback_days',1,365),('max_papers',1,40),('max_pilots',1,10),('pilot_seconds',1,86400),('min_seeds',2,20)]:
         if type(result[key]) is not int or not low<=result[key]<=high:raise ValueError('탐색 설정 범위를 확인하세요: '+key)
     threshold=result['min_improvement']
     if isinstance(threshold,bool) or not isinstance(threshold,(int,float)) or not math.isfinite(threshold) or not 0<threshold<=10:raise ValueError('개선 기준은 0보다 크고 10 이하인 비율입니다. 0.05는 5%입니다.')
@@ -36,6 +37,18 @@ def root(store,project_id):
 
 
 def settings(store,project_id):return validate(root(store,project_id)['metadata'].get('research_preferences',{}))
+
+
+def runtime_budget(prefs,snapshot,remaining_seconds,remaining_runs,style):
+    """Allocate existing project time; model requests cannot expand it."""
+    remaining=max(0,int(remaining_seconds));slots=max(1,remaining_runs)
+    fixed=[p['pilot_seconds'] for p in (prefs,snapshot) if p.get('runtime_policy')=='fixed']
+    if fixed:
+        cap=min(remaining,86400,*fixed);policy='fixed';recommended=cap
+    else:
+        cap=min(86400,remaining//slots);policy='auto'
+        recommended=min(cap,max(prefs['pilot_seconds'],900 if style=='scout' else 1800))
+    return dict(policy=policy,remaining_project_seconds=remaining,remaining_experiments=slots,max_timeout_seconds=cap,recommended_timeout_seconds=recommended,supervisor_enforced=True)
 
 
 def save(store,project_id,value):
@@ -154,7 +167,7 @@ def triage(run,prefs):
 
 CONTRACT='''SCOUTING MODE (the focused full-Council requirement is adapted below): Keep ARIS as the main executor and its original Reviewer. Load the official research-lit Skill as well as the core pipeline/nested Skills. Use mcp__codex__paper_search for actual recent and cross-domain paper retrieval; it calls upstream source tools and retains dates, raw abstracts, IDs and project-scoped duplicate receipts. Use context.research_preferences for the user's interests, bridge_fields, recency window and pilot limits. When bridge_fields is empty, autonomously choose a plausible adjacent field and record its name in paper_search.domain plus the transfer rationale; do not stop to ask the user to choose one. An older cross-domain paper is allowed when explicitly labelled cross-domain; do not call it a new paper.
 First cheaply screen the retrieved candidates yourself, rank connections to the user's interests, and write SCOUT_IDEAS.md with source IDs, transferable mechanism, closest work, feasibility, a falsifiable question, controls and a small pilot. Use new candidates rather than re-testing previously seen papers. A cached search may finish an interrupted pilot, but do not repeat completed old pilots. Do not bypass paper_search by inventing an index. Before submitting an experiment call scout_candidates to register the retrieved canonical paper IDs and interest/mechanism/experiment connection.
-Do NOT run a full ideas Council for every paper. Its advice is optional before scouting pilots; preserve the original ARIS independent/code Reviewer. Implement and debug small Python pilots through the existing experiment tool only, within the project's selected GPU/local resources, per-pilot seconds and total run/runtime/model limits. Do not silently launch a full training study. Generate measured baseline/candidate aggregate arithmetic means AND metrics.seeds=[{seed:integer,baseline:{<metric>:value},candidate:{<metric>:value}}] for at least min_seeds distinct seeds; preserve train/test separation and controls.
+Do NOT run a full ideas Council for every paper. Its advice is optional before scouting pilots; preserve the original ARIS independent/code Reviewer. Implement and debug small Python pilots through the existing experiment tool only, within the project's selected GPU/local resources and total run/runtime/model limits. context.execution_budget is authoritative: runtime_policy=auto allocates time automatically from remaining project time and experiment slots; pilot_seconds is only a hint in auto mode, NOT a 60-second hard limit. You need not ask the human to adjust per-pilot seconds. Read BRAINDANCE_TIMEOUT_SECONDS/BRAINDANCE_DEADLINE_UNIX if code needs an internal deadline. The supervisor enforces the granted timeout even if internal timing guards differ or are absent. Only explicit fixed policy imposes a per-pilot hard cap. Do not silently launch a full training study. Generate measured baseline/candidate aggregate arithmetic means AND metrics.seeds=[{seed:integer,baseline:{<metric>:value},candidate:{<metric>:value}}] for at least min_seeds distinct seeds; preserve train/test separation and controls.
 Call scout_triage on actual completed receipts. The host decides whether the configured relative gain and seed consistency warrant further review; a small positive pilot is not proof of significance or novelty. If a pilot passes that screen, obtain results Council advice (plus the original ARIS Reviewer); report the connection, source links, actual design, data/model/target, baseline/candidate/seed values, gain, limitations and a concrete next step in NARRATIVE_REPORT.md. The host publishes promising results into the SAME project conversation. Negative/failed pilots remain in the journal and a concise search summary without flooding the main stream with a detailed success report. Finish the bounded scout session even when no candidate is promising; do not block merely for a negative scientific result. All absent/failed data stay explicit. Automatic repeated scheduling is not requested: one start performs one bounded search-and-pilot batch; the user can start another batch later.
 '''
 
