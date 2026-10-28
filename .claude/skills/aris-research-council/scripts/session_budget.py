@@ -14,6 +14,7 @@ MAX_MODEL_CALLS=300
 
 
 class DeadlineExpired(RuntimeError):pass
+class QuotaStopped(RuntimeError):pass
 
 
 def deadline_for(config):
@@ -25,6 +26,7 @@ def time_only(config):return deadline_for(config) is not None
 
 
 def check(data):
+    if data.get('quota_stop'):raise QuotaStopped(data['quota_stop']['reason'])
     if data.get('policy')=='until_deadline':
         if time.time()>=data['deadline_epoch']:raise DeadlineExpired('설정한 연구 종료 시각에 도달했습니다.')
     elif data['calls']>=data['max_calls'] or sum(data['charges'].values())>=data['token_budget']:raise RuntimeError('자동모드 모델 호출 또는 토큰 한도를 소진했습니다.')
@@ -44,6 +46,8 @@ def update(path,operation,**values):
             before={k:data.get(k) for k in ['policy','max_calls','token_budget','deadline_epoch']}
             data.update(policy='until_deadline',max_calls=None,token_budget=None,deadline_epoch=end,started_epoch=data.get('started_epoch',values.get('started_epoch',time.time())))
             data.setdefault('limit_changes',[]).append(dict(at=datetime.now(timezone.utc).isoformat(),before=before,after=dict(policy='until_deadline',deadline_epoch=end),calls_used=data['calls']))
+        elif operation=='quota_stop':
+            data['quota_stop']=values
         elif operation=='limits':
             if data.get('policy')=='until_deadline':raise ValueError('시간 제한 모드입니다. 호출·토큰 제한 대신 종료 시각을 변경하세요.')
             calls=values['max_calls'];tokens=values['token_budget']

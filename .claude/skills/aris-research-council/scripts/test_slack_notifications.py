@@ -37,6 +37,19 @@ class SlackNotificationTests(unittest.TestCase):
         (folder/'research-brief.json').write_text(json.dumps(dict(problem='OFFLINE fixture',approach='No real model or experiment',findings='OFFLINE result')))
         finished_at=finished_at or now();node=self.client.root(project)
         with self.server.store._connect() as c:c.execute('INSERT INTO research_jobs VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)',(identity,project['id'],node['id'],'OFFLINE study','completed','native-completed','OFFLINE fixture','lite',json.dumps(dict(task_role=role)),str(folder),finished_at,finished_at,finished_at,None))
+    def test_quota_stop_reports_once_with_outcome_first_and_remaining_allowance(self):
+        from test_quota_guard import status
+        self.setup();controller=self.server.autopilot
+        controller.quota_status=lambda force=False:status()
+        item=controller.control(dict(project_id=self.pid,action='start',execution_policy='until_deadline',duration_seconds=3600,quota_drop_percent=20))['session']
+        controller.quota_status=lambda force=False:status(30,70);self.service.quota_snapshot=lambda:status(30,70)
+        controller.tick(item);self.service.tick();self.service.tick()
+        with self.service.connect() as c:rows=c.execute("SELECT id FROM deliveries WHERE event_key LIKE 'session:%'").fetchall()
+        self.assertEqual(len(rows),1);self.service.process(self.row(rows[0]['id']))
+        text=self.sent[0]['text'];self.assertTrue(text.startswith('*결과: 탐색중*'))
+        self.assertIn('GPT: 5시간 잔여 30%',text);self.assertIn('시작 50% → 중지 30%',text)
+        self.assertLess(text.index('*상세 결과*'),text.index('*남은 사용량*'))
+
     def test_personal_dm_setup_keeps_secret_local_and_does_not_send_a_message(self):
         state=self.setup();self.assertTrue(state['connected']);self.assertTrue(state['enabled']);self.assertEqual(self.sent,[])
         self.assertNotIn(TOKEN,json.dumps(state));self.assertEqual(os.stat(self.service.secret).st_mode&0o777,0o600)

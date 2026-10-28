@@ -97,6 +97,19 @@ class PublicationTests(unittest.TestCase):
         self.service=self.server.publications;self.remote=RemoteFixture()
         request=patch.object(NotionAPI,'request',autospec=True,side_effect=self.remote.request);request.start();self.addCleanup(request.stop)
 
+    def test_stopped_session_publishes_results_first_without_waiting_for_an_experiment(self):
+        from test_quota_guard import status
+        self.configure(automatic=True,layout='database');controller=self.server.autopilot
+        controller.quota_status=lambda force=False:status()
+        item=controller.control(dict(project_id=self.project['id'],action='start',execution_policy='until_deadline',duration_seconds=3600,quota_drop_percent=20))['session']
+        controller.quota_status=lambda force=False:status(30,70);self.service.quota_snapshot=lambda:status(30,70)
+        controller.tick(item);self.service.tick()
+        state=self.service.state(self.project['id']);self.assertTrue(state['jobs'])
+        state=self.run_job(state['jobs'][0]);record=state['report']
+        self.assertEqual([section[0] for section in record['sections']][:3],['결과','상세 결과','남은 사용량'])
+        self.assertIn('탐색중',record['sections'][0][1]);self.assertIn('5시간 잔여 30%',record['sections'][2][1])
+        before=len(state['jobs']);self.service.tick();self.assertEqual(len(self.service.state(self.project['id'])['jobs']),before)
+
     def configure(self,automatic=False,layout='pages'):
         return self.client.request('/api/notion/configure',dict(project_id=self.project['id'],parent=PARENT,token=TOKEN,auto_sync=automatic,layout=layout))
 

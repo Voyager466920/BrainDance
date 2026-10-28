@@ -326,6 +326,23 @@ class TerminalUITests(unittest.TestCase):
             self.assertEqual(ui.tab,1)
         self.scenario(exercise)
 
+    def test_start_checkbox_captures_percentage_point_quota_policy(self):
+        from test_quota_guard import status
+        async def exercise(ui,pipe):
+            self.server.autopilot.quota_status=lambda force=False:status()
+            with patch.object(self.server.provider_status,'get',return_value=status()):
+                ui.start_dialog();self.editable_fields(ui)[1].text='1'
+                windows=ui.app.layout.get_focusable_windows()
+                # Navigate to the one-entry quota checkbox through the real keyboard focus order.
+                from prompt_toolkit.formatted_text import to_formatted_text,fragment_list_to_text
+                checkbox=next(w for w in windows if getattr(w.content,'__class__',None).__name__=='FormattedTextControl' and '20%p' in fragment_list_to_text(to_formatted_text(w.content.text)))
+                ui.app.layout.focus(checkbox);pipe.send_text(' ');await asyncio.sleep(.03)
+                ui.modal_buttons[-1][0].handler();await self.wait_until(lambda:not ui.modals)
+            actual=self.server.autopilot.state(ui.project['id'])['session']
+            guard=actual['config']['quota_guard'];self.assertEqual(guard['basis'],'percentage_points_from_start');self.assertEqual(guard['drop_percent'],20)
+            self.assertEqual(guard['baseline']['providers'][0]['windows'][0]['remaining_percent'],50)
+        self.scenario(exercise)
+
     def test_optional_experiment_cap_is_in_a_separate_advanced_dialog(self):
         async def exercise(ui,pipe):
             ui.start_dialog();fields=self.editable_fields(ui);self.assertEqual(len(fields),2);fields[1].text='2'

@@ -15,7 +15,7 @@ import urllib.request
 import uuid
 from zoneinfo import ZoneInfo
 
-from research_reports import build_report,project_data,safe_folder,signature
+from research_reports import build_report,project_data,safe_folder,signature,quiescent
 from tree_store import now
 
 VERSION='2026-03-11'
@@ -347,7 +347,13 @@ class PublicationService:
         return dict(connected=bool(self.token()) and bool(link and link['checked_at']),scope='all_projects',link=dict(link) if link else None,jobs=jobs,report=record)
 
     def enqueue(self,project_id,publish=False,retry=True):
-        data=project_data(self.store,project_id);digest=signature(data);kind='notion' if publish else 'local'
+        data=project_data(self.store,project_id)
+        source=getattr(self,'quota_snapshot',None)
+        if source:
+            from quota_guard import snapshot
+            value=snapshot(source())
+            if value['providers']:data['account_usage']=value
+        digest=signature(data);kind='notion' if publish else 'local'
         self.inherit_connections()
         with self.lock,self.connect() as conn:
             link=conn.execute('SELECT * FROM links WHERE project_id=?',(project_id,)).fetchone()
@@ -388,7 +394,7 @@ class PublicationService:
             items=[]
             for title,body in record['sections']:
                 items.extend(blocks_for(dict(sections=[(title,body)])))
-                if title=='결과':items.extend((c['file'],c['title']+' · '+c['file']) for c in record['charts'])
+                if title=='상세 결과':items.extend((c['file'],c['title']+' · '+c['file']) for c in record['charts'])
             items.append(('report.md','연구 보고서 · Markdown'))
             expected=[block_signature(item) if isinstance(item,dict) else ('image' if item[0].endswith('.png') else 'file',item[1]) for item in items]
             existing=api.children(section)
@@ -419,20 +425,29 @@ class PublicationService:
             if root:conn.execute('INSERT OR IGNORE INTO notes VALUES(?,?,?,?,?,?)',('publication:'+job['id'],root['id'],'publication','Notion 결과 정리 완료' if job['kind'] in {'notion','notion-database'} else '결과 보고서·시각화 생성 완료',url if job['kind'] in {'notion','notion-database'} else f"시각화 {len(record['charts'])}개 · 결과 탭에서 확인할 수 있습니다.",now()))
 
     def tick(self):
+        # A quota stop always gets a local report, even without external integrations.
+        # Wait for cancellation receipts so the snapshot includes partial run results.
+        with self.store._connect() as c:
+            sessions=c.execute("SELECT project_id FROM automatic_sessions WHERE status='stopped' AND json_extract(progress,'$.quota_stop') IS NOT NULL").fetchall()
+        for row in sessions:
+            try:
+                if quiescent(self.store,row['project_id']):self.enqueue(row['project_id'])
+            except (ValueError,KeyError):pass
         self.inherit_connections()
         with self.connect() as conn:links=[dict(r) for r in conn.execute('SELECT * FROM links WHERE auto_sync=1')]
         if not self.token():return
         for link in links:
             try:
                 data=project_data(self.store,link['project_id'])
+                if data.get('execution_state',{}).get('status') in {'stopped','completed'} and not quiescent(self.store,link['project_id']):continue
                 from research_reports import TERMINAL
                 ended=[r for r in data.get('runs',[]) if r['state'] in TERMINAL]
-                if not ended and not data.get('brief'):continue
+                if not ended and not data.get('brief') and data.get('execution_state',{}).get('status') not in {'stopped','completed'}:continue
                 with self.connect() as conn:previous=conn.execute("SELECT snapshot FROM jobs WHERE project_id=? AND kind IN ('notion','notion-database') ORDER BY rowid DESC LIMIT 1",(link['project_id'],)).fetchone()
                 if previous:
                     prior=json.loads(previous['snapshot'])
                     # Internal reviews and brainstorming remain in the journal; publish scientific milestones.
-                    if prior.get('schema_version')==2 and [r for r in prior.get('runs',[]) if r['state'] in TERMINAL]==ended and prior.get('brief')==data.get('brief'):continue
+                    if prior.get('schema_version',0)>=2 and [r for r in prior.get('runs',[]) if r['state'] in TERMINAL]==ended and prior.get('brief')==data.get('brief') and prior.get('execution_state')==data.get('execution_state'):continue
                 self.enqueue(link['project_id'],publish=True,retry=False)
             except (ValueError,KeyError):pass
 

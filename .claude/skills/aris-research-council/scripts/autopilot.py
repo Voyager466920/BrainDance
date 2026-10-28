@@ -17,11 +17,11 @@ import steering
 
 
 class Autopilot:
-    def __init__(self,store,research,experiments,autostart=True):
+    def __init__(self,store,research,experiments,autostart=True,quota_status=None):
         self.store,self.research,self.experiments=store,research,experiments
         self.lock=threading.RLock();self.closed=threading.Event()
         self.default_pipeline='aris-native'
-        self.sleep_guard=None
+        self.sleep_guard=None;self.quota_status=quota_status;self.quota_next={}
         steering.initialize(store)
         with store._connect() as conn:
             conn.execute('''CREATE TABLE IF NOT EXISTS conversation_actions (
@@ -83,7 +83,7 @@ class Autopilot:
                 (item['status'],item['message'],json.dumps(item['progress']),now(),item['id']))
 
     def control(self,payload):
-        if set(payload)-{'project_id','action','max_cycles','max_model_calls','token_budget','context_path','mode','session_id','reuse_research','research_style','execution_policy','duration_seconds','deadline_epoch','experiment_timeout_seconds','orchestration','cost_profile'}:raise ValueError('지원하지 않는 자동모드 설정입니다.')
+        if set(payload)-{'project_id','action','max_cycles','max_model_calls','token_budget','context_path','mode','session_id','reuse_research','research_style','execution_policy','duration_seconds','deadline_epoch','experiment_timeout_seconds','orchestration','cost_profile','quota_drop_percent'}:raise ValueError('지원하지 않는 자동모드 설정입니다.')
         project_id=payload['project_id'];action=payload['action'];root=self.root(project_id);self.store.get_node(root['id'])
         if 'experiment_timeout_seconds' in payload:
             value=payload['experiment_timeout_seconds']
@@ -160,6 +160,11 @@ class Autopilot:
                         if candidate['config'].get('task')=='research' and status.is_file() and evidence.is_file() and receipt.is_file() and json.loads(status.read_text()).get('status')=='completed' and json.loads(receipt.read_text()).get('skill_invoked'):
                             previous=candidate;break
                     if not previous or not self.has_hypotheses(project_id):raise ValueError('재사용할 완료된 Council·검증된 논문 근거와 활성 가설이 없습니다.')
+                quota=None
+                if payload.get('quota_drop_percent') is not None:
+                    from quota_guard import capture
+                    if self.quota_status is None:raise ValueError('계정 사용량 연결을 확인하세요.')
+                    quota=capture(self.quota_status(force=True),payload['quota_drop_percent'])
                 profile,assignment=self.experiments._resources(root)
                 sid=str(uuid.uuid4());path=self.research.root/('automatic-'+sid);path.mkdir(mode=0o700)
                 from project_session import identity
@@ -171,6 +176,7 @@ class Autopilot:
                 item['config']['execution_policy']=policy
                 item['config']['orchestration']=payload.get('orchestration','single')
                 item['config']['cost_profile']=payload.get('cost_profile','standard')
+                if quota:item['config']['quota_guard']=quota
                 item['config']['experiment_timeout_seconds']=payload.get('experiment_timeout_seconds')
                 if policy=='until_deadline':
                     clock=self.deadline_spec(payload,assignment['time_budget_minutes']*60);item['config'].update(clock,pipeline='aris-native')
@@ -328,6 +334,10 @@ class Autopilot:
         if sid:
             item=self.get(sid)
             if item['status']!='running':raise ValueError('자동모드가 실행 중이 아닙니다.')
+            # Experiment admission can run inside a SQLite write transaction.
+            # The controller monitors quotas and owns cancellation; this path only reads the stop flag.
+            from session_budget import update
+            update(item['config']['session_budget'],'check')
             if item['config']['resource_signature']!=spec['resource_signature']:raise ValueError('자동모드의 실행 환경이 바뀌었습니다.')
 
     def has_hypotheses(self,project_id):
@@ -343,9 +353,30 @@ class Autopilot:
             mode=item['config']['mode'],context_path=item['config']['context_path'],reuse_literature=task!='research'),
             internal=dict(cost_profile=item['config'].get('cost_profile','standard'),auto_session_id=item['id'],session_budget=item['config']['session_budget'],remaining_experiment_seconds=int(budget['remaining_seconds'])))
 
+    def check_quota(self,item,force=False):
+        guard=item['config'].get('quota_guard')
+        if not guard:return True
+        if not force and self.quota_next.get(item['id'],0)>time.monotonic():return True
+        from quota_guard import snapshot,evaluate,describe
+        try:current=snapshot(self.quota_status()) if self.quota_status else dict(providers=[])
+        except Exception:current=dict(providers=[])
+        self.quota_next[item['id']]=time.monotonic()+60
+        decision=evaluate(guard,current)
+        item['progress']['account_usage']=current
+        if decision['stop']:
+            from session_budget import update
+            update(item['config']['session_budget'],'quota_stop',**decision)
+            self.save(item,'stopped',decision['reason'],phase='quota-stop',quota_stop=decision)
+            self.cancel_project(item['project_id'])
+            self.store.add_note(item['node_id'],'analysis','사용량 보호 중지 · 결과 정리',decision['reason']+'\n\n'+describe(current,guard))
+            return False
+        with self.store._connect() as conn:conn.execute("UPDATE automatic_sessions SET progress=json_set(progress,'$.account_usage',json(?)) WHERE id=?",(json.dumps(current),item['id']))
+        return True
+
     def tick(self,item):
         if item['status']!='running':return
         if item['config'].get('execution_policy')=='until_deadline' and time.time()>=item['config']['deadline_epoch']:self.expire(item);return
+        if not self.check_quota(item):return
         node=self.store.get_node(item['node_id'])
         if node['status'] not in {'active','expanded'}:raise ValueError('프로젝트가 보류 또는 폐기되었습니다.')
         profile,assignment=self.experiments._resources(node)

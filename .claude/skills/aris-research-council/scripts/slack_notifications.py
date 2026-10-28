@@ -13,7 +13,7 @@ import urllib.error
 import urllib.request
 import uuid
 
-from research_reports import project_data,clean,signature
+from research_reports import project_data,clean,signature,result_status,quiescent
 from tree_store import now
 
 
@@ -56,15 +56,17 @@ def escape(value,limit=500):
 
 def message_for(data,report_url=None):
     brief=data.get('brief') or {};runs=data['runs'];valid=[r for r in runs if r['state']=='succeeded' and r.get('analysis',{}).get('status') in {'measured','compared'}]
-    lines=['*BrainDance 연구 결과*',escape(data['title'],180),'', '*문제*',escape(brief.get('problem') or data.get('goal') or data['title'],600), '*방법*',escape(brief.get('approach') or '자세한 구현과 비교 설정은 연구 보고서에 기록했습니다.',700),'*결과*',escape(brief.get('findings') or ('정상 측정 '+str(len(valid))+'회 · 전체 시도 '+str(len(runs))+'회'),850)]
+    lines=['*결과: '+result_status(data)+'*',escape(data['title'],180),'','*상세 결과*',escape(brief.get('findings') or ('정상 측정 '+str(len(valid))+'회 · 전체 시도 '+str(len(runs))+'회'),850), '*문제*',escape(brief.get('problem') or data.get('goal') or data['title'],600), '*방법*',escape(brief.get('approach') or '자세한 구현과 비교 설정은 연구 보고서에 기록했습니다.',700)]
     if data.get('study_outcome')=='rejected':
-        lines[0]='*BrainDance 가설 기각 보고*'
-        lines[lines.index('*결과*')+1]=escape(data.get('rejection_reason') or brief.get('findings') or '독립 검토에 따라 실험 전에 기각했습니다.',850)+'\n실험 미실행 · 측정 결과 없음'
+        lines[0]='*결과: 실패* · 가설 기각 보고'
+        lines[lines.index('*상세 결과*')+1]=escape(data.get('rejection_reason') or brief.get('findings') or '독립 검토에 따라 실험 전에 기각했습니다.',850)+'\n실험 미실행 · 측정 결과 없음'
     for run in valid[-3:]:
         a=run['analysis'];values=(str(a.get('baseline'))+' → '+str(a.get('candidate'))) if a['status']=='compared' else str(a.get('value'))
         lines.append('• '+escape(run['title'],110)+' · '+escape(run['metric'],50)+' '+escape(values,90))
     limits=brief.get('limitations') or ['소규모 실험의 관측 결과이며 신규성·통계적 유의성을 확정하지 않습니다.']
-    lines.extend(['*한계*',escape(' / '.join(limits[:2]),550)])
+    from quota_guard import describe
+    lines.extend(['*한계*',escape(' / '.join(limits[:2]),550),'*남은 사용량*',escape(describe(data.get('account_usage'),data.get('quota_guard')),1400)])
+    if data.get('execution_state',{}).get('stop_reason'):lines.extend(['*중지 사유*',escape(data['execution_state']['stop_reason'],600)])
     if report_url and report_url.startswith('https://www.notion.so/'):
         lines.extend(['', '<'+report_url+'|상세 보고서·코드 위치·그래프 보기>'])
     else:lines.extend(['','자세한 내용은 BrainDance 결과 탭의 보고서에서 확인할 수 있습니다.'])
@@ -82,6 +84,8 @@ class SlackNotifications:
             legacy_enabled=c.execute('SELECT count(*) FROM subscriptions WHERE enabled=1').fetchone()[0]>0
             c.execute('INSERT OR IGNORE INTO notification_settings VALUES(1,?,?)',(int(self.secret.is_file() and legacy_enabled),now()))
             c.execute('''CREATE TABLE IF NOT EXISTS deliveries(id TEXT PRIMARY KEY,project_id TEXT NOT NULL,event_key TEXT NOT NULL UNIQUE,state TEXT NOT NULL,payload TEXT NOT NULL,target TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,retry_at REAL NOT NULL,ts TEXT,error TEXT)''')
+            c.execute('CREATE TABLE IF NOT EXISTS session_notifications(id INTEGER PRIMARY KEY CHECK(id=1),since TEXT NOT NULL)')
+            c.execute('INSERT OR IGNORE INTO session_notifications VALUES(1,?)',(now(),))
             c.execute("UPDATE deliveries SET state='uncertain',error='이전 전송의 완료 여부를 확인하지 못했습니다. 중복 DM을 방지해 자동 재전송하지 않습니다.' WHERE state='sending'")
         self.thread=threading.Thread(target=self.loop,daemon=True,name='braindance-slack')
         if autostart:self.thread.start()
@@ -142,6 +146,10 @@ class SlackNotifications:
                 if brief.is_file() and not brief.is_symlink():
                     from research_reports import validate_brief
                     data['brief']=validate_brief(json.loads(brief.read_text()))
+        if data and getattr(self,'quota_snapshot',None):
+            from quota_guard import snapshot
+            value=snapshot(self.quota_snapshot())
+            if value['providers']:data['account_usage']=value
         if not creds:raise ValueError('먼저 /slack에서 개인 DM 연결을 등록하세요.')
         url=None;wait_for_report=False
         if self.publications and not test:
@@ -166,6 +174,14 @@ class SlackNotifications:
                 if json.loads(job['config']).get('task_role')=='discovery':continue
                 self.enqueue(job['project_id'],'study:'+job['id'],job=job)
             except (ValueError,KeyError,OSError):continue
+        with self.connect() as c:since=c.execute('SELECT since FROM session_notifications WHERE id=1').fetchone()[0]
+        with self.store._connect() as c:
+            sessions=[dict(r) for r in c.execute("SELECT id,project_id,status,updated_at FROM automatic_sessions WHERE status IN ('stopped','completed') AND updated_at>=? ORDER BY updated_at",(max(since,settings['since']),))]
+        for session in sessions:
+            try:
+                if quiescent(self.store,session['project_id']):self.enqueue(session['project_id'],'session:'+session['id']+':'+session['status'])
+            except (ValueError,KeyError,OSError):continue
+
     def process(self,row):
         with self.lock:
             creds=self.credentials()

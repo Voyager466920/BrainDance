@@ -49,7 +49,7 @@ def project_data(store,project_id):
     if project is None:raise ValueError('활성 프로젝트를 선택하세요.')
     nodes=[n for n in tree['nodes'] if n['project_id']==project_id];ids={n['id'] for n in nodes}
     plans={p['id']:p for p in tree['experiments'] if p['node_id'] in ids}
-    result=dict(schema_version=2,project_id=project_id,title=project['title'],nodes=[],notes=[],evaluations=[],runs=[])
+    result=dict(schema_version=3,project_id=project_id,title=project['title'],nodes=[],notes=[],evaluations=[],runs=[])
     for n in nodes:
         m=n['metadata'];display=m.get('korean_display',{})
         selected={k:display.get(k,m.get(k)) for k in ['idea','novelty','feasibility','experiment','expected_experiment','research_ratings'] if display.get(k,m.get(k)) is not None}
@@ -66,10 +66,39 @@ def project_data(store,project_id):
         if run['project_id']!=project_id or run['state'] not in TERMINAL:continue
         plan=plans.get(run['experiment_id'],{}).get('spec',{})
         result['runs'].append(dict(id=run['id'],title=plan.get('title','실험'),state=run['state'],finished_at=run['finished_at'],duration_seconds=run['duration_seconds'],metric=plan.get('metric',''),direction=plan.get('direction','maximize'),metrics=run['result'].get('metrics'),analysis=run['result'].get('analysis',{}),code_reference=dict(file='experiment-runs/'+run['id']+'/experiment.py',sha256=hashlib.sha256(plan.get('code','').encode()).hexdigest(),entrypoints=entrypoints(plan.get('code',''))) if plan.get('code') else None))
+    with store._connect() as conn:
+        exists=conn.execute("SELECT 1 FROM sqlite_master WHERE name='automatic_sessions'").fetchone()
+        session=conn.execute('SELECT id,status,config,progress FROM automatic_sessions WHERE project_id=? ORDER BY rowid DESC LIMIT 1',(project_id,)).fetchone() if exists else None
+    if session:
+        cfg=json.loads(session['config']);progress=json.loads(session['progress'])
+        result['execution_state']=dict(id=session['id'],status=session['status'],stop_reason=(progress.get('quota_stop') or {}).get('reason'))
+        result['quota_guard']=cfg.get('quota_guard')
+        result['account_usage']=progress.get('account_usage') or (cfg.get('quota_guard') or {}).get('baseline')
     return clean(result)
 
 
-def signature(data):return hashlib.sha256(json.dumps(data,ensure_ascii=False,sort_keys=True,allow_nan=False).encode()).hexdigest()
+def quiescent(store,project_id):
+    with store._connect() as conn:
+        return not conn.execute("SELECT 1 FROM experiment_runs WHERE project_id=? AND state IN ('queued','running')",(project_id,)).fetchone() and not conn.execute("SELECT 1 FROM research_jobs WHERE project_id=? AND state IN ('queued','running')",(project_id,)).fetchone()
+
+
+def signature(data):
+    # Account allowance changes alone must not produce repeated Notion snapshots.
+    stable={k:v for k,v in data.items() if k!='account_usage'}
+    return hashlib.sha256(json.dumps(dict(report_format=3,data=stable),ensure_ascii=False,sort_keys=True,allow_nan=False).encode()).hexdigest()
+
+
+def result_status(data):
+    if data.get('study_outcome')=='rejected':return '실패'
+    compared=[]
+    for r in data.get('runs',[]):
+        a=r.get('analysis') or {}
+        if r['state']=='succeeded' and a.get('status')=='compared' and number(a.get('baseline')) and number(a.get('candidate')):
+            compared.append((a['candidate']-a['baseline'])*(1 if r.get('direction',a.get('direction','maximize'))=='maximize' else -1)>0)
+    if compared:return '성공' if any(compared) else '실패'
+    if data.get('runs') and all(r['state'] in {'failed','timed_out','blocked'} for r in data['runs']):return '실패'
+    return '탐색중'
+
 
 
 def number(value):return type(value) in (int,float) and math.isfinite(value)
@@ -126,7 +155,7 @@ def build_report(root,data):
     markdown='# '+data['title']+'\n\n'
     for title,body in sections:
         markdown+='## '+title+'\n\n'+body+'\n\n'
-        if title=='결과':
+        if title=='상세 결과':
             for c in charts:markdown+='!['+c['title']+']('+c['file']+')\n\n'
     (folder/'report.md').write_text(markdown,encoding='utf-8')
     (folder/'results.json').write_text(json.dumps(data,ensure_ascii=False,indent=2,allow_nan=False),encoding='utf-8')
@@ -220,4 +249,8 @@ def editorial_sections(data):
         r=n.get('details',{}).get('research_ratings')
         if r:score_rows.append('| '+n['title'].replace('|','/')+' | '+' | '.join(str(r.get(k,'—')) for k in ['potential','novelty_provisional','feasibility','falsifiability'])+' | '+str(n.get('details',{}).get('novelty',{}).get('assessment','미검증'))+' |')
     scores=[('가설 평가','점수는 0–100점의 잠정 판단이며 성공 확률이나 실제 성능 측정값이 아닙니다.\n\n'+'\n'.join(score_rows))] if len(score_rows)>2 else []
-    return scores+[('해결하려는 문제',reader_prose(problem)),('해결 방법',reader_prose(approach)),('살펴볼 코드',code),('결과','\n\n'.join(results)),('한계와 다음 단계',tail),('참고 논문','\n'.join(urls) or '아직 인용할 논문 URL이 없습니다.')]
+    from quota_guard import describe
+    outcome=result_status(data)
+    summary=('개선된 측정값을 관측했습니다. 신규성·통계적 유의성은 별도 검증이 필요합니다.' if outcome=='성공' else data.get('rejection_reason') or '목표 개선을 확인하지 못했거나 실행에 실패했습니다.' if outcome=='실패' else '아직 성공·실패를 판정할 비교 결과가 없습니다.')
+    if data.get('execution_state',{}).get('stop_reason'):summary+='\n\n중지 사유: '+data['execution_state']['stop_reason']
+    return [('결과','**'+outcome+'**\n\n'+summary),('상세 결과','\n\n'.join(results)),('남은 사용량',describe(data.get('account_usage'),data.get('quota_guard')))]+scores+[('해결하려는 문제',reader_prose(problem)),('해결 방법',reader_prose(approach)),('살펴볼 코드',code),('한계와 다음 단계',tail),('참고 논문','\n'.join(urls) or '아직 인용할 논문 URL이 없습니다.')]

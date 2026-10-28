@@ -186,6 +186,9 @@ class ProviderStatus:
         self.lock = threading.Lock()
         self.cache = {}
 
+    def report_snapshot(self):
+        return self.get()
+
     def get(self, force=False):
         with self.lock:
             now = time.time()

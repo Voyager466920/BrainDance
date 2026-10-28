@@ -44,12 +44,14 @@ class ViewerServer(ThreadingHTTPServer):
             self.experiments=ExperimentEngine(store,self.compute,self.compute_state)
             self.research=ResearchEngine(store,self.experiments)
             self.research.api_url="http://127.0.0.1:"+str(actual_port)
-            self.autopilot=Autopilot(store,self.research,self.experiments)
+            self.autopilot=Autopilot(store,self.research,self.experiments,quota_status=self.provider_status.get)
             self.chat=ResearchChat(store,self.research,self.autopilot)
             # Research expiry stops research workers, while ordinary project replies stay available.
             self.publications=PublicationService(store)
+            self.publications.quota_snapshot=self.provider_status.report_snapshot
             self.chat.publications=self.publications
             self.notifications=SlackNotifications(store,self.publications)
+            self.notifications.quota_snapshot=self.provider_status.report_snapshot
             self.cleanup=ProjectCleanup(store,self.experiments,self.compute,self.research)
         except Exception:
             if hasattr(self,'notifications'):self.notifications.close()
@@ -117,7 +119,7 @@ class ViewerHandler(BaseHTTPRequestHandler):
             return
         path = urlsplit(self.path).path
         if path == '/api/health':
-            self._reply(200, {'app': 'BrainDance', 'version': '0.19.8', 'pid': os.getpid(),
+            self._reply(200, {'app': 'BrainDance', 'version': '0.19.9', 'pid': os.getpid(),
                              'workspace_id': hashlib.sha256(str(Path(self.server.store.db_path).resolve()).encode()).hexdigest()})
         elif path=='/api/slack':
             self._reply(200,self.server.notifications.state())

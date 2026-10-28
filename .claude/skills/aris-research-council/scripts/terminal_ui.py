@@ -885,10 +885,15 @@ class ResearchTerminal:
         hours=TextArea(text=draft.get('hours',str(default_seconds/3600)),multiline=False);folder=TextArea(text=draft.get('folder',''),multiline=False);experiment_time=dict(seconds=draft.get('experiment_seconds'))
         style=self.navigable_list(RadioList([('focused','집중 연구'),('scout','논문 탐색 · 작은 실험')],default=research_style,select_on_focus=True))
         mode=self.navigable_list(RadioList([('lite','Lite'),('balanced','Balanced'),('deep','Deep')],default=draft.get('mode','lite' if scouting else 'balanced'),select_on_focus=True))
+        quota=self.navigable_list(CheckboxList([(20,'시작보다 잔여 사용량 20%p 감소 시 중지·정리')],default_values=[20] if draft.get('quota_enabled') else []))
         async def start():
             nonlocal pid
             duration=time_seconds(hours.text,3600,'총 연구 시간',604800)
             limits=dict(cost_profile='economy',execution_policy='until_deadline',orchestration='hypothesis-tasks',duration_seconds=duration,experiment_timeout_seconds=experiment_time['seconds'])
+            if quota.current_values:
+                from quota_guard import capture
+                capture(await self.call(self.client.request,'/api/providers'),20)
+                limits['quota_drop_percent']=20
             if pid is None:
                 from scout import validate
                 create_project['research_preferences']=validate({**create_project['research_preferences'],'style':style.current_value})
@@ -908,9 +913,9 @@ class ResearchTerminal:
         if on_back:actions.append(('제목·목표',on_back))
         actions.append(('취소',on_cancel or self.close_dialog))
         self.resource_form=None
-        self.dialog('새 프로젝트 · 만들고 자동 시작' if create_project else '프로젝트 자동 연구 시작',HSplit([Label(hardware),Box(style,height=2,padding=0),Label('종료 시각까지 탐색·실험·오류 수정·다음 연구를 계속합니다.'),Label('참고할 기존 코드 폴더 · 선택 · 비워도 됨'),folder,Label('총 연구 시간 · 시간 단위'),hours,Label(lambda:'실험별 시간 자동 배분' if experiment_time['seconds'] is None else '실험당 최대 '+str(experiment_time['seconds']/60)+'분'),Label('절약 탐색 · Haiku 중심 · 구현·검증 모델 유지'),Box(mode,height=3,padding=0)]),actions,folder)
+        self.dialog('새 프로젝트 · 만들고 자동 시작' if create_project else '프로젝트 자동 연구 시작',HSplit([Label(hardware),Box(style,height=2,padding=0),Label('종료 시각까지 탐색·실험·오류 수정·다음 연구를 계속합니다.'),Label('참고할 기존 코드 폴더 · 선택 · 비워도 됨'),folder,Label('총 연구 시간 · 시간 단위'),hours,Label(lambda:'실험별 시간 자동 배분' if experiment_time['seconds'] is None else '실험당 최대 '+str(experiment_time['seconds']/60)+'분'),Label('절약 탐색 · Haiku 중심 · 구현·검증 모델 유지'),Box(mode,height=3,padding=0),Box(quota,height=1,padding=0)]),actions,folder)
         self.modals[-1][0].back_to_details=on_back
-        self.modals[-1][0].save_draft=lambda:draft.update(folder=folder.text,hours=hours.text,research_style=style.current_value,mode=mode.current_value,experiment_seconds=experiment_time['seconds'])
+        self.modals[-1][0].save_draft=lambda:draft.update(folder=folder.text,hours=hours.text,research_style=style.current_value,mode=mode.current_value,experiment_seconds=experiment_time['seconds'],quota_enabled=bool(quota.current_values))
 
     async def tasks_dialog(self):
         pid=self.require_project();state=await self.call(self.client.control,self.project);rows=state.get('tasks',[])
