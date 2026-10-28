@@ -98,7 +98,7 @@ def report_view(state):
     if link:lines.append('상위 페이지 https://www.notion.so/'+link['parent_id'].replace('-',''))
     jobs=state.get('jobs',[])
     for job in jobs[:3]:
-        lines.extend(['',('Notion' if job['kind']=='notion' else '로컬 보고서')+' · '+job['message']])
+        lines.extend(['',('Notion' if job['kind'] in {'notion','notion-database'} else '로컬 보고서')+' · '+job['message']])
         if job.get('page_url'):lines.append(job['page_url'])
     record=state.get('report')
     if not record:return '\n'.join(lines+['','보고서를 만들면 논문 근거·가설·평가·실험 결과를 함께 정리합니다.'])
@@ -253,10 +253,12 @@ def plan_view(plan):
         '실행 이력: '+str(len(plan.get('runs',[])))+'회'])
 
 
-def run_view(run,details=None):
+def run_view(run,details=None,latest=None):
     if not run:return '진행 중인 실험과 완료된 측정 결과가 여기에 표시됩니다.'
     actual=details or run
     title=run.get('title','실험');lines=[title,STATES.get(actual['state'],actual['state']),'']
+    if latest and latest['id']!=run['id']:
+        lines.extend(['이전 실행 기록입니다. 프로젝트의 최신 실행: '+STATES.get(latest['state'],latest['state'])+' · '+clock(latest.get('queued_at')),''])
     if actual.get('started_at'):lines.append('시작 '+clock(actual['started_at']))
     elapsed=age_seconds(actual.get('started_at')) if actual['state']=='running' else actual.get('duration_seconds')
     if elapsed is not None:

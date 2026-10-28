@@ -26,6 +26,17 @@ def encode(value):return json.dumps(value,ensure_ascii=False,sort_keys=True,allo
 def digest(value):return hashlib.sha256(encode(value).encode()).hexdigest()
 
 
+def completed_run_count(rows):
+    count=0
+    for row in rows:
+        result=row.get('result') or {}
+        if isinstance(result,str):
+            try:result=json.loads(result)
+            except ValueError:result={}
+        if row['state']=='succeeded' and result.get('analysis',{}).get('status') in {'measured','compared'}:count+=1
+    return count
+
+
 def resource_signature(profile,assignment):
     return digest({'profile':fingerprint(profile),'device_ids':sorted(assignment['device_ids']),
                    'max_parallel_runs':assignment['max_parallel_runs'],

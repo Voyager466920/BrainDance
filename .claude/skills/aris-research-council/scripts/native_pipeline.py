@@ -58,7 +58,7 @@ def command(flag,*args):
 CONTRACT='''You are the main autonomous BrainDance research executor. Invoke Skill aris-official:research-pipeline; follow its real idea-discovery -> experiment-bridge -> auto-review-loop -> summary workflow. AUTO_PROCEED=true, HUMAN_CHECKPOINT=false, AUTO_WRITE=false. ARIS owns implementation, debugging, interpretation and next-experiment decisions; do not replace its loop with a different staged planner. Load its actual nested Skills with the Skill tool at their boundaries. Existing measured results and completed stage artifacts remain reusable: loading a missing Skill is not permission to discard them or rerun a completed experiment. Use sequential fallback where Agent is unavailable.
 Keep the normal ARIS Reviewer: call mcp__codex__codex for its independent novelty/code/result reviews, then implement its feedback and re-review per the original Skill. Council is ADDITIONAL ADVICE, not the Reviewer or its stop/quality gate. Call mcp__codex__council(stage=ideas) after literature/idea discovery and before the first experiment; call stage=results after measured results, before the next experiment and final summary. Council advice can be challenged with evidence; retain disagreement. Do not repeat an identical reviewer question just to fill a stage.
 HOST TOOL ADAPTATION ONLY: Bash/SSH/Agent are unavailable in this managed session. Use mcp__codex__helper for the real upstream Python bookkeeping helpers; mcp__codex__target for read-only existing target inventory/source reads. Read/Write/Edit operate on this dedicated local project workspace. For all pilots, sanity checks, real experiments, retries and ablations use mcp__codex__experiment. It applies the already selected local/SSH device UUID, current direction, code review, run count and cumulative runtime budget. Never execute model code through a helper or call an external shell. No package installation, GPU reassignment or budget changes. Missing prerequisites should be investigated through target reads and repaired in experiment source where possible; do not invent interfaces or results.
-Write a self-contained Python source file defining self_test() with real assertions and run_experiment(); omit __main__ (host appends it). Use the observed Python interpreter, existing project/data paths, BRAINDANCE_DEVICE/CUDA_VISIBLE_DEVICES, BRAINDANCE_METRICS_PATH and BRAINDANCE_ARTIFACT_DIR. Metrics JSON: baseline/candidate objects with the exact metric key. Experiment source can import the existing target repository. The experiment tool itself performs the original Reviewer code-review check; do not ask an identical extra code-review question before submitting the same source. The tool returns a real queued run; poll with mcp__codex__receipt and use its exit state/metrics/logs to debug and continue yourself. A rejected code review is feedback to fix and resubmit, not a forced whole-project stop.
+Write a self-contained Python source file defining self_test() with real assertions and run_experiment(); omit __main__ (host appends it). Use the observed Python interpreter, existing project/data paths, BRAINDANCE_DEVICE/CUDA_VISIBLE_DEVICES, BRAINDANCE_METRICS_PATH and BRAINDANCE_ARTIFACT_DIR. Metrics JSON: baseline/candidate objects with the exact metric key. Experiment source can import the existing target repository. The experiment tool itself performs the original Reviewer code-review check; do not ask an identical extra code-review question before submitting the same source. The tool returns a real queued run; poll with mcp__codex__receipt and use its exit state/metrics/logs to debug and continue yourself. A rejected code review or failed execution is feedback to fix and resubmit, not a forced whole-project stop. Diagnose missing modules by checking existing observed Python environments before changing the experiment. Failed attempts do not consume the measured-experiment quota; they still consume actual runtime and model usage. Continue debugging within existing limits without asking the human for each repair. Negative but correctly measured results are valid completed experiments; never keep retrying just to obtain a positive scientific result.
 For the literature Council input, write LITERATURE.md plus source-evidence.json {papers:[{id,title,url,arxiv_id,doi,source_excerpt,evidence_level,verification_status}]} and candidate_papers.json array with matching ids. Only retrieved readable evidence; unknown ids=null. Council invokes the actual upstream verifier before admitting sources. Preserve source text, original traces and limitations.
 Call mcp__codex__context at the start and before every new experiment to receive the SAME shared project conversation, latest human directions, remaining budget and selected target. Changes govern the next immutable experiment; experiments in flight keep their exact source. Pause/stop/resource changes are enforced by the host. All responses and reports in Korean, using BrainDance branding; internal Skill identifiers belong in technical traces. Original identifiers/quotations remain intact.
 When the native review loop reaches its own stopping condition or the allowed experiment count is reached, write NARRATIVE_REPORT.md from actual receipts, record limitations, and call mcp__codex__finish(report='NARRATIVE_REPORT.md'). Do not declare completion without real execution, both Council advice stages, and real ARIS Reviewer calls. Resume the stored native session and upstream .aris/runs state after interruption; never mark unfinished stages successful. Read the source-manifest for provenance, never edit .aris-official.
@@ -399,6 +399,8 @@ def action(server,payload):
     with server.store._connect() as conn:
         rows=[dict(r) for r in conn.execute('SELECT r.*,e.spec FROM experiment_runs r JOIN experiments e ON r.experiment_id=e.id WHERE r.project_id=? ORDER BY r.queued_at',(job['project_id'],))]
     rows=[r for r in rows if json.loads(r['spec']).get('generation',{}).get('native_session_id')==session['id']]
+    from experiments import completed_run_count
+    completed_count=completed_run_count(rows)
     def receipt(row):
         run=server.experiments.run_info(row['id'])
         return {k:run.get(k) for k in ['id','state','result','stdout_tail','stderr_tail','queued_at','finished_at']}
@@ -414,11 +416,11 @@ def action(server,payload):
         from steering import prompt_context
         current=prompt_context(server.store,job['project_id'])
         with server.store._connect() as conn:time_budget=server.experiments._budget(job['project_id'],assignment['updated_at'],assignment['time_budget_minutes']*60,conn)
-        allocation=runtime_budget(settings(server.store,job['project_id']),config.get('scout_preferences',{}),time_budget['remaining_seconds'],session['config']['max_cycles']-len(rows),config.get('research_style','focused'))
+        allocation=runtime_budget(settings(server.store,job['project_id']),config.get('scout_preferences',{}),time_budget['remaining_seconds'],session['config']['max_cycles']-completed_count,config.get('research_style','focused'))
         return dict(research_style=config.get('research_style','focused'),research_preferences=settings(server.store,job['project_id']),shared_project=current,revision=current['revision'],usage=server.autopilot.state(job['project_id'])['usage'],
                     execution_budget=allocation,resource_signature=resource_signature(profile,assignment),
                     target=dict(profile=profile['name'],kind=profile['kind'],device_ids=assignment['device_ids'],time_budget_minutes=assignment['time_budget_minutes'],context_path=config['context_path']),
-                    max_runs=session['config']['max_cycles'],runs_started=len(rows),completed_runs=[receipt(r) for r in rows if r['state'] not in {'queued','running'}])
+                    max_runs=session['config']['max_cycles'],runs_started=completed_count+sum(r['state'] in {'queued','running'} for r in rows),attempts_started=len(rows),completed_experiments=completed_count,completed_runs=[receipt(r) for r in rows if r['state'] not in {'queued','running'}])
     if payload['action']=='receipt':
         row=next((r for r in rows if r['id']==payload['run_id']),None)
         if not row:raise ValueError('이 프로젝트 자율 연구의 실행이 아닙니다.')
@@ -429,7 +431,8 @@ def action(server,payload):
                 rows=[dict(r) for r in conn.execute('SELECT r.*,e.spec FROM experiment_runs r JOIN experiments e ON r.experiment_id=e.id WHERE r.project_id=? ORDER BY r.queued_at',(job['project_id'],))]
             rows=[r for r in rows if json.loads(r['spec']).get('generation',{}).get('native_session_id')==session['id']]
             if server.autopilot.get(session['id'])['status']!='running':raise ValueError('자동 연구가 실행 중이 아닙니다.')
-            if len(rows)>=session['config']['max_cycles']:raise ValueError('설정한 실험 횟수를 완료했습니다. 기존 결과를 분석·검토하고 최종 보고하세요.')
+            completed_count=completed_run_count(rows)
+            if completed_count>=session['config']['max_cycles']:raise ValueError('설정한 정상 측정 횟수를 완료했습니다. 기존 결과를 분석·검토하고 최종 보고하세요.')
             if any(r['state'] in {'queued','running'} for r in rows):raise ValueError('진행 중인 실험 결과를 먼저 확인하세요.')
             import steering
             revision=steering.snapshot(server.store,job['project_id'])['revision']
@@ -442,7 +445,7 @@ def action(server,payload):
             elif spec['node_id']!=job['node_id']:raise ValueError('프로젝트 노드가 일치하지 않습니다.')
             from scout import settings,runtime_budget
             with server.store._connect() as conn:time_budget=server.experiments._budget(job['project_id'],assignment['updated_at'],assignment['time_budget_minutes']*60,conn)
-            allocation=runtime_budget(settings(server.store,job['project_id']),config.get('scout_preferences',{}),time_budget['remaining_seconds'],session['config']['max_cycles']-len(rows),config.get('research_style','focused'))
+            allocation=runtime_budget(settings(server.store,job['project_id']),config.get('scout_preferences',{}),time_budget['remaining_seconds'],session['config']['max_cycles']-completed_count,config.get('research_style','focused'))
             if type(spec.get('timeout_seconds')) is not int or not 1<=spec['timeout_seconds']<=allocation['max_timeout_seconds']:raise ValueError('실험 시간이 현재 남은 프로젝트 예산의 배분 한도를 넘었습니다. 새 context로 다시 준비하세요.')
             reviewroot=review_directory(job['run_dir'],spec,revision,resource_signature(profile,assignment))
             if Path(payload['review_receipt'])!=reviewroot/'usage.json' or not (reviewroot/'usage.json').is_file():raise ValueError('실행할 코드에 대한 실제 Reviewer 영수증이 없습니다.')
@@ -451,7 +454,7 @@ def action(server,payload):
             experiment=server.experiments.create(spec,provenance=generation)
             approval=server.experiments.approve(experiment['id'],experiment['digest'],True,authority='automatic:'+session['id'])
             run=server.experiments.enqueue(experiment['id'],approval['id'])
-            server.autopilot.save(session,message='자율 연구가 선택한 실험을 실행합니다.',cycles=len(rows)+1,run_id=run['id'])
+            server.autopilot.save(session,message='자율 연구가 선택한 실험을 실행합니다.',cycles=completed_count,attempts=len(rows)+1,run_id=run['id'])
             return dict(run_id=run['id'],state=run['state'],experiment_id=experiment['id'],digest=experiment['digest'])
     if payload['action']=='finish':
         if config.get('research_style')=='scout':

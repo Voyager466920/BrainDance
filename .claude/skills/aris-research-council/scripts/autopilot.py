@@ -3,6 +3,7 @@ import hashlib
 import json
 from pathlib import Path
 import threading
+import time
 import traceback
 import uuid
 
@@ -331,20 +332,32 @@ class Autopilot:
 
     def native_tick(self,item):
         p=item['progress']
+        if p.get('recovery_after',0)>time.time():return
         if p.get('job_id'):
             job=self.research.get(p['job_id'])
             if job['state'] in {'queued','running'}:return
             if job['state']=='completed' and job['phase']=='native-completed':
                 message='자율 연구의 실험·Reviewer·Council 평가와 최종 보고를 완료했습니다.'
                 if item['config'].get('research_style')=='scout':
-                    done=json.loads((Path(job['run_dir'])/'native-completion.json').read_text());message='탐색 완료 · 유망 후보 '+str(done.get('promising_count',0))+'개 · 실험 '+str(len(done.get('run_ids',[])))+'회'
+                    done=json.loads((Path(job['run_dir'])/'native-completion.json').read_text());completed=done.get('completed_experiments',len(done.get('run_ids',[])));message='탐색 완료 · 유망 후보 '+str(done.get('promising_count',0))+'개 · 정상 측정 '+str(completed)+'회 · 전체 시도 '+str(len(done.get('run_ids',[])))+'회'
                 self.save(item,'completed',message)
                 return
-            if p.get('phase')=='native':raise ValueError(job.get('error') or job['message'])
+            if p.get('phase')=='native':
+                error=job.get('error') or job['message']
+                if any(term in error.lower() for term in ['인증','로그인','unauthorized','authentication','설치가 필요합니다']):raise ValueError(error)
+                from session_budget import update
+                update(item['config']['session_budget'],'check')
+                _,assignment=self.experiments._resources(self.root(item['project_id']))
+                with self.store._connect() as conn:budget=self.experiments._budget(item['project_id'],assignment['updated_at'],assignment['time_budget_minutes']*60,conn)
+                if budget['remaining_seconds']<1:raise ValueError('프로젝트 실행 시간 예산을 소진했습니다.')
+                attempt=p.get('recovery_attempts',0)+1;delay=min(60,2**min(attempt,6))
+                self.save(item,message='자동 디버깅 '+str(attempt)+'회 · '+str(delay)+'초 뒤 원래 세션을 이어갑니다.',phase='recovery',job_id=None,recovery_attempts=attempt,recovery_after=time.time()+delay,recovery_error=error,recovery_job_id=job['id'])
+                self.store.add_note(item['node_id'],'analysis','자동 복구 진단','이전 작업: '+job['id']+'\n원인: '+error+'\n원본 로그: '+job['run_dir']+'\n기존 대화·장치·시간·모델 예산을 유지해 자동으로 디버깅합니다.')
+                return
         if self.research.active_id is not None or self.busy(item['project_id']):return
         job=self.research.start(dict(node_id=item['node_id'],task='native',confirm=True,mode=item['config']['mode'],context_path=item['config']['context_path']),
             internal=dict(auto_session_id=item['id'],session_budget=item['config']['session_budget'],native_workspace=item['config']['native_workspace'],research_style=item['config'].get('research_style','focused'),scout_preferences=item['config'].get('scout_preferences',{})))
-        self.save(item,message='메인 자율 연구 세션이 탐색·구현·실험·리뷰를 이어갑니다.',phase='native',job_id=job['id'])
+        self.save(item,message='메인 자율 연구 세션이 탐색·구현·실험·리뷰를 이어갑니다.',phase='native',job_id=job['id'],recovery_after=0)
 
     def _loop(self):
         while not self.closed.wait(.5):

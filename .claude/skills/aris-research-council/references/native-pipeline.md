@@ -6,6 +6,8 @@ New project automatic sessions use `pipeline=aris-native`. `native_pipeline.py` 
 
 The official pipeline owns scientific sequencing, source implementation, debugging, result interpretation, reviewer feedback and stopping decisions. `Autopilot.native_tick` merely starts/supervises that session. It does not run the former draft → author → analysis decision loop. Paper writing stays optional/off by default.
 
+Failed workers recover the same authorization, project workspace and model usage ledger after a durable backoff. The main executor receives original failure logs and diagnoses imports, environments, code and metrics itself. Failed/unmeasured executions do not consume completed-measurement slots; actual runtime and every model charge remain counted. Do not complete an all-failed scouting batch as a valid negative result. Authentication, held/discarded projects, changed resources and exhausted budgets require the corresponding user action; automatic recovery cannot expand authority. Properly measured negative results are valid completions.
+
 ## Host tools
 
 The native session loads a local MCP transport named `codex`:

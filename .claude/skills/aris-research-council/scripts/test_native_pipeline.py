@@ -81,6 +81,34 @@ class NativePipelineTests(unittest.TestCase):
                 self.call('experiment',payload={**spec,**change},review_receipt=str(folder/'usage.json'),direction_revision=context['revision'])
         self.assertEqual(self.call('context')['runs_started'],0)
 
+    def test_failed_execution_is_debugged_without_consuming_the_measured_experiment_quota(self):
+        (self.work/'advice-ideas.json').write_text('{}')
+        (self.work/'broken.py').write_text('def self_test():\n assert True\ndef run_experiment():\n raise ModuleNotFoundError("OFFLINE missing dependency fixture")\n')
+        with patch('native_pipeline.council.codex_call',side_effect=self.fake_review):
+            first=self.host.execute('experiment',dict(source='broken.py',title='OFFLINE failed first attempt',timeout_seconds=3))
+        self.assertEqual(self.wait_run(first['run_id'])['state'],'failed')
+        context=self.call('context');self.assertEqual(context['attempts_started'],1);self.assertEqual(context['completed_experiments'],0)
+        repaired=self.experiment();self.assertEqual(self.wait_run(repaired['run_id'])['state'],'succeeded')
+        context=self.call('context');self.assertEqual(context['attempts_started'],2);self.assertEqual(context['completed_experiments'],1)
+
+    def test_failed_worker_recovers_same_session_with_backoff_and_retained_budget(self):
+        with self.server.store._connect() as conn:conn.execute("UPDATE research_jobs SET state='failed',message='OFFLINE temporary worker error' WHERE id=?",(self.job['id'],))
+        self.server.research.active_id=None
+        ledger=Path(self.config['session_budget']);before=ledger.read_bytes()
+        item=self.server.autopilot.get(self.session['id']);self.server.autopilot.native_tick(item)
+        current=self.server.autopilot.get(item['id']);self.assertEqual(current['status'],'running');self.assertEqual(current['progress']['phase'],'recovery')
+        self.assertGreater(current['progress']['recovery_after'],time.time());self.assertEqual(ledger.read_bytes(),before)
+        self.server.autopilot.save(current,recovery_after=0);self.server.autopilot.native_tick(current)
+        current=self.server.autopilot.get(item['id']);retry=self.server.research.get(current['progress']['job_id'])
+        self.assertNotEqual(retry['id'],self.job['id']);self.assertEqual(retry['config']['auto_session_id'],self.session['id'])
+        self.assertEqual(retry['config']['native_workspace'],self.config['native_workspace']);self.assertEqual(ledger.read_bytes(),before)
+
+    def test_automatic_recovery_does_not_expand_exhausted_model_limits(self):
+        from session_budget import update
+        update(self.config['session_budget'],'reserve',key='OFFLINE used allowance',calls=80,estimate=2000000)
+        with self.server.store._connect() as conn:conn.execute("UPDATE research_jobs SET state='failed',message='OFFLINE worker error' WHERE id=?",(self.job['id'],))
+        with self.assertRaisesRegex(RuntimeError,'소진'):self.server.autopilot.native_tick(self.server.autopilot.get(self.session['id']))
+
     def test_identical_blocked_review_reuses_exact_receipt_without_another_model_call(self):
         (self.work/'advice-ideas.json').write_text('{}')
         (self.work/'cached.py').write_text('def self_test():\n assert True\ndef run_experiment():\n pass\n')

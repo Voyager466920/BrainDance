@@ -2,6 +2,8 @@
 import json
 import io
 import os
+import threading
+import time
 from pathlib import Path
 import unittest
 from unittest.mock import patch
@@ -10,28 +12,50 @@ import urllib.error
 
 import terminal
 import test_terminal as fixtures
-from notion_reports import NotionAPI,NotionError,blocks_for,page_id
+from notion_reports import NotionAPI,NotionError,PublicationService,blocks_for,page_id
 from research_reports import build_report,project_data,report_html,signature
 from tree_store import now
 
 PARENT='11111111-2222-4333-8444-555555555555'
 TOKEN='ntn_private_fixture_token_not_a_live_secret'
+PUBLICATION_LOOP=PublicationService.loop
 
 
 class RemoteFixture:
     def __init__(self):
         self.blocks={PARENT:[]};self.calls=[];self.uploads={};self.fail_after_append=False;self.fail_after_create=False
+        self.databases={};self.sources={};self.entries={};self.views=[]
 
     def request(self,api,method,path,payload=None,content_type=None):
         self.calls.append((method,path,payload))
         if path=='/users/me':return dict(bot=dict(workspace_name='Fixture workspace'))
         if method=='GET' and path.startswith('/pages/'):return dict(id=PARENT,archived=False)
+        if method=='POST' and path=='/databases':
+            identity=str(uuid.uuid4());source=str(uuid.uuid4());props={name:{**definition,'id':'property-'+str(i),'type':next(iter(definition))} for i,(name,definition) in enumerate(payload['initial_data_source']['properties'].items())}
+            record=dict(id=identity,data_sources=[dict(id=source)]);self.databases[identity]=record;self.sources[source]=dict(id=source,properties=props);self.entries[source]=[]
+            self.blocks[payload['parent']['page_id']].append(dict(id=identity,type='child_database',child_database=dict(title=payload['title'][0]['text']['content'])))
+            if self.fail_after_create:self.fail_after_create=False;raise NotionError('Fixture lost database create response',retryable=True)
+            return record
+        if method=='GET' and path.startswith('/databases/'):return self.databases[path.split('/')[2]]
+        if method=='GET' and path.startswith('/data_sources/'):return self.sources[path.split('/')[2]]
+        if method=='GET' and path.startswith('/views?'):return dict(results=[dict(object='view',id=v['id']) for v in self.views],has_more=False)
+        if method=='GET' and path.startswith('/views/'):return next(v for v in self.views if v['id']==path.split('/')[2])
+        if method=='POST' and path=='/views':
+            view=dict(id=str(uuid.uuid4()),**payload);self.views.append(view);return view
+        if method=='POST' and path.startswith('/data_sources/'):
+            key=payload['filter']['rich_text']['equals'];rows=self.entries[path.split('/')[2]]
+            return dict(results=[r for r in rows if r['properties']['보고서 키']['rich_text'][0]['text']['content']==key],has_more=False)
         if method=='GET' and path.startswith('/blocks/'):
             identity=path.split('/')[2];return dict(results=self.blocks[identity],has_more=False)
         if method=='POST' and path=='/pages':
+            if payload['parent'].get('type')=='data_source_id':
+                identity=str(uuid.uuid4());self.blocks[identity]=[]
+                record=dict(id=identity,properties=payload['properties']);self.entries[payload['parent']['data_source_id']].append(record)
+                if self.fail_after_create:self.fail_after_create=False;raise NotionError('Fixture lost entry create response',retryable=True)
+                return record
             identity=str(uuid.uuid4());title=payload['properties']['title']['title'][0]['text']['content']
             self.blocks[identity]=[];self.blocks[payload['parent']['page_id']].append(dict(id=identity,type='child_page',child_page=dict(title=title)))
-            if self.fail_after_create:self.fail_after_create=False;raise NotionError('Fixture lost creation response')
+            if self.fail_after_create:self.fail_after_create=False;raise NotionError('Fixture lost creation response',retryable=True)
             return dict(id=identity)
         if method=='POST' and path=='/file_uploads':
             identity=str(uuid.uuid4());self.uploads[identity]=payload;return dict(id=identity,status='pending',upload_url='https://untrusted.invalid/never-follow')
@@ -41,7 +65,7 @@ class RemoteFixture:
             return dict(status='uploaded')
         if method=='PATCH':
             self.blocks[path.split('/')[2]].extend(payload['children'])
-            if self.fail_after_append:self.fail_after_append=False;raise NotionError('Fixture lost append response')
+            if self.fail_after_append:self.fail_after_append=False;raise NotionError('Fixture lost append response',retryable=True)
             return dict(results=payload['children'])
         raise AssertionError((method,path))
 
@@ -54,8 +78,54 @@ class PublicationTests(unittest.TestCase):
         self.service=self.server.publications;self.remote=RemoteFixture()
         request=patch.object(NotionAPI,'request',autospec=True,side_effect=self.remote.request);request.start();self.addCleanup(request.stop)
 
-    def configure(self,automatic=False):
-        return self.client.request('/api/notion/configure',dict(project_id=self.project['id'],parent=PARENT,token=TOKEN,auto_sync=automatic))
+    def configure(self,automatic=False,layout='pages'):
+        return self.client.request('/api/notion/configure',dict(project_id=self.project['id'],parent=PARENT,token=TOKEN,auto_sync=automatic,layout=layout))
+
+    def test_database_calendar_and_date_sorted_reports_are_idempotent_and_include_charts(self):
+        self.add_measurement();self.configure(True,layout='database')
+        job=self.service.enqueue(self.project['id'],True);state=self.run_job(job)
+        self.assertEqual(len(self.remote.databases),1);self.assertEqual(len(self.remote.views),2)
+        self.assertEqual([v['type'] for v in self.remote.views],['table','calendar'])
+        self.assertEqual(self.remote.views[0]['sorts'],[dict(property='날짜',direction='descending')])
+        entry=next(iter(self.remote.entries.values()))[0];props=entry['properties']
+        self.assertRegex(props['날짜']['date']['start'],r'^\d{4}-\d{2}-\d{2}$');self.assertEqual(props['정상 측정']['number'],1)
+        self.assertTrue(any(b['type']=='image' for b in self.remote.blocks[entry['id']]))
+        self.assertEqual(self.service.enqueue(self.project['id'],True)['id'],job['id'])
+        self.assertEqual(len(next(iter(self.remote.entries.values()))),1)
+        self.assertNotIn(TOKEN,json.dumps(state))
+
+    def test_uncertain_database_and_row_creates_reconcile_without_duplicates(self):
+        self.configure(layout='database');job=self.service.enqueue(self.project['id'],True)
+        self.remote.fail_after_create=True
+        with self.assertRaises(NotionError):self.run_job(job)
+        self.remote.fail_after_create=True
+        with self.assertRaises(NotionError):self.run_job(job)
+        self.remote.fail_after_append=True
+        with self.assertRaises(NotionError):self.run_job(job)
+        self.run_job(job)
+        self.assertEqual(len(self.remote.databases),1);self.assertEqual(len(next(iter(self.remote.entries.values()))),1)
+
+    def test_database_date_uses_korea_day_across_utc_midnight(self):
+        api=NotionAPI(TOKEN);destination=api.research_database(PARENT)
+        identity=api.research_entry(destination,dict(project_id=self.project['id'],digest='offline-date-fixture',title='Date fixture',created_at='2026-10-28T16:30:00+00:00'),dict(runs=[]))
+        entry=next(r for r in next(iter(self.remote.entries.values())) if r['id']==identity)
+        self.assertEqual(entry['properties']['날짜']['date']['start'],'2026-10-29')
+
+    def test_network_failure_retries_durably_without_a_human_resend(self):
+        self.configure(layout='database');job=self.service.enqueue(self.project['id'],True);self.remote.fail_after_create=True
+        worker=threading.Thread(target=PUBLICATION_LOOP,args=(self.service,),daemon=True);worker.start()
+        try:
+            deadline=time.monotonic()+5;retried=False
+            while time.monotonic()<deadline:
+                with self.service.connect() as conn:row=dict(conn.execute('SELECT * FROM jobs WHERE id=?',(job['id'],)).fetchone())
+                if row['attempts']:
+                    retried=True
+                    with self.service.connect() as conn:conn.execute('UPDATE jobs SET next_retry=0 WHERE id=?',(job['id'],))
+                if row['state']=='completed':break
+                time.sleep(.02)
+            self.assertTrue(retried);self.assertEqual(row['state'],'completed')
+            self.assertEqual(len(self.remote.databases),1);self.assertEqual(len(next(iter(self.remote.entries.values()))),1)
+        finally:self.service.stop.set();worker.join(3)
 
     def run_job(self,response):
         with self.service.connect() as conn:job=dict(conn.execute('SELECT * FROM jobs WHERE id=?',(response['id'],)).fetchone())

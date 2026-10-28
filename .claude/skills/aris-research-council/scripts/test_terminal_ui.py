@@ -17,10 +17,18 @@ from prompt_toolkit.layout.controls import BufferControl
 import test_terminal as fixtures
 from compute import PROBE
 from terminal_ui import ResearchTerminal
-from terminal_presenter import readable,resource_info,phase_status
+from terminal_presenter import readable,resource_info,phase_status,run_view
 
 
 class TerminalPresentationTests(unittest.TestCase):
+    def test_newest_run_follows_automatically_without_overriding_an_older_history_selection(self):
+        from prompt_toolkit.widgets import RadioList
+        widget=RadioList([('old','Old failure')]);ResearchTerminal.update_list(widget,[('new','New success'),('old','Old failure')],follow_latest=True)
+        self.assertEqual(widget.current_value,'new')
+        widget.current_value='old';ResearchTerminal.update_list(widget,[('next','Next run'),('new','New success'),('old','Old failure')],follow_latest=True)
+        self.assertEqual(widget.current_value,'old')
+        text=run_view(dict(id='old',state='failed'),latest=dict(id='new',state='succeeded',queued_at='2026-10-28T05:00:00+00:00'))
+        self.assertIn('이전 실행 기록',text);self.assertIn('최신 실행',text)
     def test_iterm_keymap_contains_only_the_requested_command_keys(self):
         keymap=json.loads((fixtures.ROOT/'desktop/BrainDance.itermkeymap').read_text())
         mappings=keymap['Key Mappings']
@@ -66,6 +74,15 @@ class TerminalUITests(unittest.TestCase):
         async def poll():
             while not predicate():await asyncio.sleep(.02)
         await asyncio.wait_for(poll(),timeout)
+
+    def test_automatic_recovery_does_not_display_old_failure_as_a_human_action_request(self):
+        async def exercise(ui,pipe):
+            ui.state['session']=dict(status='running',progress=dict(phase='recovery'),message='자동 디버깅 중')
+            ui.jobs=[dict(id='old',state='failed',message='Old error')]
+            self.assertIsNone(ui.issue());self.assertIn('자동 디버깅',''.join(v[1] for v in ui.issue_fragments()))
+            ui.state['session']=dict(status='completed',updated_at='2026-10-28T07:00:00+00:00')
+            ui.jobs[0]['created_at']='2026-10-28T05:00:00+00:00';self.assertIsNone(ui.issue())
+        self.scenario(exercise)
 
     def scenario(self,exercise):
         async def run(pipe):

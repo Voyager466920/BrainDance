@@ -112,7 +112,7 @@ class ViewerHandler(BaseHTTPRequestHandler):
             return
         path = urlsplit(self.path).path
         if path == '/api/health':
-            self._reply(200, {'app': 'BrainDance', 'version': '0.13.3', 'pid': os.getpid(),
+            self._reply(200, {'app': 'BrainDance', 'version': '0.14.0', 'pid': os.getpid(),
                              'workspace_id': hashlib.sha256(str(Path(self.server.store.db_path).resolve()).encode()).hexdigest()})
         elif path=='/api/chat':
             try:self._reply(200,self.server.chat.messages(parse_qs(urlsplit(self.path).query).get('project_id',[''])[0]))
@@ -273,10 +273,10 @@ class ViewerHandler(BaseHTTPRequestHandler):
     def _publication_mutate(self,path,payload):
         service=self.server.publications
         if path=='/api/notion/configure':
-            if set(payload)-{'project_id','parent','token','auto_sync'}:raise ValueError('지원하지 않는 Notion 설정입니다.')
+            if set(payload)-{'project_id','parent','token','auto_sync','layout'}:raise ValueError('지원하지 않는 Notion 설정입니다.')
             token=payload.get('token','')
             if not isinstance(token,str) or len(token)>1000:raise ValueError('Notion 토큰을 확인하세요.')
-            result=service.configure(payload.get('project_id'),payload.get('parent'),token,payload.get('auto_sync',False))
+            result=service.configure(payload.get('project_id'),payload.get('parent'),token,payload.get('auto_sync',False),payload.get('layout','database'))
         elif path=='/api/notion/disconnect':
             if payload:raise ValueError('Expected empty object')
             result=service.disconnect()

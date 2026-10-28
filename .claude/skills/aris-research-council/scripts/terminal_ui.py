@@ -238,17 +238,22 @@ class ResearchTerminal:
         return ' '+('조회 중 · ' if checking else '')+resource['text']
 
     def issue(self):
-        for job in self.jobs[:1]:
-            if job['state'] in {'failed','blocked'} or job.get('phase')=='blocked':return dict(type='job',id=job['id'],title='연구 작업',message=job.get('error') or job.get('message',''))
         item=self.state.get('session')
+        if item and item['status']=='running':return None
+        for job in self.jobs[:1]:
+            if item and item['status']=='completed' and job.get('created_at','')<=item.get('updated_at',''):continue
+            if job['state'] in {'failed','blocked'} or job.get('phase')=='blocked':return dict(type='job',id=job['id'],title='연구 작업',message=job.get('error') or job.get('message',''))
         if item and item['status']=='blocked':return dict(type='session',id=item['id'],title='자동 연구',message=item['message'])
         for run in self.runs()[:1]:
+            if item and item['status']=='completed' and run.get('queued_at','')<=item.get('updated_at',''):continue
             if run['state'] in {'blocked','failed','timed_out'}:return dict(type='run',id=run['id'],title=run['title'],message=run.get('error') or STATES[run['state']])
         return None
 
     def issue_fragments(self):
         if self.error:return [('class:notice',' '+short(self.error,100))]
         if self.transport_error:return [('class:notice',' 연결 확인 · '+short(self.transport_error,90))]
+        session=self.state.get('session') or {}
+        if session.get('status')=='running' and session.get('progress',{}).get('phase')=='recovery':return [('class:notice',' 자동 디버깅 · '+short(session.get('message',''),100))]
         issue=self.issue()
         width=self.app.output.get_size().columns
         return [('class:notice',' 확인 필요 · '+clip_cells(issue['message'],width-24)+'  '),('class:button','[답글]',self.click(self.reply_issue))] if issue else [('', '')]
@@ -348,17 +353,17 @@ class ResearchTerminal:
         return sorted(runs,key=lambda r:r['queued_at'],reverse=True)
 
     @staticmethod
-    def update_list(widget,values):
+    def update_list(widget,values,follow_latest=False):
         values=values or [('','기록 없음')]
         if widget.values==values:return
-        selected=widget.current_value;widget.values=values
+        selected=values[0][0] if follow_latest and widget.values and widget.current_value==widget.values[0][0] else widget.current_value;widget.values=values
         widget.current_value=selected if selected in {v[0] for v in values} else values[0][0]
         widget._selected_index=next(i for i,v in enumerate(values) if v[0]==widget.current_value)
 
     def render(self):
         self.update_list(self.idea_list,[(n['id'],('× ' if n['status']=='discarded' else '● ' if n['status'] in {'active','expanded'} else '○ ')+short(n['title'],26)) for n in self.nodes()])
         self.update_list(self.plan_list,[(p['id'],short(p.get('spec',{}).get('title',p.get('title','계획')),26)) for p in self.plans()])
-        self.update_list(self.run_list,[(r['id'],STATES.get(r['state'],r['state'])+' · '+short(r['title'],22)) for r in self.runs()])
+        self.update_list(self.run_list,[(r['id'],STATES.get(r['state'],r['state'])+' · '+short(r['title'],22)) for r in self.runs()],follow_latest=True)
         selected={2:self.idea_list.current_value,3:self.plan_list.current_value,4:self.run_list.current_value}.get(self.tab,'')
         key=(self.project['id'] if self.project else '',self.tab,selected)
         if key!=self.body_key:
@@ -376,7 +381,7 @@ class ResearchTerminal:
         elif self.tab==3:text=plan_view(self.selected_plan())
         elif self.tab==4:
             selected=self.selected_run();details=self.run_info if selected and self.run_info and selected['id']==self.run_info['id'] else None
-            text=run_view(selected,details)
+            text=run_view(selected,details,self.runs()[0] if self.runs() else None)
         elif self.tab==6:text=report_view(self.reports)
         else:text=self.settings_text()
         self.update_body(text,follow=self.tab==0 and self.follow and not self.welcome and not has_focus(self.body)())
@@ -791,7 +796,7 @@ class ResearchTerminal:
             token.text='';self.close_dialog();self.notice='Notion 연결을 확인하고 저장했습니다.';self.wakeup.set()
         async def disconnect():
             await self.call(self.client.request,'/api/notion/disconnect',{});token.text='';self.close_dialog();self.notice='Notion 연결을 해제했습니다.';self.wakeup.set()
-        self.dialog('Notion · '+project['title'],HSplit([Label('상위 페이지 URL 또는 ID'),parent,Label('연결 토큰 · 숨김 입력 / 기존 토큰 유지 시 비우기'),token,automatic,Label('토큰은 이 Mac에만 저장합니다. 연구 대화에 전송하지 않습니다.')]),[('저장',lambda:self.spawn(save())),('연결 해제',lambda:self.spawn(disconnect())),('닫기',self.close_dialog)],parent)
+        self.dialog('Notion · '+project['title'],HSplit([Label('상위 페이지 아래 연구 기록 DB · 날짜순 표와 달력'),Label('상위 페이지 URL 또는 ID'),parent,Label('연결 토큰 · 숨김 입력 / 기존 토큰 유지 시 비우기'),token,automatic,Label('토큰은 이 Mac에만 저장합니다. 연구 대화에 전송하지 않습니다.')]),[('저장',lambda:self.spawn(save())),('연결 해제',lambda:self.spawn(disconnect())),('닫기',self.close_dialog)],parent)
 
     def provider_dialog(self,name):
         item=next((p for p in self.providers.get('providers',[]) if p['name']==name),{})

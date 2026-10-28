@@ -207,6 +207,9 @@ def finish(server,job,session,rows,report):
     if not searches and not recorded:raise ValueError('실제 논문 조회 기록 없이 탐색을 완료할 수 없습니다.')
     if any(r['state'] in {'queued','running'} for r in rows):raise ValueError('실행 중인 작은 실험을 먼저 확인하세요.')
     receipts=[server.experiments.run_info(r['id']) for r in rows];evaluations=[triage(r,prefs) for r in receipts]
+    from experiments import completed_run_count
+    completed=completed_run_count(rows)
+    if receipts and not completed:raise ValueError('실행 오류 또는 측정 누락이 남아 있습니다. 같은 예산 안에서 로그·환경·코드를 수정하고 재시도하세요. 실패를 음성 연구 결과로 완료 처리하지 않습니다.')
     promising=[r for r in evaluations if r['promising']]
     if receipts:
         reviewer_path=work/'reviewer-latest.json'
@@ -229,7 +232,7 @@ def finish(server,job,session,rows,report):
     if ideas.is_file() and not ideas.is_symlink():
         content=ideas.read_text();(Path(job['run_dir'])/'scout-ideas.md').write_text(content)
         server.store.add_note(job['node_id'],'idea','탐색 연결 후보와 선별 근거',content[:99000])
-    record=dict(job_id=job['id'],auto_session_id=session['id'],run_ids=[r['id'] for r in rows],report=str(archive),report_sha256=hashlib.sha256(text.encode()).hexdigest(),completed_at=now(),research_style='scout',promising_count=len(promising),triage=evaluations,outcome='promising' if promising else 'no_promising_candidate')
+    record=dict(job_id=job['id'],auto_session_id=session['id'],run_ids=[r['id'] for r in rows],completed_experiments=completed,attempt_count=len(rows),report=str(archive),report_sha256=hashlib.sha256(text.encode()).hexdigest(),completed_at=now(),research_style='scout',promising_count=len(promising),triage=evaluations,outcome='promising' if promising else 'no_promising_candidate')
     (Path(job['run_dir'])/'scout-triage.json').write_text(json.dumps(evaluations,ensure_ascii=False,indent=2))
     if promising:
         server.store.add_note(job['node_id'],'analysis','탐색 보고 · 유망 후보 '+str(len(promising))+'개',text+'\n\n실제 측정 기반 판정\n'+json.dumps(evaluations,ensure_ascii=False,indent=2))
