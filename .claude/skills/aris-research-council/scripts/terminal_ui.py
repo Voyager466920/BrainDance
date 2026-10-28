@@ -575,7 +575,7 @@ class ResearchTerminal:
         def activate(text,callback):
             if self.modal_task and not self.modal_task.done():self.notice='저장 처리 중입니다.';return
             result=self.invoke(callback)
-            if text in {'저장','등록','자동 시작','삭제','복원','완전 삭제'} and isinstance(result,asyncio.Task):self.modal_task=result
+            if text in {'저장','등록','자동 시작','삭제','복원','완전 삭제','만들고 자동 시작','만들기만','다음 · 자동 실행 한도'} and isinstance(result,asyncio.Task):self.modal_task=result
         actions=[Button(t,handler=lambda text=t,callback=f:activate(text,callback)) for t,f in buttons]
         view=Dialog(title=title,body=body,buttons=actions,with_background=True,width=Dimension(preferred=76,max=90))
         floating=Float(content=view);self.container.floats.append(floating);self.modals.append((view,floating))
@@ -702,11 +702,17 @@ class ResearchTerminal:
         style=self.navigable_list(RadioList([('focused','집중 연구'),('scout','논문 탐색 · 작은 실험')],default='focused',select_on_focus=True))
         def next_step():
             if not name.text.strip():self.notice='프로젝트 이름을 입력하세요.';return
+            def payload(assignment):
+                return dict(name=name.text,goal=goal.text,research_preferences=dict(style=style.current_value,interests=[v.strip() for v in interests.text.replace('\n',',').split(',') if v.strip()],bridge_fields=[v.strip() for v in bridges.text.replace('\n',',').split(',') if v.strip()]),compute=assignment)
             async def create(assignment):
-                record=await self.call(self.client.request,'/api/project',dict(name=name.text,goal=goal.text,research_preferences=dict(style=style.current_value,interests=[v.strip() for v in interests.text.replace('\n',',').split(',') if v.strip()],bridge_fields=[v.strip() for v in bridges.text.replace('\n',',').split(',') if v.strip()]),compute=assignment))
+                record=await self.call(self.client.request,'/api/project',payload(assignment))
                 while self.modals:self.close_dialog()
                 project=await self.call(self.client.project,record['project_id']);await self.select_project(project)
-            self.resource_dialog(on_apply=create,title='새 프로젝트 · 실행 환경')
+            async def prepare_start(assignment):
+                pending=payload(assignment)
+                while self.modals:self.close_dialog()
+                self.start_dialog(create_project=pending)
+            self.resource_dialog(on_apply=create,on_start=prepare_start,title='새 프로젝트 · 실행 환경')
         self.dialog('새 프로젝트',HSplit([Label('프로젝트 이름'),name,Label('연구 목표'),goal,Label('관심 분야 · 쉼표/줄바꿈으로 구분'),interests,Label('연결할 다른 분야 · 비우면 자동 선택'),bridges,Box(style,height=2,padding=0)]),[('다음 · 서버와 GPU',next_step),('취소',self.close_dialog)],name)
 
     async def interests_dialog(self):
@@ -719,7 +725,7 @@ class ResearchTerminal:
             await self.call(self.client.request,'/api/project/research-settings',dict(project_id=pid,settings=changes));self.close_dialog();self.notice='프로젝트 관심 분야를 저장했습니다.'
         self.dialog('프로젝트 관심 분야',HSplit([Label('관심 분야 · 쉼표/줄바꿈'),interests,Label('연결할 다른 분야 · 비우면 자동 선택'),bridges,Box(style,height=2,padding=0),VSplit([Label('최근 며칠'),days,Label('작은 실험 횟수'),pilots],height=1),VSplit([Label('실험당 최대 초'),seconds,Label('상대 개선 기준 · 0.05=5%'),gain],height=1)]),[('저장',lambda:self.spawn(save())),('취소',self.close_dialog)],interests)
 
-    def resource_dialog(self,on_apply=None,title='서버와 GPU'):
+    def resource_dialog(self,on_apply=None,title='서버와 GPU',on_start=None):
         if not self.project and on_apply is None:raise ClientError('프로젝트를 먼저 선택하세요.')
         current=resource_info(self.compute,self.project['id'] if self.project else '')['assignment'] or {}
         profiles=self.compute.get('profiles',[]) or [dict(id='local',name='로컬 CPU',kind='local')]
@@ -729,14 +735,17 @@ class ResearchTerminal:
         parallel=TextArea(text=str(current.get('max_parallel_runs',1)),multiline=False)
         form=dict(profile=profile,devices=devices,minutes=minutes,parallel=parallel,last=None,initial=current.get('device_ids',['cpu']))
         self.resource_form=form
-        async def save():
+        async def save(start=False):
             assignment=dict(profile_id=profile.current_value,device_ids=list(devices.current_values),time_budget_minutes=int(minutes.text),max_parallel_runs=int(parallel.text),auto_run=False)
-            if on_apply:await on_apply(assignment)
+            if start and on_start:await on_start(assignment)
+            elif on_apply:await on_apply(assignment)
             else:
                 await self.call(self.client.request,'/api/compute/assignment',dict(project_id=self.project['id'],**assignment));self.close_dialog()
             self.notice='실행 환경을 저장했습니다.';self.wakeup.set()
-        self.dialog(title,HSplit([Label('서버'),Box(profile,height=3,padding=0),Label('장치 · 서버 물리 GPU 번호 / UUID로 선택'),Box(devices,height=3,padding=0),VSplit([Label('시간 예산(분)'),minutes,Label('동시 실험'),parallel],padding=1,height=1),Label('장치 조회 후 선택하세요. 저장하면 기존 미실행 계획은 다시 검토합니다.')]),
-            [('장치 조회',lambda:self.spawn(self.probe(profile.current_value))),('저장',lambda:self.spawn(save())),('취소',self.close_dialog)],profile)
+        actions=[('장치 조회',lambda:self.spawn(self.probe(profile.current_value)))]
+        if on_start:actions.append(('다음 · 자동 실행 한도',lambda:self.spawn(save(True))))
+        actions.extend([('만들기만' if on_start else '저장',lambda:self.spawn(save())),('취소',self.close_dialog)])
+        self.dialog(title,HSplit([Label('서버'),Box(profile,height=3,padding=0),Label('장치 · 서버 물리 GPU 번호 / UUID로 선택'),Box(devices,height=3,padding=0),VSplit([Label('시간 예산(분)'),minutes,Label('동시 실험'),parallel],padding=1,height=1),Label('장치 조회 후 선택하세요. 저장하면 기존 미실행 계획은 다시 검토합니다.')]),actions,profile)
         self.resource_form=form;self.update_resource_form()
 
     def update_resource_form(self):
@@ -799,19 +808,27 @@ class ResearchTerminal:
         if not self.project:raise ClientError('프로젝트를 먼저 선택하세요.')
         return self.project['id']
 
-    def start_dialog(self,research_style=None):
-        pid=self.require_project()
-        current=self.state.get('session')
+    def start_dialog(self,research_style=None,create_project=None):
+        pid=None if create_project else self.require_project()
+        current=None if create_project else self.state.get('session')
         if current and current['status'] in {'running','paused','blocked'}:self.select_tab(1);self.notice='기존 자동 연구를 재개하거나 한도를 조정하세요.';return
-        root=next((n for n in self.tree.get('nodes',[]) if n['project_id']==pid and not n['parent_id']),{})
+        root=dict(metadata=dict(research_preferences=create_project['research_preferences'])) if create_project else next((n for n in self.tree.get('nodes',[]) if n['project_id']==pid and not n['parent_id']),{})
         preferences=root.get('metadata',{}).get('research_preferences',{});research_style=research_style or preferences.get('style','focused');scouting=research_style=='scout'
         cycles=TextArea(text=str(preferences.get('max_pilots',2)) if scouting else '3',multiline=False);calls=TextArea(text='80' if scouting else '40',multiline=False);tokens=TextArea(text='3000000' if scouting else '1500000',multiline=False);folder=TextArea(multiline=False)
         style=self.navigable_list(RadioList([('focused','집중 연구'),('scout','논문 탐색 · 작은 실험')],default=research_style,select_on_focus=True))
         mode=self.navigable_list(RadioList([('lite','Lite'),('balanced','Balanced'),('deep','Deep')],default='lite' if scouting else 'balanced',select_on_focus=True))
         async def start():
-            await self.call(self.client.request,'/api/control/automatic',dict(project_id=pid,action='start',max_cycles=int(cycles.text),max_model_calls=int(calls.text),token_budget=int(tokens.text),context_path=folder.text,mode=mode.current_value,research_style=style.current_value))
-            self.close_dialog();self.select_tab(1)
-        self.dialog('프로젝트 자동 연구 시작',HSplit([Label(self.resource_header()),Box(style,height=2,padding=0),Label('검토된 실험을 선택한 장치·시간·모델 한도 안에서 자동 실행합니다.'),Label('대상 서버의 연구 폴더'),folder,VSplit([Label('실험 횟수'),cycles,Label('모델 호출 한도'),calls],height=1),Label('토큰 예상·예약 한도'),tokens,Box(mode,height=3,padding=0)]),[('자동 시작',lambda:self.spawn(start())),('취소',self.close_dialog)],folder)
+            nonlocal pid
+            limits=dict(max_cycles=int(cycles.text),max_model_calls=int(calls.text),token_budget=int(tokens.text))
+            if pid is None:
+                record=await self.call(self.client.request,'/api/project',create_project)
+                pid=record['project_id']
+                project=await self.call(self.client.project,pid);await self.select_project(project)
+                self.app.layout.focus(self.modals[-1][0])
+            await self.call(self.client.request,'/api/control/automatic',dict(project_id=pid,action='start',**limits,context_path=folder.text,mode=mode.current_value,research_style=style.current_value))
+            self.close_dialog();self.select_tab(1);self.notice='프로젝트 자동 연구를 시작했습니다.'
+        hardware=self.resource_header() if not create_project else create_project['name']+' · '+create_project['compute']['profile_id']+' · '+', '.join(create_project['compute']['device_ids'])+' · '+str(create_project['compute']['time_budget_minutes'])+'분'
+        self.dialog('새 프로젝트 · 만들고 자동 시작' if create_project else '프로젝트 자동 연구 시작',HSplit([Label(hardware),Box(style,height=2,padding=0),Label('검토된 실험을 선택한 장치·시간·모델 한도 안에서 자동 실행합니다.'),Label('대상 서버의 연구 폴더'),folder,VSplit([Label('실험 횟수'),cycles,Label('모델 호출 한도'),calls],height=1),Label('토큰 예상·예약 한도'),tokens,Box(mode,height=3,padding=0)]),[('만들고 자동 시작' if create_project else '자동 시작',lambda:self.spawn(start())),('취소',self.close_dialog)],folder)
 
     async def automatic(self,action):
         pid=self.require_project();await self.call(self.client.request,'/api/control/automatic',dict(project_id=pid,action=action));self.notice='자동 연구 '+{'pause':'일시정지','resume':'재개','stop':'중지'}[action]

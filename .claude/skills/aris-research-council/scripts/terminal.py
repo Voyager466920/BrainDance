@@ -264,6 +264,7 @@ def parser():
     q=sub.add_parser('interests',parents=[common]);q.add_argument('--interest',action='append');q.add_argument('--bridge',action='append');q.add_argument('--clear-bridges',action='store_true');q.add_argument('--style',choices=['focused','scout']);q.add_argument('--days',type=int);q.add_argument('--papers',type=int);q.add_argument('--pilots',type=int);q.add_argument('--seconds',type=int);q.add_argument('--gain',type=float);q.add_argument('--seeds',type=int)
     q=sub.add_parser('scout',parents=[common]);q.add_argument('action',choices=['start','status','pause','resume','stop'],default='status',nargs='?');q.add_argument('--calls',type=int,default=80);q.add_argument('--tokens',type=int,default=3000000);q.add_argument('--context',default='');q.add_argument('--mode',choices=['lite','balanced','deep'],default='lite')
     q=sub.add_parser('new',parents=[common]);q.add_argument('name');q.add_argument('--goal',required=True);q.add_argument('--target',default='local');q.add_argument('--devices',default='cpu');q.add_argument('--minutes',type=int,default=30);q.add_argument('--interest',action='append',default=[]);q.add_argument('--bridge',action='append',default=[]);q.add_argument('--style',choices=['focused','scout'],default='focused')
+    q.add_argument('--start',action='store_true',help='Create and immediately start automatic research within the selected limits');q.add_argument('--calls',type=int);q.add_argument('--tokens',type=int);q.add_argument('--cycles',type=int);q.add_argument('--context',default='');q.add_argument('--mode',choices=['lite','balanced','deep'])
     q=sub.add_parser('target',parents=[common]);q.add_argument('profile');q.add_argument('--devices',required=True);q.add_argument('--minutes',type=int,default=30)
     q=sub.add_parser('connection',parents=[common]);q.add_argument('alias');q.add_argument('--name')
     q=sub.add_parser('logs',parents=[common]);q.add_argument('kind',choices=['job','run']);q.add_argument('id')
@@ -286,7 +287,12 @@ def dispatch(client,args,project=None):
     if command=='connection':return client.request('/api/compute/profile',dict(name=args.name or args.alias,kind='ssh',host=args.alias,user='',port=None,identity_file=''))
     if command=='devices':return client.request('/api/compute/probe',dict(profile_id=profile_for(client,args.profile)['id']))
     if command=='new':
-        return client.request('/api/project',dict(name=args.name,goal=args.goal,research_preferences=dict(style=args.style,interests=args.interest,bridge_fields=args.bridge),compute=dict(profile_id=profile_for(client,args.target)['id'],device_ids=args.devices.split(','),max_parallel_runs=1,time_budget_minutes=args.minutes,auto_run=False)))
+        record=client.request('/api/project',dict(name=args.name,goal=args.goal,research_preferences=dict(style=args.style,interests=args.interest,bridge_fields=args.bridge),compute=dict(profile_id=profile_for(client,args.target)['id'],device_ids=args.devices.split(','),max_parallel_runs=1,time_budget_minutes=args.minutes,auto_run=False)))
+        if args.start:
+            scouting=args.style=='scout'
+            try:record['automatic']=client.request('/api/control/automatic',dict(project_id=record['project_id'],action='start',research_style=args.style,max_cycles=args.cycles if args.cycles is not None else (2 if scouting else 3),max_model_calls=args.calls if args.calls is not None else (80 if scouting else 40),token_budget=args.tokens if args.tokens is not None else (3000000 if scouting else 1500000),context_path=args.context,mode=args.mode or ('lite' if scouting else 'balanced')))
+            except ClientError as error:raise ClientError('프로젝트는 생성됐지만 자동 시작에 실패했습니다. 프로젝트 ID: '+record['project_id']+' · '+str(error)) from error
+        return record
     project=client.project(args.project) if hasattr(args,'project') else project or client.project()
     if command=='interests':
         mapping={'interest':'interests','bridge':'bridge_fields','style':'style','days':'lookback_days','papers':'max_papers','pilots':'max_pilots','seconds':'pilot_seconds','gain':'min_improvement','seeds':'min_seeds'}
@@ -402,7 +408,7 @@ def output(value,args,project=None):
         for device in value.get('devices',[]):
             prefix='GPU '+str(device['index'])+' · ' if type(device.get('index')) is int else ''
             print(prefix+safe_text(device.get('name',device['id']))+' · '+safe_text(device['id']))
-    elif args.command=='new':print('프로젝트 생성: '+safe_text(value['node']['metadata']['project_name'])+' · '+value['project_id'])
+    elif args.command=='new':print('프로젝트 생성'+(' · 자동 연구 시작' if value.get('automatic') else '')+': '+safe_text(value['node']['metadata']['project_name'])+' · '+value['project_id'])
     elif args.command=='connection':print('연결 등록: '+safe_text(value['name'])+' · '+value['id'])
     elif args.command=='target':print('실행 환경 저장: '+safe_text(value['profile_id'])+' · '+safe_text(', '.join(value['device_ids'])))
     elif args.command=='logs':

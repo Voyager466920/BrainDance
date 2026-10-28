@@ -55,6 +55,15 @@ class TerminalTests(unittest.TestCase):
         second=terminal.dispatch(self.client,terminal.parser().parse_args(['new','Other','--goal','Other project']))
         self.assertEqual(self.client.messages(self.client.project(second['project_id'])),[])
 
+    def test_new_start_uses_selected_style_and_explicit_limits(self):
+        record=self.call('new','Immediate scout','--goal','OFFLINE setup only','--style','scout','--interest','classification','--start','--calls','12','--tokens','200000','--cycles','1','--minutes','2')
+        state=self.server.autopilot.state(record['project_id'])
+        self.assertEqual(state['session']['status'],'running')
+        self.assertEqual(state['session']['config']['research_style'],'scout')
+        self.assertEqual(state['session']['config']['max_cycles'],1)
+        self.assertEqual(state['usage']['max_calls'],12);self.assertEqual(state['usage']['token_budget'],200000)
+        self.assertEqual(record['automatic']['session']['id'],state['session']['id'])
+
     def test_csrf_rotation_refreshes_without_replaying_a_successful_mutation(self):
         self.client.csrf='expired'
         self.call('chat','한 번만 전송','--mode','ask','--no-wait')

@@ -262,11 +262,30 @@ class TerminalUITests(unittest.TestCase):
             fields[0].text='Created by tabbed UI';fields[1].text='CPU fixture only'
             ui.modal_buttons[-1][0].handler()
             self.assertIsNotNone(ui.resource_form);ui.resource_form['minutes'].text='2'
-            ui.modal_buttons[-1][1].handler()
+            ui.modal_buttons[-1][2].handler()
             await self.wait_until(lambda:ui.project['title']=='Created by tabbed UI')
             assignment=self.server.compute.state()['assignments'][ui.project['id']]
             self.assertEqual(assignment['device_ids'],['cpu']);self.assertEqual(assignment['time_budget_minutes'],2)
             self.assertFalse(self.server.autopilot.sessions(ui.project['id']))
+        self.scenario(exercise)
+
+    def test_new_project_can_create_and_start_from_the_same_wizard(self):
+        async def exercise(ui,pipe):
+            before=len(self.server.store.export_json()['projects'])
+            ui.new_project_dialog();fields=self.editable_fields(ui)
+            fields[0].text='Create and scout';fields[1].text='OFFLINE setup check';fields[2].text='classification'
+            ui.modal_buttons[-1][0].handler();ui.resource_form['minutes'].text='2'
+            ui.modal_buttons[-1][1].handler()
+            await self.wait_until(lambda:ui.modals and '만들고 자동 시작' in ui.modals[-1][0].title)
+            self.assertEqual(len(self.server.store.export_json()['projects']),before)
+            fields=self.editable_fields(ui);fields[1].text='1';fields[2].text='12';fields[3].text='200000'
+            ui.modal_buttons[-1][0].handler()
+            await self.wait_until(lambda:not ui.modals)
+            self.assertEqual(ui.project['title'],'Create and scout')
+            state=self.server.autopilot.state(ui.project['id'])
+            self.assertEqual(state['session']['status'],'running');self.assertEqual(state['usage']['max_calls'],12)
+            self.assertEqual(self.server.compute.state()['assignments'][ui.project['id']]['time_budget_minutes'],2)
+            self.assertEqual(ui.tab,1)
         self.scenario(exercise)
 
     def test_settings_slashes_open_controls_without_starting_login_or_model_calls(self):
