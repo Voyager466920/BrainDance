@@ -6,6 +6,7 @@ the unmodified official codex-exec server executes the independent participant.
 """
 from __future__ import annotations
 
+import novelty
 import argparse
 import concurrent.futures
 import datetime as dt
@@ -278,7 +279,7 @@ LANGUAGE = '''Write all human-readable titles, research questions, hypotheses, e
 PROPOSAL = LANGUAGE + '''Return ONLY a JSON object with these keys:
 title, research_question, hypothesis, falsifiable_prediction, evidence_ids (array of supplied paper IDs),
 novelty (object: assessment, closest_prior_work, uncertainty), feasibility (object: assessment, dependencies),
-experiment (object: model_dataset_candidates, comparison, controls, metric, rejection_rule), failure_mode.
+experiment (object: model_dataset_candidates, comparison, controls, metric, rejection_rule), failure_mode, novelty_queries (three distinct targeted searches for overlapping mechanisms, alternative terminology and closest prior work).
 Propose ONE small ML study; do not run experiments. Never present a hypothesis as a result.
 Use only supplied evidence; leave unverified model/dataset availability as explicit unknown.
 Do not identify yourself, your model, provider, or role in the response. No persona introductions.'''
@@ -638,7 +639,7 @@ research_title (short Korean title for the common research problem),
 agreement (array), clashes (array), blind_spots (array), recommendation (string), first_step (string),
 assessments (array exactly one for each label A-D: label, novelty_score, feasibility_score, rigor_score
 numbers 1-5, priority integer 0-100, status active|held|discarded, rationale string, evidence_ids array).
-Treat evidence as abstract-level, distinguish a proposed test from a completed experiment.
+Treat evidence as abstract-level, distinguish a proposed test from a completed experiment. Each assessment MUST also include novelty_status (plausible_delta|overlap_found|unverified), closest_prior_work (array of verified fresh paper IDs), technical_delta (specific mechanism-level comparison). No-result search, paper existence or performance gain alone cannot prove novelty. Failed/metadata-only searches mean unverified; close neighbors alone are not grounds to discard an idea.
 """ + "\nTOPIC: " + topic + "\nEVIDENCE:\n" + context + "\nANONYMOUS PROPOSALS:\n" + json.dumps(blind, ensure_ascii=False) + "\nANONYMOUS PEER REVIEWS:\n" + json.dumps(list(reviews.values()), ensure_ascii=False)
     obj = claude_call(folder, "chairman", prompt, config["chairman_model"], config, budget,
                       required=("agreement", "clashes", "blind_spots", "recommendation", "first_step", "assessments"))
@@ -769,14 +770,22 @@ def run(args, progress=None):
             dump(private / "anonymization-map.json", mapping)
             os.chmod(private / "anonymization-map.json", 0o600)
             dump(rdir / "anonymous-proposals.json", blind)
-            blind_context = context + "\nANONYMOUS PROPOSALS:\n" + json.dumps(blind, ensure_ascii=False)
+            progress('novelty-search','제안별 관련 논문을 다시 검색하고 공식 도구로 존재를 재확인합니다.')
+            fresh=novelty.round_checks(blind,rdir/'novelty',args.aris_repo,cfg)
+            fresh_context='\nFRESH PRIOR-ART RECHECK (labels anonymous):\n'+'\n'.join(label+': '+novelty.review_context(receipt,max(2000,cfg['context_chars']//4)) for label,receipt in fresh.items())
+            extra_ids=list(dict.fromkeys(p['id'] for receipt in fresh.values() for p in receipt['papers']))
+            allowed_review_ids=pack['selected_ids']+run_ids+extra_ids
+            dump(rdir/'novelty-evidence.json',dict(original_evidence=read_json(pack['full_evidence_path']),rechecks=fresh))
+            review_evidence=rdir/'novelty-evidence.json'
+            blind_context = context + fresh_context + "\nANONYMOUS PROPOSALS:\n" + json.dumps(blind, ensure_ascii=False)
             progress('peer-review','익명화한 가설을 Claude·Codex가 교차 평가합니다.')
-            reviews = phase(rdir / "peer-review", "peer-review", topic, blind_context, cfg, budget, args.aris_repo, pack["full_evidence_path"])
+            reviews = phase(rdir / "peer-review", "peer-review", topic, blind_context, cfg, budget, args.aris_repo, str(review_evidence))
             normalize_evidence_ids(reviews,pack)
             validate_reviews(reviews, blind, allowed_review_ids)
             progress('chairman','Claude Chairman이 논문 근거와 교차 평가를 종합합니다.')
-            verdict = chairman(rdir / "chairman", topic, context, blind, reviews, cfg, budget)
+            verdict = chairman(rdir / "chairman", topic, context+fresh_context, blind, reviews, cfg, budget)
             normalize_evidence_ids(verdict,pack)
+            verdict["assessments"]=[novelty.calibrated(a,fresh[a["label"]]) for a in verdict["assessments"]]
             for a in verdict["assessments"]:
                 if a.get("status") not in ("active", "held", "discarded") or type(a.get("priority")) is not int or not 0 <= a["priority"] <= 100:
                     raise ValueError("Invalid chairman decision")
@@ -795,7 +804,7 @@ def run(args, progress=None):
             created = []
             for assessment in verdict["assessments"]:
                 letter = assessment["label"]
-                p = blind[letter]
+                p = {**blind[letter], 'novelty':dict(assessment=assessment['novelty_status'],closest_prior_work=assessment['closest_prior_work'],technical_delta=assessment['technical_delta'],uncertainty=assessment['novelty_limitations'])}
                 pparent = parent
                 if parent["kind"] == "problem" and parent["depth"] + 2 <= cfg["max_depth"]:
                     pparent = store.add_node(parent["id"], p["research_question"], kind="question", evidence=p["evidence_ids"], metadata=dict(run=str(output)))

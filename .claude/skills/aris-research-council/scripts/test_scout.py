@@ -100,7 +100,10 @@ class ScoutPilotTests(unittest.TestCase):
         proof=self.work/'offline-source.json';proof.write_text('{"fixture":true}')
         p=self.work/'scout-source-receipts.json';p.write_text(json.dumps([dict(session_id=self.session['id'],source_receipt=str(proof))]))
         scout.accept(self.server.store,self.node['project_id'],[paper()],'recent','OFFLINE source fixture',self.prefs)
-        choice=self.call('scout_candidates',candidate=dict(paper_ids=['arxiv:2601.12345'],interest='classification',mechanism='transfer statistics',hypothesis='OFFLINE classification transport pilot',experiment='paired measured seeds'))
+        proof=Path(self.job['run_dir'])/'native-novelty/offline/audit.json';proof.parent.mkdir(parents=True)
+        proof.write_text(json.dumps(dict(idea=dict(hypothesis='OFFLINE classification transport pilot'),papers=[],receipt=str(proof))))
+        proof.with_name('review.json').write_text('{"novelty_status":"unverified"}')
+        choice=self.call('scout_candidates',candidate=dict(paper_ids=['arxiv:2601.12345'],interest='classification',mechanism='transfer statistics',hypothesis='OFFLINE classification transport pilot',experiment='paired measured seeds',novelty_receipt=str(proof)))
         (self.work/'scout-selection.json').write_text(json.dumps(choice))
     def pilot(self,positive=True):
         b=.7 if positive else .49

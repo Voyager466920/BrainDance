@@ -17,7 +17,7 @@ STATES={'active':'활성','expanded':'확장','held':'보류','discarded':'폐�
  'running':'진행 중','paused':'일시정지','blocked':'확인 필요','completed':'완료','succeeded':'성공',
  'failed':'실패','cancelled':'취소','interrupted':'중단됨','stopped':'중지','timed_out':'시간 초과'}
 LABELS={'ready':'준비 여부','blockers':'필요한 항목','summary':'요약','title':'제목','hypothesis':'가설',
- 'novelty':'신규성','feasibility':'실현 가능성','evidence':'논문 근거','reasons':'평가 근거','verdict':'평가',
+ 'novelty_status':'신규성 재검증','plausible_delta':'기술적 차이 후보','overlap_found':'중복 가능성 있음','unverified':'미확인','novelty-search':'선행연구 재검색·검증','novelty':'신규성','feasibility':'실현 가능성','evidence':'논문 근거','reasons':'평가 근거','verdict':'평가',
  'limitations':'한계','dependencies':'필요 조건','expected_experiment':'예상 실험','experiment':'실험 계획',
  'next_experiment':'다음 실험','metric':'평가 지표','metrics':'측정 결과','baseline':'기준선','candidate':'후보',
  'accuracy':'정확도','direction':'평가 방향','timeout_seconds':'최대 실행 시간(초)','interpreter':'Python 환경',

@@ -172,6 +172,12 @@ The **실험 실행** (Experiments) tab keeps immutable plans, source code, and 
 
 Use **한도** (Limits), `/limits`, or `braindance limits --hours 8 --project "My project"` to change the remaining time. Recorded usage, scientific history, device selection and the shared project conversation remain intact. The new end time is measured from the moment the change is saved. Paused or stopped work still requires an explicit resume/start.
 
+## Fresh prior-art and novelty checks
+
+Ideas are checked again after generation: the host searches the installed upstream arXiv and OpenAlex clients with alternative queries and no recency filter, retains raw responses/errors, and runs the original paper-existence verifier with `--no-cache`. Earlier verified flags do not substitute for this operation. The native executor loads the original `novelty-check` Skill and gets the original independent Reviewer comparison before registering a scouting candidate. Council separately re-searches its anonymous generated proposals before peer review and synthesis.
+
+Existence, mechanism overlap and novelty are separate claims. Reviews name the closest verified prior work and the concrete technical difference. Missing or metadata-only evidence, unavailable sources and no-result searches leave novelty unverified; performance improvement alone cannot prove novelty. Nearby work alone does not invalidate an idea. Uncertain ideas can still be tested as exploratory pilots. All source diagnostics and full receipts remain local; reading reports still cite paper URLs only.
+
 ## Research advisor and readable reports
 
 The main research executor loads `assets/research-advisor.md` as an additional Claude system prompt. It evaluates concrete problems, structural insights, fair experiments and novelty, while the original autonomous research Skills continue to execute. Confirmed observations, hypotheses and speculation remain distinct. The advisor's default discussion questions do not add human checkpoints to an authorized automatic run.

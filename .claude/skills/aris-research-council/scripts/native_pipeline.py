@@ -21,7 +21,7 @@ from types import SimpleNamespace
 import council
 from tree_store import TreeStore,now
 
-SKILLS=('research-pipeline','idea-discovery','experiment-bridge','auto-review-loop')
+SKILLS=('research-pipeline','idea-discovery','experiment-bridge','auto-review-loop','novelty-check')
 HELPERS={'run_state.py','iteration_log.py','arxiv_fetch.py','verify_papers.py','provenance.py','evidence_check.py'}
 
 
@@ -98,6 +98,11 @@ def advisor_prompt():
 REPORT_CONTRACT="\nREADER REPORT: Before finish, write RESEARCH_BRIEF.json containing native_cycle (integer matching context.native_cycle), problem (string), approach (string), findings (string), limitations (array of strings), next_steps (array of strings). State only facts supported by current receipts, and distinguish confirmed findings, hypotheses and speculation. Write NARRATIVE_REPORT.md in clean Korean Markdown with headings: 해결하려는 문제, 해결 방법, 살펴볼 코드, 결과, 한계와 다음 단계, 참고 논문. References contain plain http/https URLs ONLY: no paper metadata, abstracts, bibliographies or evidence dumps. Mention exact implemented file/function references, actual baseline/candidate numbers, settings and uncertainty. The host adds retained source references, measured tables and graphs. No fabricated measurements. The advisor's critical questions should guide your autonomous next experiment; ask the human only for genuinely missing authority or credentials. Do not pause authorized research merely to wait for answers to the advisor's default discussion questions. The report format here and explicit human instructions take precedence over the advisor's default response template.\n"
 
 
+NOVELTY_CONTRACT="""
+FRESH NOVELTY RECHECK: Invoke original aris-official:novelty-check for each new mechanism before implementing. Re-search actual literature instead of re-reading the frozen initial pack. Use novelty_check(hypothesis, queries=[at least 3 distinct targeted searches]); the host searches both installed source clients without date filters, re-verifies paper existence with --no-cache, and obtains the original independent Reviewer novelty comparison. This tool supplies the original Skill's source/verification/reviewer slot; do not repeat an identical Reviewer call. Attach its novelty_receipt when registering scout_candidates. State closest prior work, concrete mechanism-level delta and coverage limits. Never equate an existing ID, a new combination of keywords, better measurements, or no search hits with proven novelty. If sources cannot be checked, say unverified; feasibility pilots may continue with that label. Council separately re-searches its actual generated proposals before anonymous review. Preserve all original receipts and errors.
+"""
+
+
 def run(job,root,progress):
     work,plugin=install(job)
     known,sources,pending_finish=session_skill_receipts(job)
@@ -109,7 +114,7 @@ def run(job,root,progress):
             progress.emit('native-completed','기존 모델의 보고 요청을 재사용해 검증된 결과를 저장했습니다. 추가 모델 호출은 없습니다.',state='completed');return
     host=command('--native-host',str(root/'job.json'))
     mcp=work/'.host-mcp.json';council.dump(mcp,dict(mcpServers={'codex':dict(command=host[0],args=host[1:])}))
-    contract=CONTRACT+REPORT_CONTRACT
+    contract=CONTRACT+REPORT_CONTRACT+NOVELTY_CONTRACT
     if job.get('research_style')=='scout':
         from scout import CONTRACT as scout_contract
         contract+='\n'+scout_contract
@@ -252,6 +257,25 @@ class Host:
             receipts=self.work/'scout-source-receipts.json';old=council.read_json(receipts) if receipts.exists() else []
             council.dump(receipts,old+[dict(session_id=self.job['auto_session_id'],native_cycle=self.job.get('native_cycle',0),source_receipt=result['source_receipt'])])
             return result
+        if name=='novelty_check':
+            self.require_skill('novelty-check')
+            if len(set(args.get('queries',[])))<3:raise ValueError('서로 다른 기술적 검색어를 3개 이상 지정하세요.')
+            import novelty
+            idea=dict(hypothesis=args['hypothesis'],title=args['hypothesis'],novelty_queries=args.get('queries',[]))
+            folder=self.root/'native-novelty'/novelty.key(idea)
+            self.event('novelty-search','관련 선행연구를 새로 검색하고 논문 존재와 기술적 중복을 재확인합니다.')
+            checked=novelty.audit(idea,folder,self.job['aris_repo'],self.cfg)
+            if checked['papers']:
+                frozen=folder/'novelty-review-prompt.txt'
+                prompt='Independent novelty review of the actual retrieved sources below. Return ONLY JSON: novelty_status(plausible_delta|overlap_found|unverified), closest_prior_work(array of verified fresh IDs), technical_delta(string), limitations(array), verdict(PROCEED|PROCEED WITH CAUTION|ABANDON). ABANDON requires a specific verified paper containing this result, not mere proximity. No-result searches or missing abstracts cannot prove novelty. Metadata confirms existence only. Do not run tools, experiments or change files. Idea: '+json.dumps(idea,ensure_ascii=False)+'\n'+novelty.review_context(checked)
+                if frozen.exists():prompt=frozen.read_text()
+                else:frozen.write_text(prompt)
+                cfg={**self.cfg,'output_tokens':4000,'codex_model':None,'codex_effort':'xhigh'}
+                review=council.codex_call(folder/'reviewer',prompt,cfg,council.Budget(cfg,folder/'budget.json'),self.job['aris_repo'])
+                review=novelty.calibrated(review,checked)
+            else:review=novelty.calibrated(dict(novelty_status='unverified',limitations=['논문 근거를 재확인하지 못했습니다.']),checked)
+            council.dump(folder/'review.json',review)
+            return dict(novelty_receipt=checked['receipt'],review=review,evidence=json.loads(novelty.review_context(checked)))
         if name=='scout_candidates':
             self.require_skill('idea-discovery')
             result=self.api('scout_candidates',candidate=args);council.dump(self.work/'scout-selection.json',result);return result
@@ -302,7 +326,7 @@ class Host:
             fingerprint=hashlib.sha256(json.dumps(dict(runs=context['completed_runs'] if stage=='results' else [],revision=context['revision'],evidence=(source/'source-evidence.json').read_text(),literature=(source/'LITERATURE.md').read_text()),sort_keys=True).encode()).hexdigest()
             verification=self.root/('native-verification-'+stage+'-'+fingerprint[:12]);verification.mkdir(exist_ok=True)
             evidence=verify(self.job,verification,source,Progress())
-            folder=self.work/('council-'+stage+'-'+fingerprint[:12]+'-evidence-v2')
+            folder=self.work/('council-'+stage+'-'+fingerprint[:12]+'-novelty-v1')
             frozen=self.work/('advisory-topic-'+stage+'-'+fingerprint[:12]+'.json')
             if (folder/'status.json').is_file() and council.read_json(folder/'status.json').get('status')=='completed':
                 council.dump(self.work/('advice-'+stage+'.json'),dict(stage=stage,native_cycle=self.job.get('native_cycle',0),path=str(folder),fingerprint=fingerprint,run_ids=[r['id'] for r in context['completed_runs']]))
@@ -373,7 +397,7 @@ class Host:
 
 def serve(jobfile):
     host=Host(council.read_json(jobfile))
-    tools=[('paper_search','Retrieve real recent or cross-domain papers with project duplicate tracking',{'query':{'type':'string'},'source':{'type':'string','enum':['arxiv','openalex']},'kind':{'type':'string','enum':['recent','cross-domain']},'domain':{'type':'string'},'limit':{'type':'integer'}}),('scout_candidates','Connect retrieved canonical paper IDs to a project interest and small experiment',{'paper_ids':{'type':'array','items':{'type':'string'}},'interest':{'type':'string'},'mechanism':{'type':'string'},'hypothesis':{'type':'string'},'experiment':{'type':'string'}}),('scout_triage','Evaluate actual baseline/candidate and seed receipts against project thresholds',{}),('context','Shared project conversation, directions, limits and resources',{}),('target','Read-only selected target inventory or source query',{'op':{'type':'string'},'path':{'type':'string'},'start':{'type':'integer'},'lines':{'type':'integer'}}),('helper','Execute an allowed unmodified upstream bookkeeping/paper helper',{'name':{'type':'string'},'args':{'type':'array','items':{'type':'string'}}}),('codex','Original ARIS independent Reviewer; preserve Skill model/effort overrides',{'prompt':{'type':'string'},'model':{'type':'string'},'config':{'type':'object'}}),('codex-reply','Continue original project Reviewer',{'prompt':{'type':'string'},'threadId':{'type':'string'}}),('council','Additional advisory Council at ideas/results boundary',{'stage':{'type':'string','enum':['ideas','results']}}),('experiment','Review and submit immutable Python experiment to selected project resources',{'source':{'type':'string'},'title':{'type':'string'},'interpreter':{'type':'string'},'cwd':{'type':'string'},'args':{'type':'array','items':{'type':'string'}},'timeout_seconds':{'type':'integer'},'metric':{'type':'string'},'direction':{'type':'string','enum':['maximize','minimize']}}),('receipt','Poll actual run metrics/logs',{'run_id':{'type':'string'}}),('finish','Persist native final report after real Reviewer, Council and experiments',{'report':{'type':'string'}})]
+    tools=[('novelty_check','Fresh multi-source prior-art retrieval, no-cache existence checks and independent Reviewer comparison',{'hypothesis':{'type':'string'},'queries':{'type':'array','items':{'type':'string'}}}),('paper_search','Retrieve real recent or cross-domain papers with project duplicate tracking',{'query':{'type':'string'},'source':{'type':'string','enum':['arxiv','openalex']},'kind':{'type':'string','enum':['recent','cross-domain']},'domain':{'type':'string'},'limit':{'type':'integer'}}),('scout_candidates','Connect retrieved canonical paper IDs to a project interest and small experiment',{'paper_ids':{'type':'array','items':{'type':'string'}},'interest':{'type':'string'},'mechanism':{'type':'string'},'hypothesis':{'type':'string'},'experiment':{'type':'string'},'novelty_receipt':{'type':'string'}}),('scout_triage','Evaluate actual baseline/candidate and seed receipts against project thresholds',{}),('context','Shared project conversation, directions, limits and resources',{}),('target','Read-only selected target inventory or source query',{'op':{'type':'string'},'path':{'type':'string'},'start':{'type':'integer'},'lines':{'type':'integer'}}),('helper','Execute an allowed unmodified upstream bookkeeping/paper helper',{'name':{'type':'string'},'args':{'type':'array','items':{'type':'string'}}}),('codex','Original ARIS independent Reviewer; preserve Skill model/effort overrides',{'prompt':{'type':'string'},'model':{'type':'string'},'config':{'type':'object'}}),('codex-reply','Continue original project Reviewer',{'prompt':{'type':'string'},'threadId':{'type':'string'}}),('council','Additional advisory Council at ideas/results boundary',{'stage':{'type':'string','enum':['ideas','results']}}),('experiment','Review and submit immutable Python experiment to selected project resources',{'source':{'type':'string'},'title':{'type':'string'},'interpreter':{'type':'string'},'cwd':{'type':'string'},'args':{'type':'array','items':{'type':'string'}},'timeout_seconds':{'type':'integer'},'metric':{'type':'string'},'direction':{'type':'string','enum':['maximize','minimize']}}),('receipt','Poll actual run metrics/logs',{'run_id':{'type':'string'}}),('finish','Persist native final report after real Reviewer, Council and experiments',{'report':{'type':'string'}})]
     def stop(*_):
         with council.PROCESS_LOCK:
             for p in council.ACTIVE_PROCESSES:
@@ -428,7 +452,15 @@ def action(server,payload):
     if payload['action']=='scout_candidates':
         if config.get('research_style')!='scout':raise ValueError('탐색 모드에서만 논문 연결을 등록할 수 있습니다.')
         from scout import candidate
-        return candidate(server.store,job['project_id'],job['node_id'],session['id'],payload['candidate'],cycle=config.get('native_cycle',0))
+        from novelty import calibrated
+        args=payload['candidate'];proof=Path(args.get('novelty_receipt','')).resolve()
+        if not proof.is_relative_to((Path(job['run_dir'])/'native-novelty').resolve()) or not proof.is_file():raise ValueError('먼저 현재 가설로 novelty_check를 실행하고 novelty_receipt를 첨부하세요.')
+        checked=council.read_json(proof)
+        if checked['idea']['hypothesis']!=args['hypothesis'] or not proof.with_name('review.json').is_file():raise ValueError('현재 가설의 신규성 재검색·리뷰 기록이 필요합니다.')
+        chosen=candidate(server.store,job['project_id'],job['node_id'],session['id'],args,cycle=config.get('native_cycle',0))
+        review=calibrated(council.read_json(proof.with_name('review.json')),checked)
+        server.store.update_node(chosen['node_id'],metadata=dict(novelty_recheck=review,novelty=dict(assessment=review['novelty_status'],closest_prior_work=review.get('closest_prior_work',[]),technical_delta=review.get('technical_delta',''),uncertainty=review['novelty_limitations'])))
+        return {**chosen,'novelty_recheck':review}
     if payload['action']=='scout_triage':
         from scout import triage,settings
         return dict(evaluations=[triage(server.experiments.run_info(r['id']),settings(server.store,job['project_id'])) for r in rows if r['state'] not in {'queued','running'}])
