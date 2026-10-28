@@ -18,6 +18,15 @@ def paper(identity='2601.12345',days=0):
 
 
 class ScoutUnitTests(unittest.TestCase):
+    def test_interest_count_does_not_limit_domains_or_expand_execution_limits(self):
+        fields=['field'+str(i) for i in range(100)]
+        prefs=scout.validate(dict(interests=fields,bridge_fields=fields))
+        self.assertEqual(prefs['interests'],fields);self.assertEqual(prefs['bridge_fields'],fields)
+        self.assertEqual(prefs['max_papers'],scout.DEFAULTS['max_papers'])
+        self.assertEqual(prefs['max_pilots'],scout.DEFAULTS['max_pilots'])
+        for value in [None,'field',[3],[''],['x'*201]]:
+            with self.assertRaises(ValueError):scout.validate(dict(interests=value))
+
     def test_auto_time_allocation_uses_remaining_project_budget_and_keeps_fixed_caps(self):
         prefs=scout.validate({})
         allocation=scout.runtime_budget(prefs,{},7200,2,'scout')

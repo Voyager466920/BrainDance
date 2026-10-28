@@ -349,18 +349,41 @@ class TerminalUITests(unittest.TestCase):
             self.assertEqual(len(ui.modals),3)
         self.scenario(exercise)
 
-    def test_new_project_rejects_too_many_domains_before_leaving_the_editable_first_step(self):
+    def test_new_project_accepts_many_interests_and_domains_without_truncating(self):
+        async def exercise(ui,pipe):
+            ui.new_project_dialog();fields=self.editable_fields(ui)
+            fields[0].text='융합 연구';fields[1].text='다양한 분야의 원리를 온디바이스 AI에 적용한다.'
+            interests=['관심'+str(i) for i in range(48)];domains=['분야'+str(i) for i in range(48)]
+            fields[2].text=','.join(interests);fields[3].text=','.join(domains)
+            ui.modal_buttons[-1][0].handler()
+            self.assertEqual(len(ui.modals),2);self.assertEqual(ui.error,'')
+            ui.modal_buttons[-1][2].handler();await self.wait_until(lambda:not ui.modals and ui.project['title']=='융합 연구')
+            from scout import settings
+            prefs=settings(self.server.store,ui.project['id'])
+            self.assertEqual(prefs['interests'],interests);self.assertEqual(prefs['bridge_fields'],domains)
+        self.scenario(exercise)
+
+    def test_title_goal_return_works_with_actual_tab_enter_and_ctrl_b_keys(self):
         async def exercise(ui,pipe):
             before=len(self.server.store.export_json()['projects'])
             ui.new_project_dialog();fields=self.editable_fields(ui)
-            fields[0].text='융합 연구';fields[1].text='다양한 분야의 원리를 온디바이스 AI에 적용한다.'
-            fields[2].text='온디바이스 AI';fields[3].text=','.join('분야'+str(i) for i in range(13))
-            ui.modal_buttons[-1][0].handler()
-            self.assertIn('현재 13개',ui.error);self.assertEqual(len(ui.modals),1)
-            self.assertIsNone(ui.resource_form);self.assertEqual(fields[1].text,'다양한 분야의 원리를 온디바이스 AI에 적용한다.')
-            self.assertTrue(ui.app.layout.has_focus(fields[3]));self.assertEqual(len(self.server.store.export_json()['projects']),before)
-            fields[3].text='정보이론,뇌과학';ui.modal_buttons[-1][0].handler()
-            self.assertEqual(len(ui.modals),2);self.assertEqual(ui.error,'')
+            fields[0].text='원래 제목';fields[1].text='원래 목표'
+            async def press_button(text):
+                for _ in range(24):
+                    button=next(b for b in ui.modal_buttons[-1] if b.text==text)
+                    if ui.app.layout.has_focus(button):pipe.send_text('\r');await asyncio.sleep(.04);return
+                    pipe.send_text('\t');await asyncio.sleep(.015)
+                self.fail('Keyboard could not reach '+text)
+            await press_button('다음 · 서버와 GPU');self.assertEqual(len(ui.modals),2)
+            await press_button('제목·목표');self.assertEqual(len(ui.modals),1)
+            self.assertTrue(ui.app.layout.has_focus(fields[0]));pipe.send_text('\x05 수정');await asyncio.sleep(.03)
+            self.assertEqual(fields[0].text,'원래 제목 수정')
+            pipe.send_text('\t\x01\x0b수정된 목표');await asyncio.sleep(.03);self.assertEqual(fields[1].text,'수정된 목표')
+            await press_button('다음 · 서버와 GPU');await press_button('다음 · 연구 시작')
+            await self.wait_until(lambda:len(ui.modals)==3)
+            pipe.send_text('\x02');await self.wait_until(lambda:len(ui.modals)==1)
+            self.assertEqual([b.text for b in self.editable_fields(ui)][:2],['원래 제목 수정','수정된 목표'])
+            self.assertTrue(ui.app.layout.has_focus(fields[0]));self.assertEqual(len(self.server.store.export_json()['projects']),before)
         self.scenario(exercise)
 
     def test_new_project_back_and_escape_preserve_all_steps_and_allow_correction_after_time_error(self):
@@ -373,7 +396,7 @@ class TerminalUITests(unittest.TestCase):
             await self.wait_until(lambda:len(ui.modals)==3)
             start=self.editable_fields(ui);start[0].text='/home/research';start[1].text='nan'
             ui.modal_buttons[-1][0].handler();await self.wait_until(lambda:'총 연구 시간' in ui.error)
-            ui.modal_buttons[-1][2].handler();self.assertEqual(len(ui.modals),2);self.assertIs(ui.resource_form,resource)
+            pipe.send_text('\x1b');await self.wait_until(lambda:len(ui.modals)==2);self.assertIs(ui.resource_form,resource)
             self.assertEqual(resource['parallel'].text,'2');ui.modal_buttons[-1][3].handler()
             self.assertEqual(len(ui.modals),1);self.assertEqual([b.text for b in self.editable_fields(ui)],['융합 연구','원리를 검증','온디바이스 AI','뇌과학'])
             self.editable_fields(ui)[3].text='정보이론,생물학';ui.modal_buttons[-1][0].handler()

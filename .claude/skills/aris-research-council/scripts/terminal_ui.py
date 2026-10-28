@@ -153,6 +153,7 @@ class ResearchTerminal:
             else:event.app.exit()
         kb.add('c-q')(lambda event:event.app.exit())
         kb.add('escape',filter=Condition(lambda:bool(self.modals)))(lambda event:self.close_dialog())
+        kb.add('c-b',filter=Condition(lambda:bool(self.modals) and bool(getattr(self.modals[-1][0],'back_to_details',None))),eager=True)(lambda event:self.invoke(self.modals[-1][0].back_to_details))
         self.controls=[
             ConditionalContainer(self.buttons([('전체 대화',lambda:self.select_tab(0)),('프로젝트',self.project_dialog)]),Condition(lambda:self.tab==0 and self.welcome)),
             ConditionalContainer(self.buttons([('자동 시작',self.start_dialog),('일시정지',lambda:self.spawn(self.automatic('pause'))),('재개',lambda:self.spawn(self.automatic('resume'))),('중지',lambda:self.spawn(self.automatic('stop'))),('한도',self.limits_dialog),('가설 작업',lambda:self.spawn(self.tasks_dialog())),('문제에 답글',self.reply_issue)]),Condition(lambda:self.tab==1)),
@@ -590,7 +591,7 @@ class ResearchTerminal:
 
     def dialog(self,title,body,buttons,focus=None):
         self.error=''
-        body=HSplit([body,Label('Tab/Shift+Tab 이동 · ↑↓ 목록/버튼 · ←→ 버튼 · Enter 실행 · Esc 닫기',style='class:muted'),Window(FormattedTextControl(lambda:short(self.error,64)),height=1,style='class:notice')])
+        body=HSplit([ConditionalContainer(Label('Ctrl+B 또는 제목·목표 버튼: 첫 화면으로',style='class:muted'),Condition(lambda:bool(self.modals) and bool(getattr(self.modals[-1][0],'back_to_details',None)))),body,Label('Tab/Shift+Tab 이동 · ↑↓ 목록/버튼 · ←→ 버튼 · Enter 실행 · Esc 닫기',style='class:muted'),Window(FormattedTextControl(lambda:short(self.error,64)),height=1,style='class:notice')])
         def activate(text,callback):
             if self.modal_task and not self.modal_task.done():self.notice='저장 처리 중입니다.';return
             result=self.invoke(callback)
@@ -722,6 +723,10 @@ class ResearchTerminal:
         def cancel_wizard():
             while len(self.modals)>depth:self.close_dialog()
         name=TextArea(multiline=False);goal=TextArea(height=3);interests=TextArea(height=2);bridges=TextArea(height=2)
+        def back_to_details():
+            if self.modal_task and not self.modal_task.done():self.notice='저장 처리 중입니다.';return
+            while len(self.modals)>depth+1:self.close_dialog()
+            self.app.layout.focus(name)
         style=self.navigable_list(RadioList([('focused','집중 연구'),('scout','논문 탐색 · 작은 실험')],default='focused',select_on_focus=True))
         def next_step():
             if not name.text.strip() or len(name.text)>120:raise ClientError('프로젝트 이름은 1–120자로 입력하세요.')
@@ -730,9 +735,6 @@ class ResearchTerminal:
             preferences=dict(style=style.current_value)
             for key,field,label in [('interests',interests,'관심 분야'),('bridge_fields',bridges,'연결할 다른 분야')]:
                 rows=[v.strip() for v in field.text.replace('\n',',').split(',') if v.strip()]
-                if len(rows)>12:
-                    self.app.layout.focus(field)
-                    raise ClientError(f'{label}: 최대 12개입니다 (현재 {len(rows)}개). 전체 탐색 범위는 연구 목표에 적어주세요.')
                 if any(len(v)>200 for v in rows):
                     self.app.layout.focus(field);raise ClientError(f'{label}: 항목 하나는 최대 200자입니다.')
                 preferences[key]=rows
@@ -745,9 +747,9 @@ class ResearchTerminal:
                 project=await self.call(self.client.project,record['project_id']);await self.select_project(project)
             async def prepare_start(assignment):
                 pending=payload(assignment)
-                self.start_dialog(create_project=pending,on_back=self.close_dialog,on_cancel=cancel_wizard,draft=start_draft)
-            self.resource_dialog(on_apply=create,on_start=prepare_start,title='새 프로젝트 · 실행 환경',on_back=self.close_dialog,on_cancel=cancel_wizard,draft=resource_draft)
-        self.dialog('새 프로젝트',HSplit([Label('프로젝트 이름'),name,Label('연구 목표'),goal,Label('관심 분야 · 최대 12개 · 쉼표/줄바꿈으로 구분'),interests,Label('연결할 다른 분야 · 최대 12개 · 비우면 자동 선택'),bridges,Box(style,height=2,padding=0)]),[('다음 · 서버와 GPU',next_step),('취소',cancel_wizard)],name)
+                self.start_dialog(create_project=pending,on_back=back_to_details,on_cancel=cancel_wizard,draft=start_draft)
+            self.resource_dialog(on_apply=create,on_start=prepare_start,title='새 프로젝트 · 실행 환경',on_back=back_to_details,on_cancel=cancel_wizard,draft=resource_draft)
+        self.dialog('새 프로젝트',HSplit([Label('프로젝트 이름'),name,Label('연구 목표'),goal,Label('관심 분야 · 쉼표/줄바꿈으로 구분'),interests,Label('연결할 다른 분야 · 비우면 자동 선택'),bridges,Box(style,height=2,padding=0)]),[('다음 · 서버와 GPU',next_step),('취소',cancel_wizard)],name)
 
     async def interests_dialog(self):
         pid=self.require_project();prefs=await self.call(self.client.request,'/api/project/research-settings?'+urllib.parse.urlencode(dict(project_id=pid)))
@@ -784,9 +786,10 @@ class ResearchTerminal:
         def save_draft():
             draft.update(assignment=dict(profile_id=profile.current_value,device_ids=list(devices.current_values)),parallel=parallel.text)
         actions.append(('만들기만' if on_start else '저장',lambda:self.spawn(save())))
-        if on_back:actions.append(('이전',on_back))
+        if on_back:actions.append(('제목·목표',on_back))
         actions.append(('취소',on_cancel or self.close_dialog))
         self.dialog(title,HSplit([Label('서버'),Box(profile,height=3,padding=0),Label('장치 · 서버 물리 GPU 번호 / UUID로 선택'),Box(devices,height=3,padding=0),VSplit([Label('동시 실험'),parallel],padding=1,height=1),Label('장치 조회 후 선택하세요. 저장하면 기존 미실행 계획은 다시 검토합니다.')]),actions,profile)
+        self.modals[-1][0].back_to_details=on_back
         self.modals[-1][0].save_draft=save_draft
         self.modals[-1][0].resource_form=form
         self.resource_form=form;self.update_resource_form()
@@ -902,10 +905,11 @@ class ResearchTerminal:
             self.select_tab(1);self.notice='프로젝트 자동 연구를 시작했습니다.'
         hardware=self.resource_header() if not create_project else create_project['name']+' · '+resource_info({**self.compute,'assignments':{'pending':assignment}},'pending')['text']
         actions=[('만들고 자동 시작' if create_project else '자동 시작',lambda:self.spawn(start())),('고급 설정',lambda:self.experiment_time_dialog(experiment_time))]
-        if on_back:actions.append(('이전',on_back))
+        if on_back:actions.append(('제목·목표',on_back))
         actions.append(('취소',on_cancel or self.close_dialog))
         self.resource_form=None
         self.dialog('새 프로젝트 · 만들고 자동 시작' if create_project else '프로젝트 자동 연구 시작',HSplit([Label(hardware),Box(style,height=2,padding=0),Label('종료 시각까지 탐색·실험·오류 수정·다음 연구를 계속합니다.'),Label('참고할 기존 코드 폴더 · 선택 · 비워도 됨'),folder,Label('총 연구 시간 · 시간 단위'),hours,Label(lambda:'실험별 시간 자동 배분' if experiment_time['seconds'] is None else '실험당 최대 '+str(experiment_time['seconds']/60)+'분'),Label('절약 탐색 · Haiku 중심 · 구현·검증 모델 유지'),Box(mode,height=3,padding=0)]),actions,folder)
+        self.modals[-1][0].back_to_details=on_back
         self.modals[-1][0].save_draft=lambda:draft.update(folder=folder.text,hours=hours.text,research_style=style.current_value,mode=mode.current_value,experiment_seconds=experiment_time['seconds'])
 
     async def tasks_dialog(self):

@@ -19,7 +19,7 @@ def validate(value):
     if result['runtime_policy'] not in {'auto','fixed'}:raise ValueError('실험 시간 배분은 auto 또는 fixed여야 합니다.')
     for key in ['interests','bridge_fields']:
         rows=result[key]
-        if not isinstance(rows,list) or len(rows)>12 or any(not isinstance(v,str) or not v.strip() or len(v)>200 for v in rows):raise ValueError('관심 분야·연결 분야는 각각 최대 12개, 항목당 200자입니다.')
+        if not isinstance(rows,list) or any(not isinstance(v,str) or not v.strip() or len(v)>200 for v in rows):raise ValueError('관심 분야·연결 분야는 비어 있지 않은 문자열 목록이며, 항목당 최대 200자입니다.')
         result[key]=list(dict.fromkeys(v.strip() for v in rows))
     for key,low,high in [('lookback_days',1,365),('max_papers',1,40),('max_pilots',1,10),('pilot_seconds',1,86400),('min_seeds',2,20)]:
         if type(result[key]) is not int or not low<=result[key]<=high:raise ValueError('탐색 설정 범위를 확인하세요: '+key)
