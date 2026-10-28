@@ -213,6 +213,10 @@ def run(spec_path):
             with store._connect() as conn:
                 conn.execute('UPDATE nodes SET evidence=? WHERE id=?',(json.dumps(council.read_json(evidence)['papers'],ensure_ascii=False),node['id']))
         if not resuming:store.add_note(node['id'],'analysis','논문 탐색 결과',(work/'LITERATURE.md').read_text()[:99000])
+        if job.get('task')=='literature':
+            store.export_json(Path(job['db']).with_suffix('.json'))
+            progress.emit('literature-completed','논문 탐색·출처 확인 결과를 같은 프로젝트 대화에 저장했습니다. 실험은 실행하지 않았습니다.',state='completed')
+            return 0
         cfg={**council.DEFAULTS,**council.MODES[job['mode']], 'mode':job['mode'],'coordinator_model':'haiku'}
         cfg.update(job['council_overrides']);council.dump(root/'council-config.json',cfg)
         shared=job.get('steering',{}).get('shared_project_session',{})

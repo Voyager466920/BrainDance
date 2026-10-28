@@ -160,6 +160,8 @@ Each project has one durable shared conversation session. Conversation replies, 
 
 Use natural commands such as **서버와 기존 코드를 탐색해줘** to request a read-only inspection, or **막힌 부분을 해결하고 설정한 장치와 남은 예산 안에서 실험과 분석까지 계속해** to resume an existing authorized automatic session. Asking a question keeps the current work unchanged. The host validates the selected target and existing session limits; a model cannot create execution authority or increase the budget. Inspection-only commands leave a paused or blocked automatic session paused or blocked.
 
+**논문을 찾아줘** requests actual external literature discovery and source verification, even when the project has no papers yet. In a paper-survey project, **탐색 시작해** also queues this worker directly without an extra reply-model call. Progress and the literature report appear in the same conversation. This action does not create automatic experiment authority, connect to the selected GPU, or prepare/run experiment code; a paper-only request stays paper-only. Question-only mode never queues it.
+
 The target broker indexes repositories fairly and supports bounded source reads, literal searches, file metadata, and static Python-environment metadata checks. It uses the selected local or SSH target and configured research folder. No model-authored shell commands run during exploration; source files are not imported or modified. Actual execution still requires an immutable generated plan, Claude review, matching resource signature, the selected device environment, and the existing time/concurrency/model limits. Requests, exact source excerpts, errors, and model usage receipts are retained. Genuine missing dependencies/data or exhausted limits stop with a concrete report.
 
 The conversation has its own reply worker. Replies use timestamped actual state and retained result reports; they do not claim live results that were not observed. Messages, action receipts and original model responses stay in your private workspace. Replies consume connected-account usage; active automatic sessions include them in their shared model budget. Reopening the app marks interrupted replies explicitly and does not replay model calls silently.
@@ -167,6 +169,8 @@ The conversation has its own reply worker. Replies use timestamped actual state 
 The **실험 실행** (Experiments) tab keeps immutable plans, source code, and execution history under **실행 계획 · 코드 · 이전 실험**. Research launch controls and detailed automatic-session usage are available under **실행 설정** in Progress. Manual code entry remains an advanced option.
 
 Use the project header **한도** (Limits) button to increase an existing run’s total model-call or token allowance later. Used calls, token charges, research history, GPU/time settings, and the project conversation session are preserved. Saving a larger limit does not resume paused or blocked work; ask the conversation to continue when ready. Models cannot increase these limits themselves.
+
+Human-set token admission budgets support 100,000–1,000,000,000 tokens, including 300,000,000. The independent model-call ceiling remains 300 calls. Invalid values identify the specific field and allowed range. A larger budget is an allowance, not a usage target; existing charges remain recorded when limits change.
 
 ## Project automatic mode
 

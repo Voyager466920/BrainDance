@@ -111,7 +111,7 @@ class ResearchEngine:
         if set(payload)-{'node_id','mode','confirm','token_budget','phase_timeout_seconds','reuse_literature','task','run_id','context_path'} or payload.get('confirm') is not True:
             raise ValueError('연구 시작과 모델 사용량 발생을 확인하세요.')
         task=payload.get('task','research')
-        if task not in {'research','draft','analyze','inspect','native'}:raise ValueError('지원하지 않는 연구 작업입니다.')
+        if task not in {'research','draft','analyze','inspect','native','literature'}:raise ValueError('지원하지 않는 연구 작업입니다.')
         context_path=payload.get('context_path','')
         if not isinstance(context_path,str) or len(context_path)>2048 or '\x00' in context_path or '\n' in context_path:raise ValueError('참고 폴더 경로를 확인하세요.')
         mode=payload.get('mode','balanced')
@@ -147,6 +147,8 @@ class ResearchEngine:
             if self.active_id is not None:raise ValueError('다른 프로젝트가 연구 중입니다. 완료 또는 중지 후 시작하세요.')
             job_id=str(uuid.uuid4());root=self.root/job_id;root.mkdir(mode=0o700)
             topic=node['metadata'].get('research_goal') or node['metadata'].get('original_topic') or node['title']
+            if task=='literature' and internal and internal.get('conversation_request'):
+                topic+='\n이번 논문 탐색을 요청한 원본 사용자 지시:\n'+internal['conversation_request']['content']
             reusable=None
             if reuse:
                 for prior in conn.execute('SELECT * FROM research_jobs WHERE project_id=? ORDER BY created_at DESC',(node['project_id'],)):
@@ -168,7 +170,7 @@ class ResearchEngine:
             config['project_session']=identity(self.store,node['project_id'])
             if internal:
                 config.update(internal)
-                config['council_overrides']['session_budget']=internal['session_budget']
+                if internal.get('session_budget'):config['council_overrides']['session_budget']=internal['session_budget']
             if config['steering']['directions']:
                 config['topic']+='\n사용자 방향 지시 (최신 지시가 상충하는 과거 지시보다 우선):\n'+json.dumps(config['steering']['directions'],ensure_ascii=False)
             if task!='inspect':conn.execute("UPDATE research_directions SET state='applied',job_id=? WHERE project_id=? AND seq<=?",(job_id,node['project_id'],config['steering']['revision']))

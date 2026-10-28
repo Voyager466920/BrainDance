@@ -12,7 +12,7 @@ from compute import ComputeSettings
 from experiments import ExperimentEngine
 from project_cleanup import ProjectCleanup
 from research import ResearchEngine
-from research_chat import ResearchChat
+from research_chat import ResearchChat,explicit_literature_request
 from tree_store import TreeStore
 import steering
 
@@ -47,6 +47,28 @@ class ChatTests(unittest.TestCase):
 
     def complete(self,message):
         self.chat.execute(message);actual=self.chat.get(message['id']);self.assertEqual(actual['state'],'completed',actual['content']);return actual
+
+    def test_paper_search_imperatives_queue_real_literature_without_reply_model_or_gpu_authority(self):
+        self.store.update_node(self.node['id'],metadata=dict(research_goal='VLA 비동기 TTA 병목 논문을 찾아봐. 실험은 아직 돌리지 말고.'))
+        for i,text in enumerate(['탐색 시작해','너가 찾아서 탐색하라고','논문을 검색해줘']):
+            with patch('research_chat.subprocess.Popen',side_effect=AssertionError('No reply-model dispatch')):
+                actual=self.complete(self.send(text,request_id='paper-request-fixture-'+str(i)))
+            self.assertEqual(actual['metadata']['intent'],'literature');self.assertEqual(actual['metadata']['reply_model_calls'],0)
+        self.assertEqual(self.control.sessions(self.node['project_id']),[])
+        self.assertEqual(self.control.state(self.node['project_id'])['runs'],[])
+        self.research._execute=lambda record:None
+        self.control._conversation_requests()
+        jobs=self.research.list(self.node['project_id'])['jobs'];self.assertEqual(len(jobs),1)
+        self.assertEqual(jobs[0]['config']['task'],'literature')
+        self.assertIn('탐색 시작해',jobs[0]['config']['topic'])
+        self.assertNotIn('auto_session_id',jobs[0]['config'])
+        self.assertTrue(any(row['role']=='status' for row in self.chat.messages(self.node['project_id'])['messages']))
+
+    def test_paper_shortcuts_cannot_route_questions_ask_mode_or_experiment_requests(self):
+        base=dict(project_goal='논문 탐색',mode='auto')
+        for text in ['논문 탐색을 어떻게 해?', '탐색 시작해도 돼?', '논문 탐색해보고 실험까지 돌려','탐색이 시작했어','논문 탐색해볼까']:
+            self.assertFalse(explicit_literature_request(dict(base,user_message=text)),text)
+        self.assertFalse(explicit_literature_request(dict(base,user_message='탐색 시작해',mode='ask')))
 
     def test_report_and_notion_intents_use_the_same_project_without_starting_experiments(self):
         from unittest.mock import Mock

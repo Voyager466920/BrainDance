@@ -59,6 +59,19 @@ class AutomaticTests(unittest.TestCase):
     def start(self,**settings):
         return self.automatic.control(dict(project_id=self.node['project_id'],action='start',max_cycles=2,**settings))['session']
 
+    def test_human_can_set_and_extend_large_token_budget_without_resetting_charges(self):
+        item=self.start(max_model_calls=100,token_budget=300000000)
+        from session_budget import update
+        path=Path(item['config']['session_budget']);update(path,'reserve',key='existing-fixture',calls=1,estimate=1234)
+        state=self.automatic.control(dict(project_id=self.node['project_id'],action='limits',session_id=item['id'],max_model_calls=100,token_budget=500000000))
+        self.assertEqual(state['usage']['token_budget'],500000000)
+        self.assertEqual(state['usage']['calls'],1);self.assertEqual(state['usage']['charged_tokens'],1234)
+        self.assertEqual(self.automatic.state(self.node['project_id'])['runs'],[])
+
+    def test_invalid_start_limits_identify_the_field_and_range(self):
+        for field,value,label in [('token_budget',1000000001,'토큰 한도'),('max_model_calls',301,'모델 호출 한도')]:
+            with self.assertRaisesRegex(ValueError,label):self.start(**{field:value})
+
     def drive(self,seconds=10):
         deadline=time.monotonic()+seconds
         while time.monotonic()<deadline:

@@ -97,8 +97,9 @@ class Autopilot:
                 if style not in {'focused','scout'}:raise ValueError('연구 방식을 확인하세요.')
                 if style=='scout' and not preferences['interests']:raise ValueError('탐색 모드에는 프로젝트 관심 분야가 필요합니다.')
                 cycles=payload.get('max_cycles',preferences['max_pilots'] if style=='scout' else 3);calls=payload.get('max_model_calls',40);tokens=payload.get('token_budget',1500000)
-                for value,low,high in [(cycles,1,30),(calls,2,300),(tokens,100000,10000000)]:
-                    if type(value) is not int or not low<=value<=high:raise ValueError('자동모드 한도 범위를 확인하세요.')
+                from session_budget import MAX_TOKEN_BUDGET,MAX_MODEL_CALLS
+                for name,value,low,high in [('실험 횟수',cycles,1,30),('모델 호출 한도',calls,2,MAX_MODEL_CALLS),('토큰 한도',tokens,100000,MAX_TOKEN_BUDGET)]:
+                    if type(value) is not int or not low<=value<=high:raise ValueError(name+'는 '+format(low,',')+'–'+format(high,',')+' 범위로 입력하세요. 입력값: '+str(value))
                 context=payload.get('context_path','');mode=payload.get('mode','balanced')
                 if not isinstance(context,str) or len(context)>2048 or '\x00' in context or '\n' in context or mode not in {'lite','balanced','deep'}:raise ValueError('참고 폴더·연구 모드를 확인하세요.')
                 reuse=payload.get('reuse_research',False)
@@ -184,7 +185,7 @@ class Autopilot:
 
     def conversation_action(self,message_id,node_id,kind,content,expected_revision):
         """Host-owned action admission, retaining existing execution authority/limits."""
-        if kind not in {'investigate','execute'}:raise ValueError('지원하지 않는 대화 작업입니다.')
+        if kind not in {'investigate','execute','literature'}:raise ValueError('지원하지 않는 대화 작업입니다.')
         with self.lock:
             node=self.store.get_node(node_id);project_id=node['project_id']
             with self.store._connect() as conn:
@@ -219,7 +220,7 @@ class Autopilot:
             with self.store._connect() as conn:return dict(conn.execute('SELECT * FROM conversation_actions WHERE id=?',(message_id,)).fetchone())
 
     def _conversation_requests(self):
-        with self.store._connect() as conn:items=[dict(r) for r in conn.execute("SELECT * FROM conversation_actions WHERE kind='investigate' AND state IN ('pending','running') ORDER BY created_at")]
+        with self.store._connect() as conn:items=[dict(r) for r in conn.execute("SELECT * FROM conversation_actions WHERE kind IN ('investigate','literature') AND state IN ('pending','running') ORDER BY created_at")]
         for action in items:
             try:
                 self.store.get_node(action['node_id'])
@@ -232,8 +233,9 @@ class Autopilot:
                 sessions=self.sessions(action['project_id']);item=sessions[0] if sessions else None
                 previous=self.research.list(action['project_id'])['jobs']
                 context=item['config']['context_path'] if item else next((j['config']['context_path'] for j in previous if j['config'].get('context_path')),'')
-                internal=dict(auto_session_id=item['id'],session_budget=item['config']['session_budget']) if item and item['status'] in {'running','paused','blocked'} else None
-                job=self.research.start(dict(node_id=action['node_id'],task='inspect',confirm=True,context_path=context),internal=internal)
+                internal=dict(auto_session_id=item['id'],session_budget=item['config']['session_budget']) if item and item['status'] in {'running','paused','blocked'} else {}
+                internal['conversation_request']=dict(id=action['id'],content=action['content'])
+                job=self.research.start(dict(node_id=action['node_id'],task='literature' if action['kind']=='literature' else 'inspect',confirm=True,context_path=context),internal=internal)
                 with self.store._connect() as conn:conn.execute("UPDATE conversation_actions SET state='running',job_id=? WHERE id=?",(job['id'],action['id']))
             except Exception as error:
                 with self.store._connect() as conn:conn.execute("UPDATE conversation_actions SET state='blocked',receipt=? WHERE id=?",(json.dumps(dict(error=str(error))),action['id']))

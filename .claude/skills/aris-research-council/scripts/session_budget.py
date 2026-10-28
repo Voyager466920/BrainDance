@@ -8,6 +8,9 @@ from pathlib import Path
 import fcntl
 from datetime import datetime,timezone
 
+MAX_TOKEN_BUDGET=1_000_000_000
+MAX_MODEL_CALLS=300
+
 
 def update(path,operation,**values):
     path=Path(path);path.parent.mkdir(parents=True,exist_ok=True)
@@ -19,8 +22,8 @@ def update(path,operation,**values):
             return data
         if operation=='limits':
             calls=values['max_calls'];tokens=values['token_budget']
-            if type(calls) is not int or not data['max_calls']<=calls<=300:raise ValueError('현재 호출 한도 이상, 최대 300회로 설정하세요.')
-            if type(tokens) is not int or not data['token_budget']<=tokens<=10000000:raise ValueError('현재 토큰 한도 이상, 최대 10000000으로 설정하세요.')
+            if type(calls) is not int or not data['max_calls']<=calls<=MAX_MODEL_CALLS:raise ValueError('현재 호출 한도 이상, 최대 '+str(MAX_MODEL_CALLS)+'회로 설정하세요.')
+            if type(tokens) is not int or not data['token_budget']<=tokens<=MAX_TOKEN_BUDGET:raise ValueError('현재 토큰 한도 이상, 최대 '+format(MAX_TOKEN_BUDGET,',')+'으로 설정하세요.')
             before=dict(max_calls=data['max_calls'],token_budget=data['token_budget'])
             data['max_calls']=calls;data['token_budget']=tokens
             data.setdefault('limit_changes',[]).append(dict(at=datetime.now(timezone.utc).isoformat(),before=before,after=dict(max_calls=calls,token_budget=tokens),calls_used=data['calls']))

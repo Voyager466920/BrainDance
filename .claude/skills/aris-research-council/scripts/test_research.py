@@ -61,6 +61,22 @@ class ResearchTests(unittest.TestCase):
         snapshot=json.loads((self.root/'tree.json').read_text());self.assertEqual(snapshot['research_jobs'][0]['state'],'completed')
         self.assertFalse(snapshot['experiment_runs'])
 
+    def test_literature_only_worker_stops_after_source_verification_and_shared_report(self):
+        import research_worker
+        jobroot=self.root/'literature-only';jobroot.mkdir();spec=jobroot/'job.json'
+        spec.write_text(json.dumps(dict(id='offline-literature',task='literature',db=str(self.store.db_path),node_id=self.node['id'])))
+        def discover(*_):
+            work=jobroot/'literature';work.mkdir()
+            (work/'LITERATURE.md').write_text('OFFLINE verified-source fixture, not scientific findings')
+            return work
+        def verify_fixture(job,root,work,progress):
+            evidence=work/'verified-evidence.json';evidence.write_text('{"papers":[]}');return evidence
+        with patch('research_worker.signal.signal'),patch('research_worker.literature',side_effect=discover),patch('research_worker.verify',side_effect=verify_fixture),patch('research_worker.council.run',side_effect=AssertionError('No full Council in literature-only mode')),patch('lab_worker.prepare',side_effect=AssertionError('No experiment preparation')):
+            self.assertEqual(research_worker.run(spec),0)
+        result=json.loads((jobroot/'progress.json').read_text());self.assertEqual(result['state'],'completed');self.assertEqual(result['phase'],'literature-completed')
+        self.assertTrue(any(note['title']=='논문 탐색 결과' for note in self.store.export_json()['notes']))
+        self.assertEqual(self.store.export_json()['experiment_runs'],[])
+
     def test_worker_slot_stays_busy_until_snapshot_is_persisted(self):
         entered=threading.Event();release=threading.Event();original=self.store.export_json
         def delayed_export(*args,**kwargs):

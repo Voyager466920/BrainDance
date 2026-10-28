@@ -12,6 +12,17 @@ from tree_store import now
 import steering
 
 
+def explicit_literature_request(context):
+    """Fast path for original human paper-search imperatives, never quoted evidence."""
+    if context['mode']!='auto':return False
+    text=context['user_message'].strip().lower()
+    if '?' in text or re.search(r'실험.*(?:돌려|실행해|시작해)|\b(?:run|execute)\b.*\bexperiments?\b',text):return False
+    compact=re.sub(r'[\s.!。]+','',text)
+    paper_topic=bool(re.search(r'논문|문헌|\bpapers?\b|literature',context['project_goal'],re.I))
+    if paper_topic and compact in {'탐색시작해','탐색시작','탐색해','너가찾아서탐색하라고','네가찾아서탐색하라고','찾아서탐색해','직접찾아서탐색해'}:return True
+    return bool(re.search(r'(논문|문헌).*(찾|검색|탐색|조사).*(해줘|해주세요|하세요|해봐|시작해|하라고|해)$',compact) or re.fullmatch(r'(?:please )?(?:find|search|explore|survey)\b.*\b(?:papers?|literature)\b[.!]*',text))
+
+
 class ResearchChat:
     def __init__(self,store,research,control,autostart=True):
         self.store,self.research,self.control=store,research,control
@@ -127,9 +138,17 @@ class ResearchChat:
         root=self.research.root/('chat-'+message['id']);root.mkdir(mode=0o700,exist_ok=True)
         metadata=message['metadata'];self.finish(message['id'],'','running',metadata)
         try:
+            context=self.context(message)
+            if explicit_literature_request(context):
+                action=self.control.conversation_action(message['id'],message['node_id'],'literature',context['user_message'],metadata['direction_revision_at_send'])
+                metadata.update(intent='literature',action_id=action['id'],action_kind='literature',as_of=context['as_of'],reply_model_calls=0)
+                from council import dump
+                dump(root/'chat-response.json',dict(reply='공식 논문 탐색·출처 확인 작업을 요청했습니다. 진행 기록과 탐색 결과를 같은 프로젝트 대화에 남깁니다. 실험은 실행하지 않습니다.',intent='literature',action_id=action['id']))
+                self.finish(message['id'],'공식 논문 탐색·출처 확인 작업을 요청했습니다. 진행 기록과 탐색 결과를 같은 프로젝트 대화에 남깁니다. 실험은 실행하지 않습니다.','completed',metadata)
+                return
             available=self.research.availability()
             if not available.get('chat_available',available['available']):raise ValueError('연구 대화 연결을 확인하세요: '+', '.join(available['missing']))
-            context=self.context(message);session=context['actual_session']
+            session=context['actual_session']
             job=dict(id=message['id'],task='chat',db=self.store.db_path,node_id=message['node_id'],project_id=message['project_id'],
                 aris_repo=available['aris_repo'],phase_timeout_seconds=240,chat_context=context)
             from project_session import identity
@@ -150,7 +169,7 @@ class ResearchChat:
                 error=(root/'progress.json')
                 raise ValueError(json.loads(error.read_text()).get('message','답변을 완료하지 못했습니다.') if error.exists() else '답변을 완료하지 못했습니다.')
             result=json.loads((root/'chat-response.json').read_text());reply=result['reply'];intent=result['intent']
-            if not isinstance(reply,str) or not reply.strip() or len(reply)>18000 or intent not in {'question','direction','pause','stop','investigate','execute','report','publish'}:raise ValueError('대화 응답 형식이 올바르지 않습니다. 원본 로그를 보존했습니다.')
+            if not isinstance(reply,str) or not reply.strip() or len(reply)>18000 or intent not in {'question','direction','pause','stop','investigate','execute','literature','report','publish'}:raise ValueError('대화 응답 형식이 올바르지 않습니다. 원본 로그를 보존했습니다.')
             if metadata['mode']=='auto' and intent!='question':
                 if intent=='direction':
                     revision=steering.snapshot(self.store,message['project_id'])['revision']
@@ -167,11 +186,11 @@ class ResearchChat:
                         metadata['publication_job']=receipt['id']
                         reply+='\n\n'+('Notion 정리를 요청했습니다.' if intent=='publish' else '보고서와 시각화 생성을 요청했습니다.')+' 결과 탭과 같은 프로젝트 대화에서 완료 여부를 확인할 수 있습니다.'
                     except ValueError as error:reply+='\n\n'+str(error)
-                elif intent in {'investigate','execute'}:
+                elif intent in {'investigate','execute','literature'}:
                     try:
                         action=self.control.conversation_action(message['id'],message['node_id'],intent,context['user_message'],metadata['direction_revision_at_send'])
                         metadata['action_id']=action['id'];metadata['action_kind']=intent
-                        reply+='\n\n'+('서버·코드의 읽기 전용 탐색을 요청했습니다. 결과는 이 프로젝트 대화에 이어집니다.' if intent=='investigate' else '기존 프로젝트 세션을 재개했습니다. 같은 대화와 연구 기록을 바탕으로 탐색 → 코드 검토 → 선택한 장치·남은 예산 내 실행 → 결과 분석을 이어갑니다.')
+                        reply+='\n\n'+('공식 논문 탐색·출처 확인 작업을 요청했습니다. 결과는 같은 프로젝트 대화에 저장하며 실험은 실행하지 않습니다.' if intent=='literature' else '서버·코드의 읽기 전용 탐색을 요청했습니다. 결과는 이 프로젝트 대화에 이어집니다.' if intent=='investigate' else '기존 프로젝트 세션을 재개했습니다. 같은 대화와 연구 기록을 바탕으로 탐색 → 코드 검토 → 선택한 장치·남은 예산 내 실행 → 결과 분석을 이어갑니다.')
                     except (ValueError,RuntimeError) as error:
                         reply+='\n\n작업은 시작하지 않았습니다: '+str(error);metadata['action_error']=str(error)
                 else:
