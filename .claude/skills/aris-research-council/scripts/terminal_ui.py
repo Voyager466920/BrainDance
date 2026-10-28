@@ -814,16 +814,15 @@ class ResearchTerminal:
         self.dialog('Slack · 전체 프로젝트 개인 DM 알림',HSplit([Label('연결됨 · '+str(state.get('workspace') or '') if state['connected'] else 'Slack 봇 연결 전'),Label('한 번 연결하면 기존·새 프로젝트의 새 연구 결과를 모두 받습니다.'),Label('본인 멤버 ID · 프로필에서 멤버 ID 복사'),member,Label('Bot User OAuth Token · 숨김 입력 · 기존 토큰 유지 시 비우기'),token,Label('봇 권한: chat:write, im:write · 토큰은 이 Mac에만 저장합니다.'),Label('보고서·그래프 링크 포함 · 추가 LLM 호출 없음'),Label(recent)]),[('연결 저장',lambda:self.spawn(save())),('테스트 DM',lambda:self.spawn(test())),('연결 해제',lambda:self.spawn(disconnect())),('닫기',self.close_dialog)],member)
 
     async def notion_dialog(self):
-        if not self.project:raise ClientError('프로젝트를 먼저 선택하세요.')
-        project=dict(self.project);state=await self.call(self.client.request,'/api/notion?'+urllib.parse.urlencode(dict(project_id=project['id'])))
+        state=await self.call(self.client.request,'/api/notion')
         link=state.get('link') or {};parent=TextArea(text=link.get('parent_id',''),multiline=False)
-        token=TextArea(password=True,multiline=False);automatic=Checkbox('이 프로젝트 결과 자동 동기화',checked=bool(link.get('auto_sync')))
+        token=TextArea(password=True,multiline=False)
         async def save():
-            await self.call(self.client.request,'/api/notion/configure',dict(project_id=project['id'],parent=parent.text.strip(),token=token.text.strip(),auto_sync=automatic.checked))
-            token.text='';self.close_dialog();self.notice='Notion 연결을 확인하고 저장했습니다.';self.wakeup.set()
+            await self.call(self.client.request,'/api/notion/configure',dict(parent=parent.text.strip(),token=token.text.strip(),auto_sync=True))
+            token.text='';self.close_dialog();self.notice='모든 프로젝트의 Notion 자동 정리를 연결했습니다. 새 프로젝트에도 유지됩니다.';self.wakeup.set()
         async def disconnect():
             await self.call(self.client.request,'/api/notion/disconnect',{});token.text='';self.close_dialog();self.notice='Notion 연결을 해제했습니다.';self.wakeup.set()
-        self.dialog('Notion · '+project['title'],HSplit([Label('상위 페이지 아래 연구 기록 DB · 날짜순 표와 달력'),Label('상위 페이지 URL 또는 ID'),parent,Label('연결 토큰 · 숨김 입력 / 기존 토큰 유지 시 비우기'),token,automatic,Label('토큰은 이 Mac에만 저장합니다. 연구 대화에 전송하지 않습니다.')]),[('저장',lambda:self.spawn(save())),('연결 해제',lambda:self.spawn(disconnect())),('닫기',self.close_dialog)],parent)
+        self.dialog('Notion · 전체 프로젝트 자동 정리',HSplit([Label('한 번 연결하면 기존·새 프로젝트와 재실행 후에도 유지됩니다.'),Label('상위 페이지 아래 연구 기록 DB · 날짜순 표와 달력'),Label('상위 페이지 URL 또는 ID'),parent,Label('연결 토큰 · 숨김 입력 / 기존 토큰 유지 시 비우기'),token,Label('토큰은 이 Mac에만 저장합니다. 연구 대화에 전송하지 않습니다.')]),[('저장',lambda:self.spawn(save())),('연결 해제',lambda:self.spawn(disconnect())),('닫기',self.close_dialog)],parent)
 
     def provider_dialog(self,name):
         item=next((p for p in self.providers.get('providers',[]) if p['name']==name),{})

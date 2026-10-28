@@ -122,16 +122,64 @@ class NotionAPI:
         return dict(database_id=identity,data_source_id=source_id,url=database.get('url') or 'https://www.notion.so/'+identity.replace('-',''))
 
     def research_entry(self,destination,record,data):
-        key=record['project_id']+':'+record['digest'];source=destination['data_source_id']
-        found=self.request('POST','/data_sources/'+source+'/query',dict(filter={'property':'보고서 키','rich_text':{'equals':key}},page_size=100))
-        if len(found['results'])>1:raise NotionError('동일 보고서 키의 기록이 여러 개입니다. 기존 내용을 보존했습니다.')
-        if found['results']:return page_id(found['results'][0]['id'])
+        # The remote key identifies the project, never an individual report revision.
+        key=record['project_id'];found=self.research_rows(destination,{'equals':key})
+        if len(found)>1:raise NotionError('동일 프로젝트의 대표 페이지가 여러 개입니다. 기존 내용을 보존했습니다.')
         stamp=datetime.fromisoformat(record['created_at'].replace('Z','+00:00')).astimezone(ZoneInfo('Asia/Seoul'));runs=data['runs']
         measured=[r for r in runs if r['state']=='succeeded' and r.get('analysis',{}).get('status') in {'measured','compared'}]
         state='측정 있음' if measured else '실패' if runs else '측정 전'
-        properties={'제목':{'title':rich((stamp.strftime('%Y-%m-%d %H:%M')+' · '+record['title'])[:190])},'날짜':{'date':{'start':stamp.date().isoformat()}},'프로젝트':{'rich_text':rich(record['title'][:900])},'측정 상태':{'select':{'name':state}},'실험 수':{'number':len(runs)},'정상 측정':{'number':len(measured)},'실행 시간(초)':{'number':sum(max(0,r.get('duration_seconds') or 0) for r in runs)},'보고서 키':{'rich_text':rich(key)}}
-        result=self.request('POST','/pages',dict(parent=dict(type='data_source_id',data_source_id=source),properties=properties))
+        properties={'제목':{'title':rich(record['title'][:190])},'날짜':{'date':{'start':stamp.isoformat()}},'프로젝트':{'rich_text':rich(record['title'][:900])},'측정 상태':{'select':{'name':state}},'실험 수':{'number':len(runs)},'정상 측정':{'number':len(measured)},'실행 시간(초)':{'number':sum(max(0,r.get('duration_seconds') or 0) for r in runs)},'보고서 키':{'rich_text':rich(key)}}
+        if found:
+            identity=page_id(found[0]['id']);prior=found[0].get('properties',{}).get('날짜',{}).get('date') or {}
+            if prior.get('start'):
+                previous=datetime.fromisoformat(prior['start'].replace('Z','+00:00'))
+                if previous.tzinfo is None:previous=previous.replace(tzinfo=ZoneInfo('Asia/Seoul'))
+                if stamp<previous:return identity # A delayed retry must not regress latest summary properties.
+            self.request('PATCH','/pages/'+identity,dict(properties=properties));return identity
+        result=self.request('POST','/pages',dict(parent=dict(type='data_source_id',data_source_id=destination['data_source_id']),properties=properties))
         return page_id(result['id'])
+
+    def research_rows(self,destination,condition):
+        rows=[];cursor=None
+        while True:
+            payload=dict(filter={'property':'보고서 키','rich_text':condition},page_size=100)
+            if cursor:payload['start_cursor']=cursor
+            result=self.request('POST','/data_sources/'+destination['data_source_id']+'/query',payload)
+            rows.extend(result['results'])
+            if not result.get('has_more'):return rows
+            cursor=result['next_cursor']
+
+    def project_page(self,parent,record):
+        suffix=' · '+record['project_id'][:8]
+        found=[b for b in self.children(parent) if b.get('type')=='child_page' and b['child_page']['title'].endswith(suffix)]
+        if len(found)>1:raise NotionError('동일 프로젝트의 페이지가 여러 개입니다. 기존 내용을 보존했습니다.')
+        if found:return page_id(found[0]['id'])
+        return self.child_page(parent,('BrainDance · '+record['title'])[:160]+suffix)
+
+    def report_section(self,identity,record,known=None):
+        # A self-link carries the revision key without exposing hashes in the visible title.
+        marker='https://www.notion.so/'+identity.replace('-','')+'?braindance_report='+record['digest']
+        children=self.children(identity)
+        if known:
+            found=[b for b in children if b.get('id')==known and b.get('type')=='toggle']
+            if not found:raise NotionError('Notion의 보고서 구역이 이동되거나 삭제되었습니다. 기존 내용을 보존했습니다.')
+        else:found=[b for b in children if b.get('type')=='toggle' and any((t.get('text',{}).get('link') or {}).get('url')==marker for t in b['toggle']['rich_text'])]
+        if len(found)>1:raise NotionError('동일한 보고서 구역이 여러 개입니다. 기존 내용을 보존했습니다.')
+        if found:return page_id(found[0]['id'])
+        stamp=datetime.fromisoformat(record['created_at'].replace('Z','+00:00')).astimezone(ZoneInfo('Asia/Seoul'))
+        label=stamp.strftime('%Y-%m-%d %H:%M:%S');title=rich(label+' · 연구 결과');title[0]['text']['link']={'url':marker}
+        newer=[b for b in children if b.get('type')=='toggle' and any('braindance_report=' in (t.get('text',{}).get('link') or {}).get('url','') for t in b['toggle']['rich_text']) and block_signature(b)[1][:19]>label]
+        position={'type':'after_block','after_block':{'id':newer[-1]['id']}} if newer else {'type':'start'}
+        result=self.request('PATCH','/blocks/'+identity+'/children',dict(children=[{'object':'block','type':'toggle','toggle':{'rich_text':title}}],position=position))
+        return page_id(result['results'][0]['id'])
+
+    def gather_previous(self,destination,identity,project_id):
+        """Move legacy database snapshots intact under this project; no deletion or content copying."""
+        rows=self.research_rows(destination,{'starts_with':project_id+':'})
+        if not rows:return
+        archive=self.child_page(identity,'이전 기록')
+        for row in rows:
+            self.request('POST','/pages/'+page_id(row['id'])+'/move',dict(parent=dict(type='page_id',page_id=archive)))
 
 
 def rich(value):return [{'type':'text','text':{'content':value}}]
@@ -216,9 +264,13 @@ class PublicationService:
                 CREATE TABLE IF NOT EXISTS reports(project_id TEXT NOT NULL,digest TEXT NOT NULL,created_at TEXT NOT NULL,PRIMARY KEY(project_id,digest));
             ''')
             if 'layout' not in {r['name'] for r in conn.execute('PRAGMA table_info(links)')}:conn.execute("ALTER TABLE links ADD COLUMN layout TEXT NOT NULL DEFAULT 'pages'")
+            conn.execute('CREATE TABLE IF NOT EXISTS connection_settings(id INTEGER PRIMARY KEY CHECK(id=1),parent_id TEXT NOT NULL,auto_sync INTEGER NOT NULL,workspace TEXT NOT NULL,checked_at TEXT NOT NULL,layout TEXT NOT NULL)')
+            old=conn.execute("SELECT parent_id,auto_sync,workspace,checked_at,layout FROM links ORDER BY (checked_at!='') DESC,auto_sync DESC,checked_at DESC,rowid DESC LIMIT 1").fetchone()
+            conn.execute('INSERT OR IGNORE INTO connection_settings VALUES(1,?,?,?,?,?)',tuple(old) if old else ('',0,'','','database'))
             columns={r['name'] for r in conn.execute('PRAGMA table_info(jobs)')}
             for name,definition in [('attempts','INTEGER NOT NULL DEFAULT 0'),('next_retry','REAL NOT NULL DEFAULT 0')]:
                 if name not in columns:conn.execute('ALTER TABLE jobs ADD COLUMN '+name+' '+definition)
+            if 'section_id' not in columns:conn.execute('ALTER TABLE jobs ADD COLUMN section_id TEXT')
             conn.execute("UPDATE jobs SET state='queued',message='이전 동기화를 이어서 확인합니다.' WHERE state IN ('building','uploading','publishing')")
         os.chmod(self.db,0o600)
         self.thread=threading.Thread(target=self.loop,name='braindance-publications',daemon=True)
@@ -235,14 +287,28 @@ class PublicationService:
         if not self.secret.exists():return ''
         return json.loads(self.secret.read_text()).get('token','')
 
-    def configure(self,project_id,parent,token='',auto_sync=False,layout='database'):
-        project_data(self.store,project_id);parent=page_id(parent)
+    def settings(self):
+        with self.connect() as conn:return dict(conn.execute('SELECT parent_id,auto_sync,workspace,checked_at,layout FROM connection_settings WHERE id=1').fetchone())
+
+    def inherit_connections(self):
+        setting=self.settings()
+        if not setting['parent_id']:return
+        with self.store._connect() as c:projects=[r[0] for r in c.execute('SELECT p.id FROM projects p LEFT JOIN project_lifecycle l ON l.project_id=p.id WHERE l.deleted_at IS NULL')]
+        with self.connect() as conn:
+            for project_id in projects:conn.execute('INSERT OR IGNORE INTO links(project_id,parent_id,auto_sync,workspace,checked_at,layout) VALUES(?,?,?,?,?,?)',(project_id,setting['parent_id'],setting['auto_sync'],setting['workspace'],setting['checked_at'],setting['layout']))
+
+    def configure(self,project_id=None,parent=None,token='',auto_sync=False,layout='database'):
+        if project_id:project_data(self.store,project_id)
+        parent=page_id(parent)
         if type(auto_sync) is not bool:raise ValueError('자동 동기화 설정을 확인하세요.')
         if layout not in {'pages','database'}:raise ValueError('Notion 기록 형식을 확인하세요.')
         token=token or self.token()
         if not token:
             if auto_sync:raise ValueError('토큰을 등록한 뒤 자동 동기화를 켜세요.')
-            with self.connect() as conn:conn.execute('INSERT INTO links(project_id,parent_id,auto_sync,workspace,checked_at,layout) VALUES(?,?,?,?,?,?) ON CONFLICT(project_id) DO UPDATE SET parent_id=excluded.parent_id,auto_sync=0,workspace=excluded.workspace,checked_at=excluded.checked_at,layout=excluded.layout',(project_id,parent,0,'','',layout))
+            with self.connect() as conn:
+                conn.execute('UPDATE connection_settings SET parent_id=?,auto_sync=0,workspace=?,checked_at=?,layout=? WHERE id=1',(parent,'','',layout))
+                conn.execute('UPDATE links SET parent_id=?,auto_sync=0,workspace=?,checked_at=?,layout=?',(parent,'','',layout))
+            self.inherit_connections()
             return self.state(project_id)
         api=NotionAPI(token,self.stop);user=api.request('GET','/users/me');page=api.request('GET','/pages/'+parent)
         if page.get('archived') or page.get('in_trash'):raise ValueError('휴지통에 있는 Notion 페이지입니다.')
@@ -253,26 +319,36 @@ class PublicationService:
                 os.replace(name,self.secret)
             finally:Path(name).unlink(missing_ok=True)
             with self.connect() as conn:
-                conn.execute('INSERT INTO links(project_id,parent_id,auto_sync,workspace,checked_at,layout) VALUES(?,?,?,?,?,?) ON CONFLICT(project_id) DO UPDATE SET parent_id=excluded.parent_id,auto_sync=excluded.auto_sync,workspace=excluded.workspace,checked_at=excluded.checked_at,layout=excluded.layout',(project_id,parent,int(auto_sync),user.get('bot',{}).get('workspace_name') or user.get('name') or 'Notion',now(),layout))
+                values=(parent,int(auto_sync),user.get('bot',{}).get('workspace_name') or user.get('name') or 'Notion',now(),layout)
+                conn.execute('UPDATE connection_settings SET parent_id=?,auto_sync=?,workspace=?,checked_at=?,layout=? WHERE id=1',values)
+                conn.execute('UPDATE links SET parent_id=?,auto_sync=?,workspace=?,checked_at=?,layout=?',values)
+            self.inherit_connections()
         return self.state(project_id)
 
     def disconnect(self):
         with self.lock,self.connect() as conn:
             self.secret.unlink(missing_ok=True);conn.execute('UPDATE links SET auto_sync=0')
+            conn.execute('UPDATE connection_settings SET auto_sync=0 WHERE id=1')
             conn.execute("UPDATE jobs SET state='failed',message='Notion 연결이 해제되었습니다.',updated_at=? WHERE kind IN ('notion','notion-database') AND state='queued'",(now(),))
         return {'connected':False}
 
-    def state(self,project_id):
+    def state(self,project_id=None):
+        if not project_id:
+            setting=self.settings()
+            with self.connect() as conn:jobs=[{k:v for k,v in dict(r).items() if k!='snapshot'} for r in conn.execute('SELECT * FROM jobs ORDER BY updated_at DESC,rowid DESC LIMIT 12')]
+            return dict(connected=bool(self.token()) and bool(setting['checked_at']),scope='all_projects',link=setting if setting['parent_id'] else None,jobs=jobs,report=None)
         project_data(self.store,project_id)
+        self.inherit_connections()
         with self.connect() as conn:
             link=conn.execute('SELECT * FROM links WHERE project_id=?',(project_id,)).fetchone()
             jobs=[{k:v for k,v in dict(r).items() if k!='snapshot'} for r in conn.execute('SELECT * FROM jobs WHERE project_id=? ORDER BY updated_at DESC,rowid DESC LIMIT 12',(project_id,))]
             report=conn.execute('SELECT * FROM reports WHERE project_id=? ORDER BY created_at DESC LIMIT 1',(project_id,)).fetchone()
         record=json.loads(self.file(project_id,report['digest'],'manifest.json').read_text()) if report else None
-        return dict(connected=bool(self.token()) and bool(link and link['checked_at']),link=dict(link) if link else None,jobs=jobs,report=record)
+        return dict(connected=bool(self.token()) and bool(link and link['checked_at']),scope='all_projects',link=dict(link) if link else None,jobs=jobs,report=record)
 
     def enqueue(self,project_id,publish=False,retry=True):
         data=project_data(self.store,project_id);digest=signature(data);kind='notion' if publish else 'local'
+        self.inherit_connections()
         with self.lock,self.connect() as conn:
             link=conn.execute('SELECT * FROM links WHERE project_id=?',(project_id,)).fetchone()
             if publish and (not link or not self.token()):raise ValueError('프로젝트의 Notion 페이지와 연결 토큰을 먼저 설정하세요.')
@@ -280,8 +356,9 @@ class PublicationService:
             parent=link['parent_id'] if publish else ''
             row=conn.execute('SELECT * FROM jobs WHERE project_id=? AND digest=? AND kind=? AND parent_id=?',(project_id,digest,kind,parent)).fetchone()
             if row:
-                if row['state']=='failed' and retry:conn.execute("UPDATE jobs SET state='queued',message='재시도 대기',updated_at=? WHERE id=?",(now(),row['id']))
-                return dict(id=row['id'],state='queued' if row['state']=='failed' and retry else row['state'])
+                queue=row['state']=='failed' and retry or publish and row['state']=='completed' and not row['section_id']
+                if queue:conn.execute("UPDATE jobs SET state='queued',message='프로젝트 페이지 동기화 대기',updated_at=? WHERE id=?",(now(),row['id']))
+                return dict(id=row['id'],state='queued' if queue else row['state'])
             identity=str(uuid.uuid4());stamp=now()
             conn.execute('INSERT INTO jobs(id,project_id,digest,kind,parent_id,state,message,snapshot,created_at,updated_at,page_id,page_url) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',(identity,project_id,digest,kind,parent,'queued','보고서 준비 대기',json.dumps(data,ensure_ascii=False,allow_nan=False),stamp,stamp,None,None))
             return dict(id=identity,state='queued')
@@ -304,17 +381,17 @@ class PublicationService:
                 destination=api.research_database(job['parent_id'])
                 identity=api.research_entry(destination,record,json.loads(job['snapshot']))
             else:
-                parent=api.child_page(job['parent_id'],('BrainDance · '+record['title'])[:160]+' · '+job['project_id'][:8])
-                identity=api.child_page(parent,'결과 보고 · '+job['digest'][:12])
+                identity=api.project_page(job['parent_id'],record)
             url='https://www.notion.so/'+identity.replace('-','')
-            self.update(job['id'],'uploading','그래프와 결과 파일을 첨부합니다.',page_id=identity,page_url=url)
+            section=api.report_section(identity,record,job.get('section_id'))
+            self.update(job['id'],'uploading','프로젝트 페이지에 결과와 시각화를 정리합니다.',page_id=identity,page_url=url,section_id=section)
             items=[]
             for title,body in record['sections']:
                 items.extend(blocks_for(dict(sections=[(title,body)])))
                 if title=='결과':items.extend((c['file'],c['title']+' · '+c['file']) for c in record['charts'])
             items.append(('report.md','연구 보고서 · Markdown'))
             expected=[block_signature(item) if isinstance(item,dict) else ('image' if item[0].endswith('.png') else 'file',item[1]) for item in items]
-            existing=api.children(identity)
+            existing=api.children(section)
             if len(existing)>len(expected) or [block_signature(b) for b in existing]!=expected[:len(existing)]:raise ValueError('Notion 보고서에 수동 변경이 있습니다. 원본을 보존하기 위해 덮어쓰기를 중단했습니다.')
             offset=len(existing)
             while offset<len(items):
@@ -331,7 +408,8 @@ class PublicationService:
                         encoded=len(json.dumps(item,ensure_ascii=False).encode())
                         if size+encoded>350000:break
                         batch.append(item);size+=encoded
-                api.request('PATCH','/blocks/'+identity+'/children',dict(children=batch));offset+=len(batch)
+                api.request('PATCH','/blocks/'+section+'/children',dict(children=batch));offset+=len(batch)
+            if job['kind']=='notion-database':api.gather_previous(destination,identity,job['project_id'])
             self.update(job['id'],'completed','Notion에 결과와 시각화를 정리했습니다.')
         else:self.update(job['id'],'completed','보고서와 시각화를 저장했습니다.')
         # Publication receipts belong to the same project stream; they are not
@@ -341,16 +419,20 @@ class PublicationService:
             if root:conn.execute('INSERT OR IGNORE INTO notes VALUES(?,?,?,?,?,?)',('publication:'+job['id'],root['id'],'publication','Notion 결과 정리 완료' if job['kind'] in {'notion','notion-database'} else '결과 보고서·시각화 생성 완료',url if job['kind'] in {'notion','notion-database'} else f"시각화 {len(record['charts'])}개 · 결과 탭에서 확인할 수 있습니다.",now()))
 
     def tick(self):
+        self.inherit_connections()
         with self.connect() as conn:links=[dict(r) for r in conn.execute('SELECT * FROM links WHERE auto_sync=1')]
         if not self.token():return
         for link in links:
             try:
                 data=project_data(self.store,link['project_id'])
+                from research_reports import TERMINAL
+                ended=[r for r in data.get('runs',[]) if r['state'] in TERMINAL]
+                if not ended and not data.get('brief'):continue
                 with self.connect() as conn:previous=conn.execute("SELECT snapshot FROM jobs WHERE project_id=? AND kind IN ('notion','notion-database') ORDER BY rowid DESC LIMIT 1",(link['project_id'],)).fetchone()
                 if previous:
                     prior=json.loads(previous['snapshot'])
                     # Internal reviews and brainstorming remain in the journal; publish scientific milestones.
-                    if prior.get('schema_version')==2 and prior.get('runs')==data.get('runs') and prior.get('brief')==data.get('brief'):continue
+                    if prior.get('schema_version')==2 and [r for r in prior.get('runs',[]) if r['state'] in TERMINAL]==ended and prior.get('brief')==data.get('brief'):continue
                 self.enqueue(link['project_id'],publish=True,retry=False)
             except (ValueError,KeyError):pass
 

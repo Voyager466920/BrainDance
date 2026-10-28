@@ -83,6 +83,14 @@ class TerminalUITests(unittest.TestCase):
             ui.close_dialog()
         self.scenario(exercise)
 
+    def test_notion_dialog_opens_without_a_selected_project(self):
+        async def exercise(ui,pipe):
+            ui.project=None
+            with patch.object(ui,'require_project',side_effect=AssertionError('Notion setup is global')):await ui.slash('/notion')
+            self.assertTrue(ui.modals);self.assertEqual(len(self.editable_fields(ui)),2)
+            ui.close_dialog()
+        self.scenario(exercise)
+
     def test_automatic_recovery_does_not_display_old_failure_as_a_human_action_request(self):
         async def exercise(ui,pipe):
             ui.state['session']=dict(status='running',progress=dict(phase='recovery'),message='자동 디버깅 중')

@@ -24,12 +24,19 @@ PUBLICATION_LOOP=PublicationService.loop
 class RemoteFixture:
     def __init__(self):
         self.blocks={PARENT:[]};self.calls=[];self.uploads={};self.fail_after_append=False;self.fail_after_create=False
-        self.databases={};self.sources={};self.entries={};self.views=[]
+        self.databases={};self.sources={};self.entries={};self.views=[];self.pages={};self.query_page_size=100;self.fail_after_move=False
 
     def request(self,api,method,path,payload=None,content_type=None):
         self.calls.append((method,path,payload))
         if path=='/users/me':return dict(bot=dict(workspace_name='Fixture workspace'))
-        if method=='GET' and path.startswith('/pages/'):return dict(id=PARENT,archived=False)
+        if method=='GET' and path.startswith('/pages/'):return self.pages.get(path.split('/')[2],dict(id=PARENT,archived=False))
+        if method=='POST' and path.endswith('/move'):
+            identity=path.split('/')[2];record=self.pages[identity]
+            for source,rows in self.entries.items():self.entries[source]=[r for r in rows if r['id']!=identity]
+            record['parent']=payload['parent'];title=record['properties']['제목']['title'][0]['text']['content']
+            self.blocks[payload['parent']['page_id']].append(dict(id=identity,type='child_page',child_page=dict(title=title)))
+            if self.fail_after_move:self.fail_after_move=False;raise NotionError('Fixture lost move response',retryable=True)
+            return record
         if method=='POST' and path=='/databases':
             identity=str(uuid.uuid4());source=str(uuid.uuid4());props={name:{**definition,'id':'property-'+str(i),'type':next(iter(definition))} for i,(name,definition) in enumerate(payload['initial_data_source']['properties'].items())}
             record=dict(id=identity,data_sources=[dict(id=source)]);self.databases[identity]=record;self.sources[source]=dict(id=source,properties=props);self.entries[source]=[]
@@ -43,14 +50,16 @@ class RemoteFixture:
         if method=='POST' and path=='/views':
             view=dict(id=str(uuid.uuid4()),**payload);self.views.append(view);return view
         if method=='POST' and path.startswith('/data_sources/'):
-            key=payload['filter']['rich_text']['equals'];rows=self.entries[path.split('/')[2]]
-            return dict(results=[r for r in rows if r['properties']['보고서 키']['rich_text'][0]['text']['content']==key],has_more=False)
+            condition=payload['filter']['rich_text'];rows=self.entries[path.split('/')[2]]
+            rows=[r for r in rows if (r['properties']['보고서 키']['rich_text'][0]['text']['content']==condition['equals'] if 'equals' in condition else r['properties']['보고서 키']['rich_text'][0]['text']['content'].startswith(condition['starts_with']))]
+            start=int(payload.get('start_cursor',0));end=start+self.query_page_size
+            return dict(results=rows[start:end],has_more=end<len(rows),next_cursor=str(end) if end<len(rows) else None)
         if method=='GET' and path.startswith('/blocks/'):
             identity=path.split('/')[2];return dict(results=self.blocks[identity],has_more=False)
         if method=='POST' and path=='/pages':
             if payload['parent'].get('type')=='data_source_id':
                 identity=str(uuid.uuid4());self.blocks[identity]=[]
-                record=dict(id=identity,properties=payload['properties']);self.entries[payload['parent']['data_source_id']].append(record)
+                record=dict(id=identity,properties=payload['properties'],parent=payload['parent']);self.pages[identity]=record;self.entries[payload['parent']['data_source_id']].append(record)
                 if self.fail_after_create:self.fail_after_create=False;raise NotionError('Fixture lost entry create response',retryable=True)
                 return record
             identity=str(uuid.uuid4());title=payload['properties']['title']['title'][0]['text']['content']
@@ -63,10 +72,20 @@ class RemoteFixture:
             self.uploads[path.split('/')[2]]['sent']=payload
             assert 'multipart/form-data; boundary=' in content_type
             return dict(status='uploaded')
+        if method=='PATCH' and path.startswith('/pages/'):
+            self.pages[path.split('/')[2]]['properties'].update(payload['properties']);return self.pages[path.split('/')[2]]
         if method=='PATCH':
-            self.blocks[path.split('/')[2]].extend(payload['children'])
+            blocks=json.loads(json.dumps(payload['children']))
+            for block in blocks:
+                block['id']=str(uuid.uuid4())
+                if block['type']=='toggle':self.blocks[block['id']]=[]
+            target=self.blocks[path.split('/')[2]]
+            if payload.get('position',{}).get('type')=='start':target[0:0]=blocks
+            elif payload.get('position',{}).get('type')=='after_block':
+                offset=next(i for i,b in enumerate(target) if b['id']==payload['position']['after_block']['id'])+1;target[offset:offset]=blocks
+            else:target.extend(blocks)
             if self.fail_after_append:self.fail_after_append=False;raise NotionError('Fixture lost append response',retryable=True)
-            return dict(results=payload['children'])
+            return dict(results=blocks)
         raise AssertionError((method,path))
 
 
@@ -88,8 +107,8 @@ class PublicationTests(unittest.TestCase):
         self.assertEqual([v['type'] for v in self.remote.views],['table','calendar'])
         self.assertEqual(self.remote.views[0]['sorts'],[dict(property='날짜',direction='descending')])
         entry=next(iter(self.remote.entries.values()))[0];props=entry['properties']
-        self.assertRegex(props['날짜']['date']['start'],r'^\d{4}-\d{2}-\d{2}$');self.assertEqual(props['정상 측정']['number'],1)
-        self.assertTrue(any(b['type']=='image' for b in self.remote.blocks[entry['id']]))
+        self.assertRegex(props['날짜']['date']['start'],r'^\d{4}-\d{2}-\d{2}T');self.assertEqual(props['정상 측정']['number'],1)
+        self.assertTrue(any(b['type']=='image' for b in self.remote.blocks[state['jobs'][0]['section_id']]))
         self.assertEqual(self.service.enqueue(self.project['id'],True)['id'],job['id'])
         self.assertEqual(len(next(iter(self.remote.entries.values()))),1)
         self.assertNotIn(TOKEN,json.dumps(state))
@@ -109,7 +128,70 @@ class PublicationTests(unittest.TestCase):
         api=NotionAPI(TOKEN);destination=api.research_database(PARENT)
         identity=api.research_entry(destination,dict(project_id=self.project['id'],digest='offline-date-fixture',title='Date fixture',created_at='2026-10-28T16:30:00+00:00'),dict(runs=[]))
         entry=next(r for r in next(iter(self.remote.entries.values())) if r['id']==identity)
-        self.assertEqual(entry['properties']['날짜']['date']['start'],'2026-10-29')
+        self.assertTrue(entry['properties']['날짜']['date']['start'].startswith('2026-10-29T'))
+
+    def test_changed_results_and_renaming_reuse_project_page_and_preserve_manual_content(self):
+        self.add_measurement();self.configure(layout='database');first=self.run_job(self.service.enqueue(self.project['id'],True))
+        page=first['jobs'][0]['page_id'];section=first['jobs'][0]['section_id'];saved=json.dumps(self.remote.blocks[section],sort_keys=True)
+        self.remote.blocks[page].append(dict(type='paragraph',paragraph=dict(rich_text=[dict(text=dict(content='HUMAN NOTE'))])))
+        with self.server.store._connect() as c:c.execute('UPDATE projects SET title=? WHERE id=?',('Renamed project',self.project['id']))
+        self.add_measurement();second=self.run_job(self.service.enqueue(self.project['id'],True))
+        self.assertEqual(second['jobs'][0]['page_id'],page);self.assertNotEqual(second['jobs'][0]['section_id'],section)
+        entries=next(iter(self.remote.entries.values()));self.assertEqual(len(entries),1)
+        self.assertEqual(entries[0]['properties']['제목']['title'][0]['text']['content'],'Renamed project')
+        self.assertEqual(entries[0]['properties']['정상 측정']['number'],2)
+        self.assertEqual(json.dumps(self.remote.blocks[section],sort_keys=True),saved)
+        self.assertTrue(any(block_signature(b)==('paragraph','HUMAN NOTE') for b in self.remote.blocks[page]))
+        self.assertEqual(self.remote.blocks[page][0]['id'],second['jobs'][0]['section_id'])
+
+    def test_identical_titles_in_different_projects_never_share_a_page(self):
+        api=NotionAPI(TOKEN);destination=api.research_database(PARENT)
+        record=dict(project_id=self.project['id'],digest='first',title='Same title',created_at='2026-10-28T12:00:00+00:00')
+        one=api.research_entry(destination,record,dict(runs=[]));record={**record,'project_id':str(uuid.uuid4())}
+        two=api.research_entry(destination,record,dict(runs=[]));self.assertNotEqual(one,two)
+        self.assertEqual(len(next(iter(self.remote.entries.values()))),2)
+
+    def test_legacy_rows_are_moved_intact_and_uncertain_move_reconciles_with_pagination(self):
+        self.configure(layout='database');api=NotionAPI(TOKEN);destination=api.research_database(PARENT)
+        legacy=[]
+        for i in range(3):
+            properties={'제목':{'title':[dict(text=dict(content='Previous '+str(i)))]},'보고서 키':{'rich_text':[dict(text=dict(content=self.project['id']+':legacy-'+str(i)))]}}
+            row=api.request('POST','/pages',dict(parent=dict(type='data_source_id',data_source_id=destination['data_source_id']),properties=properties));legacy.append(row['id'])
+            self.remote.blocks[row['id']]=[dict(type='paragraph',paragraph=dict(rich_text=[dict(text=dict(content='HUMAN '+str(i)))]))]
+        properties={'제목':{'title':[dict(text=dict(content='Unrelated'))]},'보고서 키':{'rich_text':[dict(text=dict(content=str(uuid.uuid4())+':legacy'))]}}
+        unrelated=api.request('POST','/pages',dict(parent=dict(type='data_source_id',data_source_id=destination['data_source_id']),properties=properties))['id']
+        preserved={i:json.dumps(self.remote.blocks[i],sort_keys=True) for i in legacy};self.remote.query_page_size=1;self.remote.fail_after_move=True
+        job=self.service.enqueue(self.project['id'],True)
+        with self.assertRaises(NotionError):self.run_job(job)
+        state=self.run_job(job);canonical=state['jobs'][0]['page_id'];remaining=next(iter(self.remote.entries.values()))
+        self.assertEqual({r['id'] for r in remaining},{canonical,unrelated})
+        archive=next(b['id'] for b in self.remote.blocks[canonical] if b['type']=='child_page')
+        self.assertEqual({b['id'] for b in self.remote.blocks[archive]},set(legacy))
+        self.assertTrue(all(self.remote.pages[i]['parent']['page_id']==archive and json.dumps(self.remote.blocks[i],sort_keys=True)==preserved[i] for i in legacy))
+        self.assertFalse(any(method=='DELETE' for method,_,_ in self.remote.calls))
+
+    def test_old_completed_job_is_queued_once_for_project_page_migration(self):
+        self.configure(layout='database');job=self.service.enqueue(self.project['id'],True)
+        self.service.update(job['id'],'completed','Old publisher',page_id=str(uuid.uuid4()))
+        self.assertEqual(self.service.enqueue(self.project['id'],True)['state'],'queued')
+        state=self.run_job(job);self.assertIsNotNone(state['jobs'][0]['section_id'])
+        self.assertEqual(self.service.enqueue(self.project['id'],True)['state'],'completed')
+
+    def test_retry_of_an_older_report_cannot_regress_latest_metadata_or_section_order(self):
+        api=NotionAPI(TOKEN);destination=api.research_database(PARENT)
+        latest=dict(project_id=self.project['id'],digest='latest',title='Latest title',created_at='2026-10-29T14:00:00+00:00')
+        page=api.research_entry(destination,latest,dict(runs=[]));latest_section=api.report_section(page,latest)
+        old={**latest,'digest':'old','title':'Old title','created_at':'2026-10-28T14:00:00+00:00'}
+        self.assertEqual(api.research_entry(destination,old,dict(runs=[])),page);old_section=api.report_section(page,old)
+        self.assertEqual(self.remote.pages[page]['properties']['제목']['title'][0]['text']['content'],'Latest title')
+        self.assertEqual([b['id'] for b in self.remote.blocks[page]],[latest_section,old_section])
+
+    def test_manual_edit_within_a_report_is_preserved_and_retry_does_not_create_another_section(self):
+        self.configure(layout='database');job=self.service.enqueue(self.project['id'],True);state=self.run_job(job)
+        page=state['jobs'][0]['page_id'];section=state['jobs'][0]['section_id'];before=len(self.remote.blocks[page])
+        self.remote.blocks[section][0]['heading_2']['rich_text'][0]['text']['content']='HUMAN EDIT'
+        with self.assertRaisesRegex(ValueError,'수동 변경'):self.run_job(job)
+        self.assertEqual(len(self.remote.blocks[page]),before);self.assertEqual(block_signature(self.remote.blocks[section][0]),('heading_2','HUMAN EDIT'))
 
     def test_network_failure_retries_durably_without_a_human_resend(self):
         self.configure(layout='database');job=self.service.enqueue(self.project['id'],True);self.remote.fail_after_create=True
@@ -173,7 +255,7 @@ class PublicationTests(unittest.TestCase):
         query='?project_id='+self.project['id']+'&digest='+report['digest']+'&file='
         self.assertIn('image/png',self.client.opener.open(self.client.url+'/api/reports/file'+query+chart['file']).headers['Content-Type'])
         self.assertEqual(state['jobs'][0]['state'],'completed')
-        page=state['jobs'][0]['page_id'];self.assertTrue(any(b['type']=='image' for b in self.remote.blocks[page]))
+        page=state['jobs'][0]['section_id'];self.assertTrue(any(b['type']=='image' for b in self.remote.blocks[page]))
         self.assertEqual(len(self.remote.uploads),2)
         self.assertNotIn(TOKEN,self.service.file(self.project['id'],report['digest'],'results.json').read_text())
         self.assertFalse(any('untrusted.invalid' in path for _,path,_ in self.remote.calls))
@@ -186,8 +268,8 @@ class PublicationTests(unittest.TestCase):
         self.remote.fail_after_append=True
         with self.assertRaises(NotionError):self.run_job(self.service.enqueue(self.project['id'],True))
         self.service.update(response['id'],'failed','Fixture retry')
-        state=self.run_job(self.service.enqueue(self.project['id'],True));page=state['jobs'][0]['page_id']
-        self.assertEqual(len(self.remote.blocks),3) # parent, project, snapshot
+        state=self.run_job(self.service.enqueue(self.project['id'],True));page=state['jobs'][0]['section_id']
+        self.assertEqual(len(self.remote.blocks),3) # parent, project page, report section
         self.assertEqual(len(self.remote.blocks[page]),len(blocks_for(state['report']))+1)
         calls=len(self.remote.calls);again=self.service.enqueue(self.project['id'],True)
         self.assertEqual(again['state'],'completed');self.assertEqual(len(self.remote.calls),calls)
@@ -213,7 +295,7 @@ class PublicationTests(unittest.TestCase):
         self.assertIn('failed',self.service.file(self.project['id'],record['digest'],'report.md').read_text())
 
     def test_auto_sync_has_no_feedback_loop_and_disconnect_stops_future_publication(self):
-        self.configure(True);self.service.tick()
+        self.add_measurement();self.configure(True);self.service.tick()
         with self.service.connect() as conn:job=dict(conn.execute('SELECT * FROM jobs').fetchone())
         self.run_job(job);self.service.tick()
         with self.service.connect() as conn:self.assertEqual(conn.execute('SELECT count(*) FROM jobs').fetchone()[0],1)
@@ -221,6 +303,29 @@ class PublicationTests(unittest.TestCase):
         self.server.store.add_note(self.client.root(self.project)['id'],'analysis','New finding','New observation')
         self.service.tick()
         with self.service.connect() as conn:self.assertEqual(conn.execute('SELECT count(*) FROM jobs').fetchone()[0],1)
+
+    def test_global_setup_needs_no_project_and_future_projects_inherit_connection(self):
+        self.server.store.set_project_deleted(self.project['id'],True)
+        with patch.object(self.client,'project',side_effect=AssertionError('Global Notion setup must not select projects')),patch('sys.stdin.isatty',return_value=True),patch('getpass.getpass',return_value=TOKEN):
+            state=terminal.dispatch(self.client,terminal.parser().parse_args(['notion','setup','--parent',PARENT]))
+            self.assertEqual(state['scope'],'all_projects');self.assertTrue(state['connected']);self.assertTrue(state['link']['auto_sync'])
+        record=terminal.dispatch(self.client,terminal.parser().parse_args(['new','Future Notion project','--goal','OFFLINE fixture']))
+        saved=self.service.state(record['project_id']);self.assertTrue(saved['connected']);self.assertEqual(saved['link']['parent_id'],PARENT);self.assertTrue(saved['link']['auto_sync'])
+        self.assertNotIn(TOKEN,json.dumps(self.server.store.export_json()))
+
+    def test_persistent_global_connection_survives_restart_and_disconnect_is_global(self):
+        self.configure(True,layout='database');secret=self.service.secret.read_bytes()
+        restarted=PublicationService(self.server.store,autostart=False);self.addCleanup(restarted.close)
+        self.assertTrue(restarted.state()['connected']);self.assertEqual(restarted.state()['link']['parent_id'],PARENT);self.assertEqual(secret,restarted.secret.read_bytes())
+        restarted.disconnect();self.assertFalse(restarted.state()['connected']);self.assertFalse(restarted.settings()['auto_sync'])
+        record=terminal.dispatch(self.client,terminal.parser().parse_args(['new','Disconnected project','--goal','OFFLINE fixture']))
+        self.assertFalse(restarted.state(record['project_id'])['connected']);self.assertFalse(restarted.state(record['project_id'])['link']['auto_sync'])
+
+    def test_global_auto_sync_waits_for_results_instead_of_creating_empty_pages(self):
+        self.configure(True);self.service.tick()
+        with self.service.connect() as c:self.assertEqual(c.execute('SELECT count(*) FROM jobs').fetchone()[0],0)
+        self.add_measurement();self.service.tick()
+        with self.service.connect() as c:self.assertEqual(c.execute('SELECT count(*) FROM jobs').fetchone()[0],1)
 
     def test_purge_releases_local_report_storage_and_keeps_remote_pages(self):
         self.add_measurement();self.configure();state=self.run_job(self.service.enqueue(self.project['id'],True));pages=len(self.remote.blocks)
@@ -244,7 +349,7 @@ class PublicationTests(unittest.TestCase):
         self.assertIn('## 해결하려는 문제',markdown);self.assertIn('https://arxiv.org/abs/2601.00001',markdown)
         self.assertNotIn('BIBLIOGRAPHY_SENTINEL',markdown);self.assertNotIn('ABSTRACT_SENTINEL',markdown)
         self.assertIn('experiment-runs/',markdown);self.assertIn('모듈 직접 실행',markdown)
-        entry=next(iter(self.remote.entries.values()))[0];blocks=self.remote.blocks[entry['id']]
+        entry=next(iter(self.remote.entries.values()))[0];blocks=self.remote.blocks[state['jobs'][0]['section_id']]
         table=next(b for b in blocks if b['type']=='table');self.assertTrue(table['table']['has_column_header'])
         kinds=[b['type'] for b in blocks];self.assertLess(kinds.index('image'),next(i for i,b in enumerate(blocks) if b['type']=='heading_2' and b['heading_2']['rich_text'][0]['text']['content']=='한계와 다음 단계'))
         first=block_signature(table);table['table']['children'][1]['table_row']['cells'][0][0]['text']['content']='HUMAN_EDIT'
@@ -254,14 +359,13 @@ class PublicationTests(unittest.TestCase):
 
     def test_automatic_publication_waits_for_results_or_reader_summary(self):
         self.configure(True,layout='database');self.service.tick()
-        with self.service.connect() as conn:first=dict(conn.execute('SELECT * FROM jobs').fetchone())
-        self.run_job(first)
+        with self.service.connect() as conn:self.assertEqual(conn.execute('SELECT count(*) FROM jobs').fetchone()[0],0)
         node=self.client.root(self.project);self.server.store.add_note(node['id'],'analysis','내부 검토','중간 사고 기록')
         self.service.tick()
-        with self.service.connect() as conn:self.assertEqual(conn.execute('SELECT count(*) FROM jobs').fetchone()[0],1)
+        with self.service.connect() as conn:self.assertEqual(conn.execute('SELECT count(*) FROM jobs').fetchone()[0],0)
         self.server.store.add_note(node['id'],'analysis','연구 보고 요약',json.dumps(dict(problem='확인할 문제',approach='검증할 방법',findings='아직 측정 전',limitations=[],next_steps=[])))
         self.service.tick()
-        with self.service.connect() as conn:self.assertEqual(conn.execute('SELECT count(*) FROM jobs').fetchone()[0],2)
+        with self.service.connect() as conn:self.assertEqual(conn.execute('SELECT count(*) FROM jobs').fetchone()[0],1)
 
 
 class NotionTransportTests(unittest.TestCase):

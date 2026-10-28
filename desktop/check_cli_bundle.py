@@ -54,6 +54,8 @@ def main():
             assert 'code' in json.loads(get('/api/experiment-template'))
             slack=json.loads(run('slack','status','--json','--db',str(database),'--server',address))
             assert slack['scope']=='all_projects' and not slack['connected']
+            notion=json.loads(run('notion','status','--json','--db',str(database),'--server',address))
+            assert notion['scope']=='all_projects' and not notion['connected']
             project=json.loads(run('new','Bundle fixture','--goal','Offline CPU fixture','--json','--db',str(database),'--server',address))
             interests=json.loads(run('interests','--project',project['project_id'],'--interest','edge adaptation','--bridge','control','--style','scout','--seconds','20','--pilots','1','--json','--db',str(database),'--server',address))
             assert interests['style']=='scout' and interests['interests']==['edge adaptation'] and interests['pilot_seconds']==20

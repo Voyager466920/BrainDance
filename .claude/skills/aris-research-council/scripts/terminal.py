@@ -325,6 +325,16 @@ def dispatch(client,args,project=None):
             try:record['automatic']=client.request('/api/control/automatic',dict(project_id=record['project_id'],action='start',**time_options(args),research_style=args.style,max_cycles=args.cycles if args.cycles is not None else (2 if scouting else 3),max_model_calls=args.calls if args.calls is not None else (80 if scouting else 40),token_budget=args.tokens if args.tokens is not None else (3000000 if scouting else 1500000),context_path=args.context,mode=args.mode or ('lite' if scouting else 'balanced')))
             except ClientError as error:raise ClientError('프로젝트는 생성됐지만 자동 시작에 실패했습니다. 프로젝트 ID: '+record['project_id']+' · '+str(error)) from error
         return record
+    if command=='notion' and args.action!='sync':
+        if args.action=='disconnect':return client.request('/api/notion/disconnect',{})
+        state=client.request('/api/notion')
+        if args.action=='status':return state
+        import getpass
+        parent=args.parent or (state.get('link') or {}).get('parent_id')
+        if not parent:raise ClientError('--parent에 결과를 저장할 Notion 페이지 URL을 입력하세요.')
+        if not sys.stdin.isatty():raise ClientError('Notion 토큰은 /notion의 숨김 입력으로 등록하세요.')
+        token=getpass.getpass('Notion 토큰 (입력 숨김, 기존 연결 유지 시 Enter): ')
+        return client.request('/api/notion/configure',dict(parent=parent,token=token,auto_sync=args.auto if args.auto is not None else True))
     project=client.project(args.project) if hasattr(args,'project') else project or client.project()
     if command=='interests':
         mapping={'interest':'interests','bridge':'bridge_fields','style':'style','days':'lookback_days','papers':'max_papers','pilots':'max_pilots','seconds':'pilot_seconds','runtime_policy':'runtime_policy','gain':'min_improvement','seeds':'min_seeds'}
@@ -341,15 +351,6 @@ def dispatch(client,args,project=None):
         query='?'+urllib.parse.urlencode(dict(project_id=project['id']))
         if command=='report' and args.action=='build':return client.request('/api/reports/build',dict(project_id=project['id']))
         if command=='notion' and args.action=='sync':return client.request('/api/notion/sync',dict(project_id=project['id']))
-        if command=='notion' and args.action=='disconnect':return client.request('/api/notion/disconnect',{})
-        if command=='notion' and args.action=='setup':
-            import getpass
-            state=client.request('/api/notion'+query);link=state.get('link') or {}
-            parent=args.parent or link.get('parent_id')
-            if not parent:raise ClientError('--parent에 결과를 저장할 Notion 페이지 URL을 입력하세요.')
-            if not sys.stdin.isatty():raise ClientError('Notion 토큰은 대화형 터미널의 숨김 입력이나 앱 설정에서 등록하세요.')
-            token=getpass.getpass('Notion 토큰 (입력 숨김, 기존 연결 유지 시 Enter): ')
-            return client.request('/api/notion/configure',dict(project_id=project['id'],parent=parent,token=token,auto_sync=args.auto if args.auto is not None else bool(link.get('auto_sync'))))
         state=client.request('/api/reports'+query)
         if command=='report' and args.action=='open':
             if not state.get('report'):raise ClientError('먼저 report build로 보고서를 만들어 주세요.')
@@ -549,7 +550,7 @@ class Console:
         except SystemExit:return True
         if args.command is None:print(HELP);return True
         value=await asyncio.to_thread(dispatch,self.client,args,self.project)
-        selected=None if command in {'delete','trash','restore','purge','slack'} else self.client.project(args.project) if hasattr(args,'project') else self.project
+        selected=None if command in {'delete','trash','restore','purge','slack','notion'} else self.client.project(args.project) if hasattr(args,'project') else self.project
         output(value,args,selected)
         if command=='new':await asyncio.to_thread(self.select,value['project_id'])
         if command=='delete' and self.project and self.project['id']==value['project_id']:
@@ -609,7 +610,7 @@ def main(argv=None):
                     asyncio.run(ResearchTerminal(client,args).run())
             except ImportError:raise ClientError('대화형 CLI에는 prompt-toolkit이 필요합니다. requirements-cli.txt를 설치하거나 패키지 앱의 braindance 명령을 사용하세요.')
             return 0
-        project=None if args.command in {'projects','connections','connection','devices','new','delete','trash','restore','purge','slack'} else client.project(getattr(args,'project',None))
+        project=None if args.command in {'projects','connections','connection','devices','new','delete','trash','restore','purge','slack','notion'} else client.project(getattr(args,'project',None))
         result=dispatch(client,args,project);output(result,args,project)
         return 1 if (args.command=='chat' and result['state'] in {'failed','interrupted'}) or (args.command=='purge' and result.get('cleanup_pending')) else 0
     except KeyboardInterrupt:

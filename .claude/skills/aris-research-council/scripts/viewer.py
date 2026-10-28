@@ -117,7 +117,7 @@ class ViewerHandler(BaseHTTPRequestHandler):
             return
         path = urlsplit(self.path).path
         if path == '/api/health':
-            self._reply(200, {'app': 'BrainDance', 'version': '0.19.3', 'pid': os.getpid(),
+            self._reply(200, {'app': 'BrainDance', 'version': '0.19.5', 'pid': os.getpid(),
                              'workspace_id': hashlib.sha256(str(Path(self.server.store.db_path).resolve()).encode()).hexdigest()})
         elif path=='/api/slack':
             self._reply(200,self.server.notifications.state())
@@ -187,7 +187,7 @@ class ViewerHandler(BaseHTTPRequestHandler):
     def _reports_get(self,path):
         query=parse_qs(urlsplit(self.path).query);project=query.get('project_id',[''])[0]
         try:
-            if path in {'/api/reports','/api/notion'}:self._reply(200,self.server.publications.state(project))
+            if path in {'/api/reports','/api/notion'}:self._reply(200,self.server.publications.state(project or None))
             elif path=='/api/reports/preview':
                 record=self.server.publications.state(project)['report']
                 if record is None:raise ValueError('먼저 보고서를 만들어 주세요.')
