@@ -314,7 +314,7 @@ def claude_call(folder, name, prompt, model, config, budget, agents=None, requir
         dump(afile, agents)
         # Main-thread custom agent restricts which native subagent types can be invoked.
         coordinator = dict(description="Bounded council dispatch coordinator",
-                           prompt="Dispatch the requested native Agent calls exactly once each. No research synthesis. Return DONE after the results.",
+                           prompt="Dispatch the requested native Agent calls exactly once each. Preserve each configured agent's research instructions and requested output schema. Use the task prompt specified by the caller; never substitute directory inspection or invent a new task. No research synthesis. Return DONE after the results.",
                            tools=["Agent(" + ",".join(agents) + ")"], model=model)
         all_agents = {**agents, "council-coordinator": coordinator}
         dump(afile, all_agents)
@@ -352,6 +352,9 @@ def claude_call(folder, name, prompt, model, config, budget, agents=None, requir
                    duration_ms=result.get("duration_ms"), native_agent_calls=[],
                    usage_scope="Sum of CLI per-model modelUsage including native leaves; result.usage main thread is not added again")
     budget.record(receipt)
+    # Keep actual model usage even when participant JSON validation fails below.
+    # A result is reusable only after parsed.json is also successfully written.
+    dump(folder / "usage.json", receipt)
     if result.get("is_error") or result.get("subtype") != "success":
         receipt["error"] = result.get("result", "Claude error")
         dump(folder / "usage.json", receipt)

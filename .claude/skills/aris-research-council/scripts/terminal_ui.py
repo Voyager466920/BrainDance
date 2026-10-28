@@ -5,6 +5,7 @@ from datetime import datetime
 from pathlib import Path
 import json
 import io
+import math
 import os
 import shlex
 import subprocess
@@ -37,6 +38,15 @@ from terminal_presenter import (STATES,readable,short,clock,duration,provider_li
 TABS=['대화','진행','아이디어','계획','실험','설정','결과']
 MODES=[('auto','대화'),('ask','질문만'),('next','다음 방향'),('restart','중지 후 재준비')]
 SLASH=['/slack','/tasks','/interests','/scout','/settings','/gpt','/claude','/ssh','/gpu','/notion','/reports','/projects','/new','/delete','/trash','/restore','/purge','/keys','/help','/exit','/quit']
+
+
+def time_seconds(text,scale,label,maximum,automatic=False):
+    try:value=float(text)
+    except ValueError:raise ValueError(label+'을 숫자로 입력하세요.') from None
+    if automatic and value==0:return None
+    if not math.isfinite(value) or not 0<value<=maximum/scale or int(value*scale)<1:
+        raise ValueError(label+'은 '+('0(자동 배분) 또는 ' if automatic else '')+'1초–'+('7일' if maximum==604800 else '24시간')+' 범위로 입력하세요.')
+    return int(value*scale)
 
 
 def whitespace_boundary(text,position,direction):
@@ -401,7 +411,8 @@ class ResearchTerminal:
             for d in resource.get('devices',[]):
                 lines.extend(['',device_label(d),'장치 ID '+d['id']])
                 if d.get('memory_total_mb') is not None:lines.append(f"최근 GPU 메모리 {d.get('memory_used_mb','?')} / {d['memory_total_mb']} MB · 사용률 {d.get('utilization_percent','?')}%")
-            a=resource['assignment'];lines.extend(['','시간 예산 '+str(a['time_budget_minutes'])+'분 · 동시 실험 '+str(a['max_parallel_runs'])+'개'])
+            a=resource['assignment'];lines.extend(['','동시 실험 '+str(a['max_parallel_runs'])+'개'])
+            if (self.state.get('usage') or {}).get('policy')=='until_deadline':lines.append(deadline_text(self.state['usage']['deadline_epoch']))
         link=self.reports.get('link');lines.extend(['','Notion · '+('연결됨' if self.reports.get('connected') and link else '설정 필요')+(' · 자동 동기화 ON' if link and link['auto_sync'] else ''),'결과 탭에서 보고서와 그래프를 확인할 수 있습니다.'])
         lines.extend(['','조작','탭 클릭 / Alt+1–7 / Ctrl+B 다음 1–7 또는 N·P','Ctrl+P 프로젝트 · Ctrl+O 입력 방식 · PageUp/Down 기록 스크롤',
             '모든 탭의 입력은 같은 프로젝트 대화에 기록됩니다.','/interests 관심 분야 · /scout 논문 탐색 · /settings · /gpt · /claude · /ssh · /gpu · /notion · /reports · /projects · /new · /help · /exit','/delete 삭제 · /trash 휴지통 · /restore 복원 · /purge 완전 삭제 (이름 확인)'])
@@ -583,7 +594,7 @@ class ResearchTerminal:
         def activate(text,callback):
             if self.modal_task and not self.modal_task.done():self.notice='저장 처리 중입니다.';return
             result=self.invoke(callback)
-            if text in {'저장','등록','자동 시작','삭제','복원','완전 삭제','만들고 자동 시작','만들기만','다음 · 자동 실행 한도'} and isinstance(result,asyncio.Task):self.modal_task=result
+            if text in {'저장','등록','자동 시작','삭제','복원','완전 삭제','만들고 자동 시작','만들기만','다음 · 연구 시작'} and isinstance(result,asyncio.Task):self.modal_task=result
         actions=[Button(t,handler=lambda text=t,callback=f:activate(text,callback)) for t,f in buttons]
         view=Dialog(title=title,body=body,buttons=actions,with_background=True,width=Dimension(preferred=76,max=90))
         floating=Float(content=view);self.container.floats.append(floating);self.modals.append((view,floating))
@@ -740,21 +751,21 @@ class ResearchTerminal:
         profiles=self.compute.get('profiles',[]) or [dict(id='local',name='로컬 CPU',kind='local')]
         profile=self.navigable_list(RadioList([(p['id'],safe_text(p['name'])+' · '+p['kind']) for p in profiles],default=current.get('profile_id','local'),select_on_focus=True))
         devices=self.navigable_list(CheckboxList([('cpu','CPU')],default_values=current.get('device_ids',['cpu'])))
-        minutes=TextArea(text=str(current.get('time_budget_minutes',30)),multiline=False)
         parallel=TextArea(text=str(current.get('max_parallel_runs',1)),multiline=False)
-        form=dict(profile=profile,devices=devices,minutes=minutes,parallel=parallel,last=None,initial=current.get('device_ids',['cpu']))
+        form=dict(profile=profile,devices=devices,parallel=parallel,last=None,initial=current.get('device_ids',['cpu']))
         self.resource_form=form
         async def save(start=False):
-            assignment=dict(profile_id=profile.current_value,device_ids=list(devices.current_values),time_budget_minutes=int(minutes.text),max_parallel_runs=int(parallel.text),auto_run=False)
+            # Retain the legacy manual-experiment allowance; timed research uses its one deadline.
+            assignment=dict(profile_id=profile.current_value,device_ids=list(devices.current_values),time_budget_minutes=current.get('time_budget_minutes',30),max_parallel_runs=int(parallel.text),auto_run=False)
             if start and on_start:await on_start(assignment)
             elif on_apply:await on_apply(assignment)
             else:
                 await self.call(self.client.request,'/api/compute/assignment',dict(project_id=self.project['id'],**assignment));self.close_dialog()
             self.notice='실행 환경을 저장했습니다.';self.wakeup.set()
         actions=[('장치 조회',lambda:self.spawn(self.probe(profile.current_value)))]
-        if on_start:actions.append(('다음 · 자동 실행 한도',lambda:self.spawn(save(True))))
+        if on_start:actions.append(('다음 · 연구 시작',lambda:self.spawn(save(True))))
         actions.extend([('만들기만' if on_start else '저장',lambda:self.spawn(save())),('취소',self.close_dialog)])
-        self.dialog(title,HSplit([Label('서버'),Box(profile,height=3,padding=0),Label('장치 · 서버 물리 GPU 번호 / UUID로 선택'),Box(devices,height=3,padding=0),VSplit([Label('시간 예산(분)'),minutes,Label('동시 실험'),parallel],padding=1,height=1),Label('장치 조회 후 선택하세요. 저장하면 기존 미실행 계획은 다시 검토합니다.')]),actions,profile)
+        self.dialog(title,HSplit([Label('서버'),Box(profile,height=3,padding=0),Label('장치 · 서버 물리 GPU 번호 / UUID로 선택'),Box(devices,height=3,padding=0),VSplit([Label('동시 실험'),parallel],padding=1,height=1),Label('장치 조회 후 선택하세요. 저장하면 기존 미실행 계획은 다시 검토합니다.')]),actions,profile)
         self.resource_form=form;self.update_resource_form()
 
     def update_resource_form(self):
@@ -830,6 +841,13 @@ class ResearchTerminal:
         if not self.project:raise ClientError('프로젝트를 먼저 선택하세요.')
         return self.project['id']
 
+    def experiment_time_dialog(self,setting):
+        minutes=TextArea(text=str((setting['seconds'] or 0)/60),multiline=False)
+        def apply():
+            setting['seconds']=time_seconds(minutes.text,60,'실험당 최대 시간',86400,automatic=True)
+            self.close_dialog()
+        self.dialog('고급 · 실험별 시간 제한',HSplit([Label('실험당 최대 시간 · 분 단위 · 0=자동 배분'),minutes,Label('총 연구 시간 안에서만 실행합니다. 변경은 다음 실험부터 적용됩니다.')]),[('적용',apply),('취소',self.close_dialog)],minutes)
+
     def start_dialog(self,research_style=None,create_project=None):
         pid=None if create_project else self.require_project()
         current=None if create_project else self.state.get('session')
@@ -837,21 +855,25 @@ class ResearchTerminal:
         root=dict(metadata=dict(research_preferences=create_project['research_preferences'])) if create_project else next((n for n in self.tree.get('nodes',[]) if n['project_id']==pid and not n['parent_id']),{})
         preferences=root.get('metadata',{}).get('research_preferences',{});research_style=research_style or preferences.get('style','focused');scouting=research_style=='scout'
         assignment=create_project['compute'] if create_project else (resource_info(self.compute,pid)['assignment'] or {})
-        hours=TextArea(text=str(assignment.get('time_budget_minutes',30)/60),multiline=False);folder=TextArea(multiline=False);per_run=TextArea(text='0',multiline=False)
+        default_seconds=(current or {}).get('config',{}).get('duration_seconds',assignment.get('time_budget_minutes',30)*60)
+        hours=TextArea(text=str(default_seconds/3600),multiline=False);folder=TextArea(multiline=False);experiment_time=dict(seconds=None)
         style=self.navigable_list(RadioList([('focused','집중 연구'),('scout','논문 탐색 · 작은 실험')],default=research_style,select_on_focus=True))
         mode=self.navigable_list(RadioList([('lite','Lite'),('balanced','Balanced'),('deep','Deep')],default='lite' if scouting else 'balanced',select_on_focus=True))
         async def start():
             nonlocal pid
-            limits=dict(cost_profile='economy',execution_policy='until_deadline',orchestration='hypothesis-tasks',duration_seconds=int(float(hours.text)*3600),experiment_timeout_seconds=int(float(per_run.text)*60) if float(per_run.text) else None)
+            duration=time_seconds(hours.text,3600,'총 연구 시간',604800)
+            limits=dict(cost_profile='economy',execution_policy='until_deadline',orchestration='hypothesis-tasks',duration_seconds=duration,experiment_timeout_seconds=experiment_time['seconds'])
             if pid is None:
+                # Keep old script/manual defaults useful without a second user-entered budget.
+                create_project['compute']['time_budget_minutes']=min(1440,math.ceil(duration/60))
                 record=await self.call(self.client.request,'/api/project',create_project)
                 pid=record['project_id']
                 project=await self.call(self.client.project,pid);await self.select_project(project)
                 self.app.layout.focus(self.modals[-1][0])
             await self.call(self.client.request,'/api/control/automatic',dict(project_id=pid,action='start',**limits,context_path=folder.text,mode=mode.current_value,research_style=style.current_value))
             self.close_dialog();self.select_tab(1);self.notice='프로젝트 자동 연구를 시작했습니다.'
-        hardware=self.resource_header() if not create_project else create_project['name']+' · '+create_project['compute']['profile_id']+' · '+', '.join(create_project['compute']['device_ids'])+' · '+str(create_project['compute']['time_budget_minutes'])+'분'
-        self.dialog('새 프로젝트 · 만들고 자동 시작' if create_project else '프로젝트 자동 연구 시작',HSplit([Label(hardware),Box(style,height=2,padding=0),Label('종료 시각까지 탐색·실험·오류 수정·다음 연구를 계속합니다.'),Label('대상 서버의 연구 폴더'),folder,Label('종료까지 시간 · 시간 단위'),hours,Label('실험 한 번의 최대 시간 · 분 단위 · 0=자동 배분'),per_run,Label('절약 탐색 · Haiku 중심 · 구현·검증 모델 유지'),Box(mode,height=3,padding=0)]),[('만들고 자동 시작' if create_project else '자동 시작',lambda:self.spawn(start())),('취소',self.close_dialog)],folder)
+        hardware=self.resource_header() if not create_project else create_project['name']+' · '+resource_info({**self.compute,'assignments':{'pending':assignment}},'pending')['text']
+        self.dialog('새 프로젝트 · 만들고 자동 시작' if create_project else '프로젝트 자동 연구 시작',HSplit([Label(hardware),Box(style,height=2,padding=0),Label('종료 시각까지 탐색·실험·오류 수정·다음 연구를 계속합니다.'),Label('대상 서버의 연구 폴더'),folder,Label('총 연구 시간 · 시간 단위'),hours,Label(lambda:'실험별 시간 자동 배분' if experiment_time['seconds'] is None else '실험당 최대 '+str(experiment_time['seconds']/60)+'분'),Label('절약 탐색 · Haiku 중심 · 구현·검증 모델 유지'),Box(mode,height=3,padding=0)]),[('만들고 자동 시작' if create_project else '자동 시작',lambda:self.spawn(start())),('고급 설정',lambda:self.experiment_time_dialog(experiment_time)),('취소',self.close_dialog)],folder)
 
     async def tasks_dialog(self):
         pid=self.require_project();state=await self.call(self.client.control,self.project);rows=state.get('tasks',[])
@@ -873,11 +895,11 @@ class ResearchTerminal:
         if not usage or not session:raise ClientError('자동 연구를 시작하면 한도를 조정할 수 있습니다.')
         if usage.get('policy')=='until_deadline':
             hours=TextArea(text=str(round(max(60,usage['deadline_epoch']-time.time())/3600,3)),multiline=False)
-            per_run=TextArea(text=str((session['config'].get('experiment_timeout_seconds') or 0)/60),multiline=False)
+            experiment_time=dict(seconds=session['config'].get('experiment_timeout_seconds'))
             async def set_end():
-                await self.call(self.client.request,'/api/control/automatic',dict(project_id=pid,action='deadline',duration_seconds=int(float(hours.text)*3600),experiment_timeout_seconds=int(float(per_run.text)*60) if float(per_run.text) else None))
+                await self.call(self.client.request,'/api/control/automatic',dict(project_id=pid,action='deadline',duration_seconds=time_seconds(hours.text,3600,'남은 연구 시간',604800),experiment_timeout_seconds=experiment_time['seconds']))
                 self.close_dialog();self.notice='사용량과 대화를 유지하고 종료 시각을 변경했습니다.'
-            self.dialog('연구 종료 시각',HSplit([Label(deadline_text(usage['deadline_epoch'])),Label('지금부터 남은 시간 · 시간 단위'),hours,Label('실험 한 번의 최대 시간 · 분 단위 · 0=자동 배분'),per_run,Label('실험당 제한은 다음 실행부터 적용됩니다. 횟수·토큰 제한은 없습니다.')]),[('저장',lambda:self.spawn(set_end())),('취소',self.close_dialog)],hours)
+            self.dialog('연구 종료 시각',HSplit([Label(deadline_text(usage['deadline_epoch'])),Label('지금부터 남은 연구 시간 · 시간 단위'),hours,Label(lambda:'실험별 시간 자동 배분' if experiment_time['seconds'] is None else '실험당 최대 '+str(experiment_time['seconds']/60)+'분'),Label('횟수·토큰 제한 없이 이 종료 시각까지 연구합니다.')]),[('저장',lambda:self.spawn(set_end())),('고급 설정',lambda:self.experiment_time_dialog(experiment_time)),('취소',self.close_dialog)],hours)
             return
         calls=TextArea(text=str(usage['max_calls']),multiline=False);tokens=TextArea(text=str(usage['token_budget']),multiline=False)
         async def save():

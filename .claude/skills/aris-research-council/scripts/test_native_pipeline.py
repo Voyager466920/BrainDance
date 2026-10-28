@@ -157,6 +157,15 @@ class NativePipelineTests(unittest.TestCase):
         unrelated={**resumed,'auto_session_id':'different-authorization'}
         self.assertEqual(session_skill_receipts(unrelated)[0],set())
 
+    def test_recovery_feedback_names_real_missing_gates_without_replacing_validation(self):
+        from native_pipeline import recovery_note
+        with self.server.store._connect() as conn:conn.execute("UPDATE research_jobs SET state='failed',error='OFFLINE missing exploration receipt' WHERE id=?",(self.job['id'],))
+        resumed={**self.config,'id':'OFFLINE-resumed'}
+        with patch('native_pipeline.council.claude_call',side_effect=AssertionError('No model call')):
+            note=recovery_note(resumed,{'research-pipeline'})
+        self.assertIn('OFFLINE missing exploration receipt',note);self.assertIn('missing_skill_receipts',note);self.assertIn('idea-discovery',note);self.assertIn('Never bypass receipt validation',note)
+        self.assertEqual(recovery_note({**resumed,'auto_session_id':'other-authorization'},set()),'')
+
     def test_quick_native_pause_resume_retains_a_still_running_job(self):
         self.server.autopilot.control(dict(project_id=self.node['project_id'],action='pause'))
         resumed=self.server.autopilot.control(dict(project_id=self.node['project_id'],action='resume'))['session']

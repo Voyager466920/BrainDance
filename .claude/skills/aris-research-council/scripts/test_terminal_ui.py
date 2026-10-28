@@ -286,11 +286,11 @@ class TerminalUITests(unittest.TestCase):
             ui.new_project_dialog();fields=self.editable_fields(ui);self.assertEqual(len(fields),4)
             fields[0].text='Created by tabbed UI';fields[1].text='CPU fixture only'
             ui.modal_buttons[-1][0].handler()
-            self.assertIsNotNone(ui.resource_form);ui.resource_form['minutes'].text='2'
+            self.assertIsNotNone(ui.resource_form);self.assertNotIn('minutes',ui.resource_form);ui.resource_form['parallel'].text='2'
             ui.modal_buttons[-1][2].handler()
             await self.wait_until(lambda:ui.project['title']=='Created by tabbed UI')
             assignment=self.server.compute.state()['assignments'][ui.project['id']]
-            self.assertEqual(assignment['device_ids'],['cpu']);self.assertEqual(assignment['time_budget_minutes'],2)
+            self.assertEqual(assignment['device_ids'],['cpu']);self.assertEqual(assignment['max_parallel_runs'],2)
             self.assertFalse(self.server.autopilot.sessions(ui.project['id']))
         self.scenario(exercise)
 
@@ -299,18 +299,59 @@ class TerminalUITests(unittest.TestCase):
             before=len(self.server.store.export_json()['projects'])
             ui.new_project_dialog();fields=self.editable_fields(ui)
             fields[0].text='Create and scout';fields[1].text='OFFLINE setup check';fields[2].text='classification'
-            ui.modal_buttons[-1][0].handler();ui.resource_form['minutes'].text='2'
+            ui.modal_buttons[-1][0].handler();self.assertNotIn('minutes',ui.resource_form)
             ui.modal_buttons[-1][1].handler()
             await self.wait_until(lambda:ui.modals and '만들고 자동 시작' in ui.modals[-1][0].title)
             self.assertEqual(len(self.server.store.export_json()['projects']),before)
-            fields=self.editable_fields(ui);self.assertEqual(len(fields),3);fields[1].text='1';fields[2].text='5'
+            fields=self.editable_fields(ui);self.assertEqual(len(fields),2);fields[1].text='1'
             ui.modal_buttons[-1][0].handler()
             await self.wait_until(lambda:not ui.modals)
             self.assertEqual(ui.project['title'],'Create and scout')
             state=self.server.autopilot.state(ui.project['id'])
-            self.assertEqual(state['session']['status'],'running');self.assertIsNone(state['usage']['max_calls']);self.assertEqual(state['session']['config']['execution_policy'],'until_deadline');self.assertEqual(state['session']['config']['experiment_timeout_seconds'],300)
-            self.assertEqual(self.server.compute.state()['assignments'][ui.project['id']]['time_budget_minutes'],2)
+            self.assertEqual(state['session']['status'],'running');self.assertIsNone(state['usage']['max_calls']);self.assertEqual(state['session']['config']['execution_policy'],'until_deadline');self.assertIsNone(state['session']['config']['experiment_timeout_seconds'])
+            self.assertEqual(state['session']['config']['duration_seconds'],3600)
+            assignment=self.server.compute.state()['assignments'][ui.project['id']]
+            self.assertEqual(assignment['time_budget_minutes'],60)
+            with self.server.store._connect() as c:budget=self.server.experiments._budget(ui.project['id'],assignment['updated_at'],1800,c)
+            self.assertEqual(budget['policy'],'until_deadline');self.assertEqual(budget['limit_seconds'],3600);self.assertGreater(budget['remaining_seconds'],3590)
             self.assertEqual(ui.tab,1)
+        self.scenario(exercise)
+
+    def test_optional_experiment_cap_is_in_a_separate_advanced_dialog(self):
+        async def exercise(ui,pipe):
+            ui.start_dialog();fields=self.editable_fields(ui);self.assertEqual(len(fields),2);fields[1].text='2'
+            ui.modal_buttons[-1][1].handler();self.assertEqual(len(ui.modals),2)
+            self.editable_fields(ui)[-1].text='5';ui.modal_buttons[-1][0].handler()
+            self.assertEqual(len(ui.modals),1);self.assertEqual(len(self.editable_fields(ui)),2)
+            ui.modal_buttons[-1][0].handler();await self.wait_until(lambda:not ui.modals)
+            state=self.server.autopilot.state(ui.project['id'])
+            self.assertEqual(state['session']['config']['duration_seconds'],7200);self.assertEqual(state['session']['config']['experiment_timeout_seconds'],300)
+        self.scenario(exercise)
+
+    def test_invalid_total_time_does_not_persist_a_partial_new_project(self):
+        async def exercise(ui,pipe):
+            before=len(self.server.store.export_json()['projects'])
+            ui.new_project_dialog();fields=self.editable_fields(ui);fields[0].text='Invalid time fixture';fields[1].text='OFFLINE'
+            ui.modal_buttons[-1][0].handler();ui.modal_buttons[-1][1].handler()
+            await self.wait_until(lambda:ui.modals and '만들고 자동 시작' in ui.modals[-1][0].title)
+            self.editable_fields(ui)[1].text='nan';ui.modal_buttons[-1][0].handler()
+            await self.wait_until(lambda:'총 연구 시간' in ui.error)
+            self.assertEqual(len(self.server.store.export_json()['projects']),before)
+            self.assertEqual(len(ui.modals),1)
+        self.scenario(exercise)
+
+    def test_timed_limits_have_one_time_field_and_preserve_existing_cap_and_usage(self):
+        state=self.server.autopilot.control(dict(project_id=self.project['id'],action='start',execution_policy='until_deadline',duration_seconds=3600,experiment_timeout_seconds=300));session=state['session']
+        self.server.autopilot.control(dict(project_id=self.project['id'],action='pause'))
+        from session_budget import update
+        update(session['config']['session_budget'],'reserve',key='OFFLINE-existing-charge',calls=1,estimate=1234)
+        async def exercise(ui,pipe):
+            ui.limits_dialog();fields=self.editable_fields(ui);self.assertEqual(len(fields),1);fields[0].text='2'
+            ui.modal_buttons[-1][0].handler();await self.wait_until(lambda:not ui.modals)
+            after=self.server.autopilot.state(self.project['id'])
+            self.assertEqual(after['session']['id'],session['id']);self.assertEqual(after['session']['status'],'paused')
+            self.assertEqual(after['session']['config']['duration_seconds'],7200);self.assertEqual(after['session']['config']['experiment_timeout_seconds'],300)
+            self.assertEqual(after['usage']['calls'],1);self.assertEqual(after['usage']['charged_tokens'],1234)
         self.scenario(exercise)
 
     def test_settings_slashes_open_controls_without_starting_login_or_model_calls(self):

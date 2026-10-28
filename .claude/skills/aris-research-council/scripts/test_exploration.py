@@ -46,5 +46,16 @@ class ExplorationTests(unittest.TestCase):
         self.agents={};self.job['cost_profile']='economy'
         with patch('research_worker.verify',side_effect=self.verify),patch('council.claude_call',side_effect=self.call),patch('council.prepare',wraps=council.prepare) as prepare:
             exploration.run(self.job,self.root,self.work,self.cfg)
-            settings=prepare.call_args.args[3];self.assertEqual(settings['context_chars'],12000);self.assertEqual(settings['output_tokens'],1800)
+            settings=prepare.call_args.args[3];self.assertEqual(settings['context_chars'],12000);self.assertGreaterEqual(settings['output_tokens'],6000)
         self.assertEqual(Counter(v['model'] for v in self.agents.values()),{'haiku':4,'sonnet':2})
+        self.assertTrue(all('exactly ONE compact JSON' in v['prompt'] and 'at most 900 output tokens' in v['prompt'] for v in self.agents.values()))
+
+    def test_closed_invalid_wave_gets_new_attempt_but_partial_call_is_not_replayed(self):
+        base=self.root/'wave-trends';base.mkdir();log=base/'exploration.stdout.jsonl'
+        log.write_text(json.dumps(dict(type='assistant',message=dict(content=[])))+'\n')
+        self.assertEqual(exploration.wave_attempt(base)[0],base)
+        log.write_text(log.read_text()+json.dumps(dict(type='result',subtype='success',result='DONE but Agent JSON failed'))+'\n')
+        raw=log.read_bytes();folder,attempt=exploration.wave_attempt(base)
+        self.assertNotEqual(folder,base);self.assertEqual(attempt,1);self.assertEqual(log.read_bytes(),raw)
+        folder.mkdir();(folder/'parsed.json').write_text('{}');(folder/'usage.json').write_text('{}')
+        self.assertEqual(exploration.wave_attempt(base),(folder,1))

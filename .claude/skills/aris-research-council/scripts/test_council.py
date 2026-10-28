@@ -182,6 +182,7 @@ class NativeReceiptTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.invoke(self.rows(answer=False))
         self.assertFalse((self.folder / 'parsed.json').exists())
+        self.assertEqual(json.loads((self.folder/'usage.json').read_text())['total_tokens'],209)
     def test_incomplete_background_status_rejects_even_valid_json(self):
         with self.assertRaisesRegex(RuntimeError, 'did not complete'):
             self.invoke(self.rows(status='running'))

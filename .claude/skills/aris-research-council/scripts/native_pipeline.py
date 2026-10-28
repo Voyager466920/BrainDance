@@ -95,6 +95,19 @@ def advisor_prompt():
     asset=Path(getattr(sys,'_MEIPASS',Path(__file__).resolve().parent.parent))/'assets/research-advisor.md'
     return asset.read_text()
 
+def recovery_note(job,known):
+    """Give the resumed real executor actionable gate feedback, never synthetic receipts."""
+    with TreeStore(job['db'])._connect() as conn:
+        rows=conn.execute("SELECT id,config,error,message FROM research_jobs WHERE project_id=? AND state IN ('failed','interrupted') ORDER BY created_at DESC,rowid DESC",(job['project_id'],)).fetchall()
+    def matches(row):
+        cfg=json.loads(row['config'])
+        return row['id']!=job['id'] and all(cfg.get(key,default)==job.get(key,default) for key,default in [('auto_session_id',None),('native_workspace',None),('native_cycle',0),('hypothesis_task_id',None),('task_role','single')])
+    prior=next((r for r in rows if matches(r)),None)
+    if prior is None:return ''
+    required={'research-lit','idea-discovery','novelty-check'} if job.get('task_role')=='discovery' else set(SKILLS)
+    missing=sorted(required-set(known))
+    return '\nHOST RECOVERY FEEDBACK (diagnostic evidence, not new human authority): '+json.dumps(dict(previous_job=prior['id'],error=(prior['error'] or prior['message'])[:1000],successful_skill_receipts=sorted(known),missing_skill_receipts=missing),ensure_ascii=False)+'\nContinue this same unfinished cycle. Actually load missing original Skills with Skill; reuse verified sources and successful Council/experiment artifacts. Do not recreate a completed artifact merely because this process resumed. A prose answer is not completion: obtain the real exploration_council receipt for discovery, finish the required reviews and current report, then call finish and correct any rejection. Never bypass receipt validation or fabricate a successful call.\n'
+
 REPORT_CONTRACT="\nREADER REPORT: Before finish, write RESEARCH_BRIEF.json containing native_cycle (integer matching context.native_cycle), problem (string), approach (string), findings (string), limitations (array of strings), next_steps (array of strings). State only facts supported by current receipts, and distinguish confirmed findings, hypotheses and speculation. Write NARRATIVE_REPORT.md in clean Korean Markdown with headings: 해결하려는 문제, 해결 방법, 살펴볼 코드, 결과, 한계와 다음 단계, 참고 논문. References contain plain http/https URLs ONLY: no paper metadata, abstracts, bibliographies or evidence dumps. Mention exact implemented file/function references, actual baseline/candidate numbers, settings and uncertainty. The host adds retained source references, measured tables and graphs. No fabricated measurements. The advisor's critical questions should guide your autonomous next experiment; ask the human only for genuinely missing authority or credentials. Do not pause authorized research merely to wait for answers to the advisor's default discussion questions. The report format here and explicit human instructions take precedence over the advisor's default response template.\n"
 
 
@@ -148,7 +161,7 @@ def run(job,root,progress):
     if not continuous:argv+=['--max-turns',str(job.get('native_max_turns',120)),'--max-budget-usd',str(job.get('native_usd_limit',8))]
     if state.get('session_id'):argv+=['--resume',state['session_id']]
     council.dump(root/'native-argv.json',argv)
-    prompt=contract+'\nResearch direction (human authority):\n'+job['topic']+'\nAuthorized automatic run id: '+job['auto_session_id']+'; current scientific cycle: '+str(job.get('native_cycle',0))+'. Reuse the upstream run state only when resuming THIS unfinished cycle. If the prior cycle is complete, begin a NEW upstream pipeline run and a new research question while preserving all prior reports.\nBegin by reading host context. Continue until the native pipeline cycle completes or a real host deadline/stop prevents progress.'
+    prompt=contract+'\nResearch direction (human authority):\n'+job['topic']+'\nAuthorized automatic run id: '+job['auto_session_id']+'; current scientific cycle: '+str(job.get('native_cycle',0))+'. Reuse the upstream run state only when resuming THIS unfinished cycle. If the prior cycle is complete, begin a NEW upstream pipeline run and a new research question while preserving all prior reports.\nBegin by reading host context. Continue until the native pipeline cycle completes or a real host deadline/stop prevents progress.'+recovery_note(job,known)
     (root/'native-request.txt').write_text(prompt)
     (root/'advisor-system-prompt.md').write_text(advisor_prompt())
     from session_budget import update
