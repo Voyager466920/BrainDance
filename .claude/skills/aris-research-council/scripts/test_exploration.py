@@ -49,6 +49,7 @@ class ExplorationTests(unittest.TestCase):
             settings=prepare.call_args.args[3];self.assertEqual(settings['context_chars'],12000);self.assertGreaterEqual(settings['output_tokens'],6000)
         self.assertEqual(Counter(v['model'] for v in self.agents.values()),{'haiku':4,'sonnet':2})
         self.assertTrue(all('exactly ONE compact JSON' in v['prompt'] and 'at most 900 output tokens' in v['prompt'] for v in self.agents.values()))
+        self.assertTrue(all('OUTPUT_SCHEMA' in v['prompt'] and 'ratings.feasibility' in v['prompt'] for v in self.agents.values()))
 
     def test_closed_invalid_wave_gets_new_attempt_but_partial_call_is_not_replayed(self):
         base=self.root/'wave-trends';base.mkdir();log=base/'exploration.stdout.jsonl'
