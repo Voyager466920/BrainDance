@@ -40,3 +40,11 @@ class ExplorationTests(unittest.TestCase):
             return output
         with patch('research_worker.verify',side_effect=self.verify),patch('council.claude_call',side_effect=bad):
             with self.assertRaisesRegex(ValueError,'0–100'):exploration.run(self.job,self.root,self.work,self.cfg)
+
+    def test_economy_preserves_six_roles_and_reduces_context_before_preparation(self):
+        from collections import Counter
+        self.agents={};self.job['cost_profile']='economy'
+        with patch('research_worker.verify',side_effect=self.verify),patch('council.claude_call',side_effect=self.call),patch('council.prepare',wraps=council.prepare) as prepare:
+            exploration.run(self.job,self.root,self.work,self.cfg)
+            settings=prepare.call_args.args[3];self.assertEqual(settings['context_chars'],12000);self.assertEqual(settings['output_tokens'],1800)
+        self.assertEqual(Counter(v['model'] for v in self.agents.values()),{'haiku':4,'sonnet':2})

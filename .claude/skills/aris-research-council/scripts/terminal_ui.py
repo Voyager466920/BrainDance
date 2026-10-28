@@ -851,7 +851,7 @@ class ResearchTerminal:
             await self.call(self.client.request,'/api/control/automatic',dict(project_id=pid,action='start',**limits,context_path=folder.text,mode=mode.current_value,research_style=style.current_value))
             self.close_dialog();self.select_tab(1);self.notice='프로젝트 자동 연구를 시작했습니다.'
         hardware=self.resource_header() if not create_project else create_project['name']+' · '+create_project['compute']['profile_id']+' · '+', '.join(create_project['compute']['device_ids'])+' · '+str(create_project['compute']['time_budget_minutes'])+'분'
-        self.dialog('새 프로젝트 · 만들고 자동 시작' if create_project else '프로젝트 자동 연구 시작',HSplit([Label(hardware),Box(style,height=2,padding=0),Label('종료 시각까지 탐색·실험·오류 수정·다음 연구를 계속합니다.'),Label('대상 서버의 연구 폴더'),folder,Label('종료까지 시간 · 시간 단위'),hours,Label('실험 한 번의 최대 시간 · 분 단위 · 0=자동 배분'),per_run,Label('절약 모드 · 탐색 Haiku 4 + Sonnet 2 · 구현·검증은 기존 모델 유지'),Box(mode,height=3,padding=0)]),[('만들고 자동 시작' if create_project else '자동 시작',lambda:self.spawn(start())),('취소',self.close_dialog)],folder)
+        self.dialog('새 프로젝트 · 만들고 자동 시작' if create_project else '프로젝트 자동 연구 시작',HSplit([Label(hardware),Box(style,height=2,padding=0),Label('종료 시각까지 탐색·실험·오류 수정·다음 연구를 계속합니다.'),Label('대상 서버의 연구 폴더'),folder,Label('종료까지 시간 · 시간 단위'),hours,Label('실험 한 번의 최대 시간 · 분 단위 · 0=자동 배분'),per_run,Label('절약 탐색 · Haiku 중심 · 구현·검증 모델 유지'),Box(mode,height=3,padding=0)]),[('만들고 자동 시작' if create_project else '자동 시작',lambda:self.spawn(start())),('취소',self.close_dialog)],folder)
 
     async def tasks_dialog(self):
         pid=self.require_project();state=await self.call(self.client.control,self.project);rows=state.get('tasks',[])
