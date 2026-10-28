@@ -117,7 +117,8 @@ class TerminalUITests(unittest.TestCase):
         with create_pipe_input() as pipe:asyncio.run(run(pipe))
 
     def editable_fields(self,ui):
-        return [c.buffer for c in ui.app.layout.find_all_controls() if isinstance(c,BufferControl) and c.buffer is not ui.editor.buffer and not c.buffer.read_only()]
+        ui.app.layout.update_parents_relations()
+        return [w.content.buffer for w in ui.app.layout.get_focusable_windows() if isinstance(w.content,BufferControl) and w.content.buffer is not ui.editor.buffer and not w.content.buffer.read_only()]
 
     def test_dialog_input_render_has_readable_colors_in_color_and_no_color_modes(self):
         async def exercise(ui,pipe):
@@ -345,7 +346,43 @@ class TerminalUITests(unittest.TestCase):
             self.editable_fields(ui)[1].text='nan';ui.modal_buttons[-1][0].handler()
             await self.wait_until(lambda:'총 연구 시간' in ui.error)
             self.assertEqual(len(self.server.store.export_json()['projects']),before)
-            self.assertEqual(len(ui.modals),1)
+            self.assertEqual(len(ui.modals),3)
+        self.scenario(exercise)
+
+    def test_new_project_rejects_too_many_domains_before_leaving_the_editable_first_step(self):
+        async def exercise(ui,pipe):
+            before=len(self.server.store.export_json()['projects'])
+            ui.new_project_dialog();fields=self.editable_fields(ui)
+            fields[0].text='융합 연구';fields[1].text='다양한 분야의 원리를 온디바이스 AI에 적용한다.'
+            fields[2].text='온디바이스 AI';fields[3].text=','.join('분야'+str(i) for i in range(13))
+            ui.modal_buttons[-1][0].handler()
+            self.assertIn('현재 13개',ui.error);self.assertEqual(len(ui.modals),1)
+            self.assertIsNone(ui.resource_form);self.assertEqual(fields[1].text,'다양한 분야의 원리를 온디바이스 AI에 적용한다.')
+            self.assertTrue(ui.app.layout.has_focus(fields[3]));self.assertEqual(len(self.server.store.export_json()['projects']),before)
+            fields[3].text='정보이론,뇌과학';ui.modal_buttons[-1][0].handler()
+            self.assertEqual(len(ui.modals),2);self.assertEqual(ui.error,'')
+        self.scenario(exercise)
+
+    def test_new_project_back_and_escape_preserve_all_steps_and_allow_correction_after_time_error(self):
+        async def exercise(ui,pipe):
+            before=len(self.server.store.export_json()['projects'])
+            ui.new_project_dialog();fields=self.editable_fields(ui)
+            fields[0].text='융합 연구';fields[1].text='원리를 검증';fields[2].text='온디바이스 AI';fields[3].text='뇌과학'
+            ui.modal_buttons[-1][0].handler();resource=ui.resource_form;resource['parallel'].text='2'
+            ui.modal_buttons[-1][1].handler()
+            await self.wait_until(lambda:len(ui.modals)==3)
+            start=self.editable_fields(ui);start[0].text='/home/research';start[1].text='nan'
+            ui.modal_buttons[-1][0].handler();await self.wait_until(lambda:'총 연구 시간' in ui.error)
+            ui.modal_buttons[-1][2].handler();self.assertEqual(len(ui.modals),2);self.assertIs(ui.resource_form,resource)
+            self.assertEqual(resource['parallel'].text,'2');ui.modal_buttons[-1][3].handler()
+            self.assertEqual(len(ui.modals),1);self.assertEqual([b.text for b in self.editable_fields(ui)],['융합 연구','원리를 검증','온디바이스 AI','뇌과학'])
+            self.editable_fields(ui)[3].text='정보이론,생물학';ui.modal_buttons[-1][0].handler()
+            self.assertEqual(ui.resource_form['parallel'].text,'2');self.assertEqual(ui.resource_form['devices'].current_values,['cpu'])
+            ui.modal_buttons[-1][1].handler();await self.wait_until(lambda:len(ui.modals)==3)
+            self.assertEqual([b.text for b in self.editable_fields(ui)],['/home/research','nan'])
+            pipe.send_text('\x1b');await self.wait_until(lambda:len(ui.modals)==2)
+            self.assertIsNotNone(ui.resource_form);ui.modal_buttons[-1][-1].handler()
+            self.assertFalse(ui.modals);self.assertEqual(len(self.server.store.export_json()['projects']),before)
         self.scenario(exercise)
 
     def test_timed_limits_have_one_time_field_and_preserve_existing_cap_and_usage(self):
