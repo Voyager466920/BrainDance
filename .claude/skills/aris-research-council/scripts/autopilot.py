@@ -226,11 +226,11 @@ class Autopilot:
         return dict(execution_policy='until_deadline',started_epoch=end-duration,deadline_epoch=end,duration_seconds=duration)
 
     def expire(self,item):
-        self.save(item,'completed','설정한 종료 시각에 도달했습니다. 새 호출을 막고 진행 중인 모델·실험 작업을 중지합니다.',phase='deadline')
+        self.save(item,'completed','연구 시간이 끝나 연구·실험을 중지했습니다. 질문과 결과 정리는 대화에서 계속할 수 있습니다.',phase='deadline')
         self.cancel_project(item['project_id'])
         callback=getattr(self,'deadline_callback',None)
         if callback:callback(item['project_id'])
-        self.store.add_note(item['node_id'],'analysis','시간 제한 종료 보고',json.dumps(dict(deadline_epoch=item['config']['deadline_epoch'],completed_cycles=item['progress'].get('cycles_completed',0),usage=self.state(item['project_id'])['usage'],message='종료 시각 이후 새 모델 호출과 실험을 시작하지 않습니다. 원본 로그와 실제 결과를 보존합니다.'),ensure_ascii=False))
+        self.store.add_note(item['node_id'],'analysis','시간 제한 종료 보고',json.dumps(dict(deadline_epoch=item['config']['deadline_epoch'],completed_cycles=item['progress'].get('cycles_completed',0),usage=self.state(item['project_id'])['usage'],message='종료 시각 이후 새 연구 호출과 실험을 시작하지 않습니다. 원본 로그와 실제 결과를 보존하며, 질문과 결과 정리는 계속 답변합니다.'),ensure_ascii=False))
 
     def cancel_project(self,project_id):
         from research_tasks import initialize

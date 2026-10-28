@@ -445,6 +445,8 @@ def _codex_call(folder, prompt, config, budget, aris_repo):
     for name in config["codex_disabled_mcps"]:
         cfg[f"mcp_servers.{name}.enabled"] = False
     resumed=config.get('_resume_thread')
+    from usage_accounting import codex_session_usage,codex_invocation_usage
+    usage_baseline=codex_session_usage(resumed)
     tool='codex-reply' if resumed else 'codex'
     args = dict(prompt=prompt,threadId=resumed) if resumed else dict(prompt=prompt, model=config["codex_model"], config=cfg,
                 sandbox="read-only", cwd=config.get('_project_cwd',str(folder.resolve())))
@@ -526,10 +528,13 @@ def _codex_call(folder, prompt, config, budget, aris_repo):
             if row.get("type") == "turn_context":
                 q = row["payload"]
                 model_evidence = {k: q[k] for k in ("model", "effort", "sandbox_policy", "cwd") if k in q}
+    provider_usage=usage
+    usage,usage_scope=codex_invocation_usage(provider_usage,usage_baseline,codex_session_usage(thread))
     receipt = dict(provider="openai", stage=folder.name, stage_path=str(folder.resolve()), requested_model=config["codex_model"],
                    requested_effort=config["codex_effort"], thread_id=thread,
                    runtime_context=model_evidence, reported_model=None,
                    identity_note="Runtime configuration captured; MCP does not attest serving model identity.",
+                   provider_usage=provider_usage, usage_baseline=usage_baseline, usage_scope=usage_scope,
                    usage=usage, total_tokens=tokens(usage))
     budget.record(receipt)
     dump(folder / "usage.json", receipt)

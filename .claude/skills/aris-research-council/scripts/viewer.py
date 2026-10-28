@@ -46,7 +46,7 @@ class ViewerServer(ThreadingHTTPServer):
             self.research.api_url="http://127.0.0.1:"+str(actual_port)
             self.autopilot=Autopilot(store,self.research,self.experiments)
             self.chat=ResearchChat(store,self.research,self.autopilot)
-            self.autopilot.deadline_callback=self.chat.cancel_project
+            # Research expiry stops research workers, while ordinary project replies stay available.
             self.publications=PublicationService(store)
             self.chat.publications=self.publications
             self.notifications=SlackNotifications(store,self.publications)
@@ -117,7 +117,7 @@ class ViewerHandler(BaseHTTPRequestHandler):
             return
         path = urlsplit(self.path).path
         if path == '/api/health':
-            self._reply(200, {'app': 'BrainDance', 'version': '0.19.5', 'pid': os.getpid(),
+            self._reply(200, {'app': 'BrainDance', 'version': '0.19.6', 'pid': os.getpid(),
                              'workspace_id': hashlib.sha256(str(Path(self.server.store.db_path).resolve()).encode()).hexdigest()})
         elif path=='/api/slack':
             self._reply(200,self.server.notifications.state())

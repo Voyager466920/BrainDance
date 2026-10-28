@@ -18,6 +18,8 @@
 
 A local research workspace that explores papers, develops and reviews hypotheses, writes experiments, runs them on your selected hardware, and reports the actual results. The interface and research conversation are Korean-first.
 
+Brand icon: [horizontal BD monogram](assets/branding/braindance-cyberpunk-icon-v3.png).
+
 ## Install the standalone CLI
 
 Download `BrainDance-cli-macOS-arm64.zip` and `SHA256SUMS.txt` from [Releases](https://github.com/Voyager466920/BrainDance/releases/latest). Verify the archive checksum, unzip it, and install independently of the desktop app:
@@ -165,7 +167,7 @@ Use natural commands such as **서버와 기존 코드를 탐색해줘** to requ
 
 The target broker indexes repositories fairly and supports bounded source reads, literal searches, file metadata, and static Python-environment metadata checks. It uses the selected local or SSH target and configured research folder. No model-authored shell commands run during exploration; source files are not imported or modified. Actual execution still requires an immutable generated plan, Claude review, matching resource signature, the selected device environment, and the existing time/concurrency/model limits. Requests, exact source excerpts, errors, and model usage receipts are retained. Genuine missing dependencies/data or exhausted limits stop with a concrete report.
 
-The conversation has its own reply worker. Replies use timestamped actual state and retained result reports; they do not claim live results that were not observed. Messages, action receipts and original model responses stay in your private workspace. Replies consume connected-account usage; active automatic sessions include them in their shared model budget. Reopening the app marks interrupted replies explicitly and does not replay model calls silently.
+The conversation has its own Codex reply worker and a separate per-reply budget. **Questions and summaries continue after the research deadline or an exhausted research budget**, using the same project history and Codex thread. They do not resume experiments, Council or automatic research. The host checks the original human message before applying a model-selected action; planning questions, summaries, quoted instructions and logs do not authorize execution. Explicit experiment requests still require a valid research deadline and resources; a reply never extends those limits. Replies consume connected-account usage, with their own usage receipts rather than charging the expired research ledger. Resumed Codex usage uses the current invocation delta when native session counters verify the cumulative provider receipt; the original provider counters are retained. They use timestamped actual state and retained result reports and do not claim unobserved live results. Messages, action receipts and original model responses stay in your private workspace. Reopening the app marks interrupted replies explicitly and does not replay model calls silently.
 
 The **실험 실행** (Experiments) tab keeps immutable plans, source code, and execution history under **실행 계획 · 코드 · 이전 실험**. Research launch controls and detailed automatic-session usage are available under **실행 설정** in Progress. Manual code entry remains an advanced option.
 

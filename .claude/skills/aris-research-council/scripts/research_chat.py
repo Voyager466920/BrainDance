@@ -23,6 +23,48 @@ def explicit_literature_request(context):
     return bool(re.search(r'(논문|문헌).*(찾|검색|탐색|조사).*(해줘|해주세요|하세요|해봐|시작해|하라고|해)$',compact) or re.fullmatch(r'(?:please )?(?:find|search|explore|survey)\b.*\b(?:papers?|literature)\b[.!]*',text))
 
 
+def explicit_action_request(context,intent):
+    """A model-selected intent is not permission: require an original human action request."""
+    if context['mode']!='auto':return False
+    text=re.sub(r'```[\s\S]*?(?:```|$)','',context['user_message'])
+    text='\n'.join(line for line in text.splitlines() if not line.lstrip().startswith('>'))
+    for pattern in [r'"[^"\n]*"',r'“[^”]*”',r'‘[^’]*’',r'「[^」]*」',r"(?<![A-Za-z])'[^'\n]+'(?![A-Za-z])",r'`[^`\n]+`']:text=re.sub(pattern,'',text)
+    lower=text.strip().lower();compact=re.sub(r'\s+','',lower)
+    if not compact:return False
+    if '?' in lower and not re.match(r'^(?:can you|could you|would you)\s+',lower) and not re.search(r'(?:줘|주세요|줄래|주실래)\?',compact):return False
+    negatives={
+        'execute':r'(?:실험|실행|돌리|연구|카운실|council).{0,24}(?:하지마|하지말|하지않고|돌리지마|돌리지말|말고)|\b(?:do not|don\x27t|never)\s+(?:run|execute|resume|start)|without.{0,20}experiment',
+        'literature':r'(?:검색|탐색|조사).{0,8}(?:하지마|하지말|하지않고)|\b(?:do not|don\x27t)\s+(?:search|find)',
+        'investigate':r'(?:탐색|확인|조사).{0,8}(?:하지마|하지말|하지않고)|\b(?:do not|don\x27t)\s+(?:inspect|explore)',
+    }
+    if intent in negatives and (re.search(negatives[intent],lower) or re.search(negatives[intent],compact)):return False
+    if intent=='literature' and explicit_literature_request({**context,'user_message':text}):return True
+    english={
+        'execute':r'(?:run|execute|resume|restart|start)\b',
+        'investigate':r'(?:inspect|investigate|explore|check)\b',
+        'literature':r'(?:find|search|survey|explore)\b',
+        'direction':r'(?:direction\s*:|(?:change|use|compare|preserve|apply)\b.*\b(?:next|future|direction|experiment|checkpoint|metric|goal|instead)\b)',
+        'pause':r'pause\b','stop':r'(?:stop|cancel)\b',
+        'report':r'(?:report\b|visualize\b|create\b.*\breport\b)',
+        'publish':r'(?:publish\b|upload\b|sync\b)',
+    }
+    targets={'execute':r'\b(?:experiments?|research|pipeline|automatic|gpu|cpu|code|device)\b','investigate':r'\b(?:server|code|repo|repository|folder|file|script|environment|ssh|target)\b','literature':r'\b(?:papers?|literature)\b'}
+    if intent in english and re.match(r'^(?:(?:please|can you|could you|would you)\s+)?'+english[intent],lower):
+        return intent not in targets or bool(re.search(targets[intent],lower))
+    if not re.search(r'(?:줘|주세요|해봐|하자|하세요|해|이어가|돌려|돌리라고|실행하라고|멈춰|부탁해|부탁드립니다|줄래|주실래)[.!?。]*$',compact):return False
+    patterns={
+        'execute':r'(?:실험|연구|자동모드|파이프라인|gpu\d*)(?:을|를|은|는|에서|로|으로)?(?:다시|계속|바로|새로|이어서|좀)*(?:돌려|돌리|실행|시작|재개|진행|계속해)|(?:실험|연구).{0,24}(?:까지이어가|까지계속해)|(?:그거|그걸|이대로)(?:다시|좀)*(?:돌려|실행)',
+        'literature':r'(?:논문|문헌).*(?:찾|검색|탐색|조사)|탐색시작',
+        'investigate':r'(?:서버|코드|폴더|파일|환경|ssh).*(?:탐색|확인|조사|찾|읽)',
+        'direction':r'(?:바꿔|변경|반영)|(?:방향|다음실험|앞으로|설정|체크포인트|평가지표|목표).*(?:유지|비교|사용|적용|초점|전환)',
+        'pause':r'(?:일시정지|잠시멈|잠깐멈)',
+        'stop':r'(?:중지|멈춰|멈추|취소|그만)',
+        'report':r'(?:보고서|리포트|시각화|차트|그래프).*(?:정리|요약|작성|생성|만들|그려)|(?:시각화해|보고해)',
+        'publish':r'(?:노션|notion).*(?:정리|올려|업로드|저장|동기화|등록)',
+    }
+    return bool(intent in patterns and re.search(patterns[intent],compact))
+
+
 class ResearchChat:
     def __init__(self,store,research,control,autostart=True):
         self.store,self.research,self.control=store,research,control
@@ -132,20 +174,25 @@ class ResearchChat:
         return dict(as_of=now(),shared_project_session=context(self.store,project_id),project_goal=root['metadata'].get('research_goal',root['title']),selected_node={k:selected[k] for k in ['id','title','kind','metadata','evidence']},
             actual_session=state['session'],model_usage=state.get('usage'),current_runs=runs,publication_status=publication,recent_reports=[{**n,'content':n['content'][:6000]} for n in state['reports'][:3]],
             actual_jobs=[{k:j[k] for k in ['id','state','phase','message']} for j in jobs],human_directions=state['directions'][:6],
-            conversation=list(reversed(history)),user_message=user,reply_to=message['metadata'].get('reply_to'),mode=message['metadata']['mode'],direction_already_applied=message['metadata'].get('direction_applied'))
+            conversation=list(reversed(history)),user_message=user,reply_to=message['metadata'].get('reply_to'),mode=message['metadata']['mode'],direction_already_applied=message['metadata'].get('direction_applied'),
+            reply_policy=dict(budget_scope='conversation_reply',independent_from_research_deadline=True,research_requires_explicit_instruction=True))
 
     def execute(self,message):
         root=self.research.root/('chat-'+message['id']);root.mkdir(mode=0o700,exist_ok=True)
         metadata=message['metadata'];self.finish(message['id'],'','running',metadata)
         try:
             context=self.context(message)
-            if explicit_literature_request(context):
-                action=self.control.conversation_action(message['id'],message['node_id'],'literature',context['user_message'],metadata['direction_revision_at_send'])
-                metadata.update(intent='literature',action_id=action['id'],action_kind='literature',as_of=context['as_of'],reply_model_calls=0)
-                from council import dump
-                dump(root/'chat-response.json',dict(reply='공식 논문 탐색·출처 확인 작업을 요청했습니다. 진행 기록과 탐색 결과를 같은 프로젝트 대화에 남깁니다. 실험은 실행하지 않습니다.',intent='literature',action_id=action['id']))
-                self.finish(message['id'],'공식 논문 탐색·출처 확인 작업을 요청했습니다. 진행 기록과 탐색 결과를 같은 프로젝트 대화에 남깁니다. 실험은 실행하지 않습니다.','completed',metadata)
-                return
+            context['allowed_actions']=[intent for intent in ['direction','pause','stop','investigate','execute','literature','report','publish'] if explicit_action_request(context,intent)]
+            if explicit_literature_request(context) and explicit_action_request(context,'literature'):
+                try:action=self.control.conversation_action(message['id'],message['node_id'],'literature',context['user_message'],metadata['direction_revision_at_send'])
+                except (ValueError,RuntimeError) as error:
+                    metadata['action_error']=str(error);context['research_action_unavailable']=str(error)
+                else:
+                    metadata.update(intent='literature',action_id=action['id'],action_kind='literature',as_of=context['as_of'],reply_model_calls=0)
+                    from council import dump
+                    dump(root/'chat-response.json',dict(reply='공식 논문 탐색·출처 확인 작업을 요청했습니다. 진행 기록과 탐색 결과를 같은 프로젝트 대화에 남깁니다. 실험은 실행하지 않습니다.',intent='literature',action_id=action['id']))
+                    self.finish(message['id'],'공식 논문 탐색·출처 확인 작업을 요청했습니다. 진행 기록과 탐색 결과를 같은 프로젝트 대화에 남깁니다. 실험은 실행하지 않습니다.','completed',metadata)
+                    return
             available=self.research.availability()
             if not available.get('chat_available',available['available']):raise ValueError('연구 대화 연결을 확인하세요: '+', '.join(available['missing']))
             session=context['actual_session']
@@ -153,7 +200,8 @@ class ResearchChat:
                 aris_repo=available['aris_repo'],phase_timeout_seconds=240,chat_context=context)
             from project_session import identity
             job['project_session']=identity(self.store,message['project_id'])
-            if session and (session['status'] in {'running','paused','blocked'} or session['config'].get('execution_policy')=='until_deadline'):job['session_budget']=session['config']['session_budget']
+            # Replies retain the same project thread/history, but never borrow research execution time.
+            metadata['reply_budget_scope']='conversation_reply'
             from council import dump
             dump(root/'job.json',job)
             with (root/'worker.stdout.log').open('wb') as out,(root/'worker.stderr.log').open('wb') as err:
@@ -170,6 +218,9 @@ class ResearchChat:
                 raise ValueError(json.loads(error.read_text()).get('message','답변을 완료하지 못했습니다.') if error.exists() else '답변을 완료하지 못했습니다.')
             result=json.loads((root/'chat-response.json').read_text());reply=result['reply'];intent=result['intent']
             if not isinstance(reply,str) or not reply.strip() or len(reply)>18000 or intent not in {'question','direction','pause','stop','investigate','execute','literature','report','publish'}:raise ValueError('대화 응답 형식이 올바르지 않습니다. 원본 로그를 보존했습니다.')
+            if metadata['mode']=='auto' and intent!='question' and not explicit_action_request(context,intent):
+                metadata['withheld_intent']=intent;intent='question'
+                reply+='\n\n질문·정리로 처리했으며, 실험이나 Council을 포함한 추가 연구 작업은 시작하지 않았습니다.'
             if metadata['mode']=='auto' and intent!='question':
                 if intent=='direction':
                     revision=steering.snapshot(self.store,message['project_id'])['revision']
@@ -188,6 +239,7 @@ class ResearchChat:
                     except ValueError as error:reply+='\n\n'+str(error)
                 elif intent in {'investigate','execute','literature'}:
                     try:
+                        if intent=='literature' and context.get('research_action_unavailable'):raise ValueError(context['research_action_unavailable'])
                         action=self.control.conversation_action(message['id'],message['node_id'],intent,context['user_message'],metadata['direction_revision_at_send'])
                         metadata['action_id']=action['id'];metadata['action_kind']=intent
                         reply+='\n\n'+('공식 논문 탐색·출처 확인 작업을 요청했습니다. 결과는 같은 프로젝트 대화에 저장하며 실험은 실행하지 않습니다.' if intent=='literature' else '서버·코드의 읽기 전용 탐색을 요청했습니다. 결과는 이 프로젝트 대화에 이어집니다.' if intent=='investigate' else '기존 프로젝트 세션을 재개했습니다. 같은 대화와 연구 기록을 바탕으로 탐색 → 코드 검토 → 선택한 장치·남은 예산 내 실행 → 결과 분석을 이어갑니다.')

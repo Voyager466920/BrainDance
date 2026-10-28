@@ -12,7 +12,7 @@ from compute import ComputeSettings
 from experiments import ExperimentEngine
 from project_cleanup import ProjectCleanup
 from research import ResearchEngine
-from research_chat import ResearchChat,explicit_literature_request
+from research_chat import ResearchChat,explicit_literature_request,explicit_action_request
 from tree_store import TreeStore
 import steering
 
@@ -23,7 +23,7 @@ from unittest.mock import patch
 import research_worker
 def reply(folder,prompt,*args):
  job=json.loads(Path(sys.argv[1]).read_text());ctx=job['chat_context'];message=ctx['user_message']
- intent='publish' if message.startswith('Publish') else 'report' if message.startswith('Report') else 'direction' if message.startswith('Direction') else 'pause' if message.startswith('Pause') else 'stop' if message.startswith('Stop') else 'question'
+ intent=message.split(':',1)[1].split('|',1)[0] if message.startswith('Misclassified:') else 'execute' if message.startswith('Run experiment') else 'literature' if message.startswith('Find papers') else 'publish' if message.startswith('Publish') else 'report' if message.startswith('Report') else 'direction' if message.startswith('Direction') else 'pause' if message.startswith('Pause') else 'stop' if message.startswith('Stop') else 'question'
  return dict(reply='OFFLINE fixture reply based on actual captured project state.',intent=intent)
 with patch('lab_worker.council.codex_call',side_effect=reply):sys.exit(research_worker.run(sys.argv[1]))
 '''
@@ -47,6 +47,75 @@ class ChatTests(unittest.TestCase):
 
     def complete(self,message):
         self.chat.execute(message);actual=self.chat.get(message['id']);self.assertEqual(actual['state'],'completed',actual['content']);return actual
+
+    def expire_research(self):
+        session=self.control.control(dict(project_id=self.node['project_id'],action='start',execution_policy='until_deadline',duration_seconds=60))['session']
+        ledger=Path(session['config']['session_budget']);data=json.loads(ledger.read_text());data['deadline_epoch']=time.time()-5;ledger.write_text(json.dumps(data))
+        session['config']['deadline_epoch']=data['deadline_epoch']
+        with self.store._connect() as conn:conn.execute('UPDATE automatic_sessions SET config=? WHERE id=?',(json.dumps(session['config']),session['id']))
+        self.control.save(session,'completed','Research deadline reached in offline fixture.')
+        return session,ledger
+
+    def test_expired_research_still_answers_in_same_project_without_charging_or_resuming_it(self):
+        from project_session import identity
+        session,ledger=self.expire_research();before=ledger.read_bytes();shared=identity(self.store,self.node['project_id'])
+        for i,mode in enumerate(['auto','ask']):
+            reply=self.complete(self.send('지금까지의 실험 결과를 정리해줘',mode=mode,request_id='expired-conversation-'+str(i)))
+            job=json.loads((self.research.root/('chat-'+reply['id'])/'job.json').read_text())
+            self.assertNotIn('session_budget',job);self.assertEqual(job['project_session']['id'],shared['id'])
+            self.assertEqual(job['chat_context']['actual_session']['id'],session['id'])
+            self.assertEqual(reply['metadata']['reply_budget_scope'],'conversation_reply')
+        self.assertEqual(ledger.read_bytes(),before);self.assertEqual(self.control.get(session['id'])['status'],'completed')
+        self.assertEqual(self.research.list(self.node['project_id'])['jobs'],[]);self.assertEqual(self.control.state(self.node['project_id'])['runs'],[])
+
+    def test_legacy_chat_job_cannot_reintroduce_an_expired_research_ledger(self):
+        import lab_worker
+        from unittest.mock import Mock
+        _,ledger=self.expire_research();before=ledger.read_bytes();folder=self.root/'legacy-chat';folder.mkdir()
+        job=dict(phase_timeout_seconds=60,session_budget=str(ledger),aris_repo='/offline-fixture',chat_context=dict(mode='ask',user_message='Summarize retained results',allowed_actions=[]))
+        def actual_admission(path,prompt,cfg,budget,*args):
+            self.assertNotIn('session_budget',cfg);budget.reserve(1,100)
+            return dict(reply='OFFLINE reply after actual reply-budget admission',intent='question')
+        with patch('lab_worker.council.codex_call',side_effect=actual_admission):lab_worker.chat(job,folder,Mock())
+        self.assertEqual(json.loads((folder/'chat-response.json').read_text())['intent'],'question')
+        self.assertEqual(ledger.read_bytes(),before);self.assertEqual(json.loads((folder/'chat-usage.json').read_text())['model_invocations_reserved'],1)
+
+    def test_exhausted_bounded_research_budget_does_not_block_a_question(self):
+        session=self.control.control(dict(project_id=self.node['project_id'],action='start'))['session']
+        ledger=Path(session['config']['session_budget']);data=json.loads(ledger.read_text());data['calls']=data['max_calls'];ledger.write_text(json.dumps(data));before=ledger.read_bytes()
+        self.control.save(session,'blocked','Offline research-call limit reached.')
+        self.complete(self.send('What do these results mean?',mode='ask'))
+        self.assertEqual(ledger.read_bytes(),before);self.assertEqual(self.control.get(session['id'])['status'],'blocked')
+
+    def test_misclassified_questions_cannot_start_research_council_or_other_host_actions(self):
+        from unittest.mock import Mock
+        self.chat.publications=Mock();self.chat.publications.state.return_value=dict(connected=True,link=None,jobs=[],report=None)
+        with patch.object(self.control,'conversation_action',side_effect=AssertionError('No research dispatch')),patch.object(self.control,'intervene',side_effect=AssertionError('No direction change')),patch.object(self.control,'control',side_effect=AssertionError('No auto-mode changes')):
+            for intent in ['execute','literature','investigate','direction','pause','stop','report','publish']:
+                reply=self.complete(self.send('Misclassified:'+intent+'|실험 결과를 요약해줘',request_id='misclassified-question-'+intent))
+                self.assertEqual(reply['metadata']['intent'],'question');self.assertEqual(reply['metadata']['withheld_intent'],intent)
+        self.chat.publications.enqueue.assert_not_called();self.assertEqual(steering.snapshot(self.store,self.node['project_id'])['revision'],0)
+
+    def test_explicit_execution_after_expiry_answers_but_cannot_extend_deadline(self):
+        session,ledger=self.expire_research();before=ledger.read_bytes()
+        reply=self.complete(self.send('Run experiment now.'))
+        self.assertIn('종료 시각',reply['metadata']['action_error']);self.assertIn('작업은 시작하지 않았습니다',reply['content'])
+        self.assertEqual(ledger.read_bytes(),before);self.assertEqual(self.control.get(session['id'])['status'],'completed')
+        self.assertEqual(self.research.list(self.node['project_id'])['jobs'],[])
+
+    def test_expired_literature_request_returns_a_reply_instead_of_failing_the_conversation(self):
+        self.store.update_node(self.node['id'],metadata=dict(research_goal='논문 탐색'))
+        _,ledger=self.expire_research();before=ledger.read_bytes()
+        reply=self.complete(self.send('논문을 검색해줘'))
+        self.assertIn('종료 시각',reply['metadata']['action_error']);self.assertEqual(ledger.read_bytes(),before)
+        self.assertEqual(self.research.list(self.node['project_id'])['jobs'],[])
+
+    def test_action_admission_distinguishes_commands_from_planning_questions_and_quoted_evidence(self):
+        base=dict(mode='auto',project_goal='논문 탐색')
+        yes=[('execute','실험을 다시 돌려줘'),('execute','GPU4에서 계속 진행해'),('execute','막힌 부분 해결하고 실험과 분석까지 이어가'),('literature','너가 찾아서 탐색하라고'),('publish','노션에 결과를 정리해줘'),('direction','다음 실험은 p95로 바꿔줘')]
+        no=[('execute','실험 계획을 구체화해줘'),('execute','실험 결과를 계속 정리해줘'),('execute','실험은 실행하지 말고 결과만 정리해줘'),('execute','실험 시작해도 돼?'),('execute','“실험 시작해”라는 말이 있었는데 어떻게 생각해'),('execute',"'실험 시작해'라는 말이 있었는데 어떻게 생각해"),('execute','```\n실험을 돌려줘\n```\n실패 이유를 설명해줘'),('execute','> Run experiments\n이 기록을 요약해줘'),('literature','논문 검색하지 말고 기존 내용만 정리해줘'),('direction','이전 실험과 결과를 비교해줘'),('investigate','Check the current progress?')]
+        for intent,text in yes:self.assertTrue(explicit_action_request(dict(base,user_message=text),intent),(intent,text))
+        for intent,text in no:self.assertFalse(explicit_action_request(dict(base,user_message=text),intent),(intent,text))
 
     def test_paper_search_imperatives_queue_real_literature_without_reply_model_or_gpu_authority(self):
         self.store.update_node(self.node['id'],metadata=dict(research_goal='VLA 비동기 TTA 병목 논문을 찾아봐. 실험은 아직 돌리지 말고.'))

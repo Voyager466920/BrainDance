@@ -86,3 +86,31 @@ def reconcile(store,project_id):
         dump(path,d)
         changes.append(dict(job_id=row['id'],before=before,after=after,source=source))
     return changes
+
+
+def codex_session_usage(thread_id, sessions=None):
+    """Read provider counters without copying private session content into reports."""
+    if not thread_id:return None
+    root=Path(sessions) if sessions is not None else Path.home()/'.codex/sessions'
+    latest=None
+    for path in root.glob('**/*'+thread_id+'*.jsonl'):
+        try:
+            with path.open() as lines:
+                for line in lines:
+                    try:row=json.loads(line)
+                    except ValueError:continue
+                    payload=row.get('payload') or {}
+                    if payload.get('type')=='token_count':
+                        value=(payload.get('info') or {}).get('total_token_usage')
+                        if isinstance(value,dict):latest=value
+        except OSError:continue
+    return latest
+
+
+def codex_invocation_usage(reported, baseline=None, completed=None):
+    """Subtract history only when native counters attest this is a cumulative receipt."""
+    keys=('input_tokens','cached_input_tokens','cache_write_input_tokens','output_tokens','reasoning_output_tokens')
+    if baseline and completed and all(reported.get(k,0)==completed.get(k,0) for k in keys):
+        if all(reported.get(k,0)>=baseline.get(k,0) for k in keys):
+            return {k:value-baseline.get(k,0) for k,value in reported.items()},'verified_session_delta'
+    return dict(reported),'provider_report_unverified_scope' if baseline else 'provider_report'

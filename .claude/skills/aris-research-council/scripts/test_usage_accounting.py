@@ -51,3 +51,32 @@ class UsageAccountingTests(unittest.TestCase):
             self.assertEqual(sum(data['observed'].values()),3055);self.assertEqual(changes[-1]['after'],2025)
             self.assertTrue((root/'1/native-usage.before-v2.json').is_file());before=ledger.read_bytes()
             self.assertEqual(reconcile(store,'p'),[]);self.assertEqual(ledger.read_bytes(),before)
+
+
+class CodexUsageTests(unittest.TestCase):
+    def test_cumulative_resume_receipt_uses_verified_delta_without_double_counting_cache(self):
+        from usage_accounting import codex_invocation_usage
+        from council import tokens
+        before=dict(input_tokens=15140204,cached_input_tokens=14354432,output_tokens=137291,reasoning_output_tokens=107354)
+        raw=dict(input_tokens=15415896,cached_input_tokens=14611712,output_tokens=138986,reasoning_output_tokens=108703)
+        observed,scope=codex_invocation_usage(raw,before,raw)
+        self.assertEqual(tokens(observed),277387)
+        self.assertEqual(observed['cached_input_tokens'],257280)
+        self.assertEqual(scope,'verified_session_delta');self.assertEqual(raw['input_tokens'],15415896)
+
+    def test_per_invocation_or_reset_or_missing_evidence_preserves_original(self):
+        from usage_accounting import codex_invocation_usage
+        raw=dict(input_tokens=12,output_tokens=3)
+        for before,after in [(None,None),({'input_tokens':10},{'input_tokens':100}),({'input_tokens':20},raw),({'input_tokens':10},None)]:
+            observed,scope=codex_invocation_usage(raw,before,after)
+            self.assertEqual(observed,raw);self.assertNotEqual(scope,'verified_session_delta')
+
+    def test_native_reader_ignores_partial_and_non_usage_events(self):
+        import tempfile,json
+        from pathlib import Path
+        from usage_accounting import codex_session_usage
+        with tempfile.TemporaryDirectory() as folder:
+            path=Path(folder)/'rollout-thread-123.jsonl'
+            path.write_text('partial\n'+json.dumps({'type':'turn_context','payload':{'model':'example'}})+'\n'+json.dumps({'payload':{'type':'token_count','info':{'total_token_usage':{'input_tokens':4,'output_tokens':2}}}})+'\n')
+            self.assertEqual(codex_session_usage('thread-123',folder),{'input_tokens':4,'output_tokens':2})
+            self.assertIsNone(codex_session_usage('unknown',folder))

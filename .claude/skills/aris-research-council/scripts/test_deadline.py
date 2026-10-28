@@ -53,6 +53,20 @@ class DeadlineTests(unittest.TestCase):
         self.assertIsNone(context['max_runs']);self.assertEqual(context['execution_policy'],'until_deadline')
         self.assertGreater(context['execution_budget']['max_timeout_seconds'],0)
 
+    def test_research_expiry_preserves_queued_and_running_conversation_replies(self):
+        self.authorize();chat=self.server.chat
+        running=chat.send(dict(node_id=self.node['id'],content='Summarize the retained results',mode='ask',request_id='deadline-running-chat-001'))
+        queued=chat.send(dict(node_id=self.node['id'],content='Explain the limitations',mode='ask',request_id='deadline-queued-chat-002'))
+        with self.server.store._connect() as conn:conn.execute("UPDATE research_chat SET state='running' WHERE id=?",(running['id'],))
+        chat.active_id=running['id']
+        with patch.object(self.server.research,'stop',wraps=self.server.research.stop) as stop_research:
+            self.server.autopilot.expire(self.server.autopilot.get(self.session['id']))
+            stop_research.assert_any_call(self.job['id'])
+        self.assertEqual(chat.get(running['id'])['state'],'running');self.assertEqual(chat.get(queued['id'])['state'],'queued')
+        self.assertNotIn(running['id'],chat.cancelled)
+        chat.cancel_project(self.node['project_id']) # Actual project deletion/closure can still cancel replies.
+        self.assertEqual(chat.get(queued['id'])['state'],'interrupted');self.assertIn(running['id'],chat.cancelled)
+
     def test_deadline_cancels_a_running_cpu_process_and_blocks_further_dispatch(self):
         self.authorize(10)
         (self.work/'advice-ideas.json').write_text('{}')
