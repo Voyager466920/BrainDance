@@ -23,7 +23,7 @@ import time
 import urllib.request
 
 SCRIPTS='.claude/skills/aris-research-council/scripts'
-PROTECTED={'host_repair.py','watchdog_recovery.py','session_budget.py','compute.py','experiments.py','experiment_worker.py','autopilot.py','official_review.py','official_ideas.py','native_shell.py','tree_store.py','viewer.py','runtime_binary.py'}
+PROTECTED={'host_repair.py','watchdog_recovery.py','session_budget.py','compute.py','experiments.py','experiment_worker.py','autopilot.py','official_review.py','official_ideas.py','official_workflow.py','research_verdict.py','native_shell.py','tree_store.py','viewer.py','runtime_binary.py'}
 
 
 def read(path):return json.loads(Path(path).read_text())

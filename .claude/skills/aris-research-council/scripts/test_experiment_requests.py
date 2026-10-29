@@ -69,6 +69,8 @@ class ExperimentRequestTests(unittest.TestCase):
         self.assertEqual(job['config']['hypothesis_task_id'],result['id']);self.assertEqual(job['config']['session_budget'],self.item['config']['session_budget'])
         self.assertEqual(job['config']['project_session']['id'],self.base.config['project_session']['id'])
         work=Path(job['config']['native_workspace']);install(job['config'])
+        from test_official_review import discovery_fixture
+        discovery_fixture(job['config'])
         rows=[]
         for i,skill in enumerate(SKILLS):rows.extend([dict(type='assistant',message=dict(content=[dict(type='tool_use',id=str(i),name='Skill',input=dict(skill='aris-official:'+skill))])),dict(type='user',message=dict(content=[dict(type='tool_result',tool_use_id=str(i),content='OFFLINE request fixture')]))])
         (Path(job['run_dir'])/'native.stdout.jsonl').write_text(''.join(json.dumps(row)+'\n' for row in rows))

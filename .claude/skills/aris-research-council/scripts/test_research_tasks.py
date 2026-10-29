@@ -35,6 +35,8 @@ class ResearchTaskTests(unittest.TestCase):
         self.jobs=[self.server.research.get(t['job_id']) for t in self.tasks];self.hosts=[]
         for job in self.jobs:
             install(job['config']);rows=[]
+            from test_official_review import discovery_fixture
+            discovery_fixture(job['config'])
             for i,skill in enumerate(SKILLS):rows.extend([dict(type='assistant',message=dict(content=[dict(type='tool_use',id=str(i),name='Skill',input=dict(skill='aris-official:'+skill))])),dict(type='user',message=dict(content=[dict(type='tool_result',tool_use_id=str(i),content='OFFLINE fixture')]))])
             (Path(job['run_dir'])/'native.stdout.jsonl').write_text(''.join(json.dumps(r)+'\n' for r in rows));self.hosts.append(Host(job['config']))
 

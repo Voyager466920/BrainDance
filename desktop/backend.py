@@ -64,6 +64,9 @@ def main():
     if sys.argv[1:2]==['--run-experiment']:
         import runpy
         sys.argv=sys.argv[2:]
+        # Match normal Python script semantics for unmodified upstream helpers
+        # that import sibling modules (run_state, provenance, etc.).
+        sys.path.insert(0,str(Path(sys.argv[0]).resolve().parent))
         runpy.run_path(sys.argv[0],run_name='__main__')
         return
     parser = argparse.ArgumentParser(description=__doc__)

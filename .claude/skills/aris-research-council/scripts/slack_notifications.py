@@ -144,7 +144,7 @@ class SlackNotifications:
             if done.get('job_id')!=job['id']:raise ValueError('연구 보고서의 작업 식별자가 다릅니다.')
             selected=next((n for n in data['nodes'] if n['id']==job['node_id']),None)
             if selected:
-                data={**data,'title':data['title']+' · '+selected['title'],'goal':selected['title'],'nodes':[selected],'runs':[r for r in data['runs'] if r['id'] in done.get('run_ids',[])],'brief':{},'study_outcome':done.get('outcome'),'rejection_reason':done.get('reason')}
+                data={**data,'title':data['title']+' · '+selected['title'],'goal':selected['title'],'nodes':[selected],'runs':[r for r in data['runs'] if r['id'] in done.get('run_ids',[])],'study_reports':[s for s in data.get('study_reports',[]) if s['node_id']==selected['id']],'brief':{},'study_outcome':done.get('outcome'),'rejection_reason':done.get('reason')}
                 brief=folder/'research-brief.json'
                 if brief.is_file() and not brief.is_symlink():
                     from research_reports import validate_brief

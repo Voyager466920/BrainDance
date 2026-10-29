@@ -260,3 +260,14 @@ class NativePipelineTests(unittest.TestCase):
         prompt=advisor_prompt();self.assertTrue(prompt.startswith('# Role: Critical AI Research Advisor'))
         self.assertIn('Confirmed:',prompt);self.assertIn('Speculation:',prompt)
         self.assertIn('RESEARCH_BRIEF.json',REPORT_CONTRACT)
+
+    def test_ideation_scope_retains_recommendations_without_dispatching_full_studies(self):
+        self.config.update(task_role='discovery',research_scope='ideation')
+        with self.server.store._connect() as conn:conn.execute('UPDATE research_jobs SET config=? WHERE id=?',(json.dumps(self.config),self.job['id']))
+        node=self.server.store.add_node(self.node['id'],'OFFLINE recommended hypothesis',kind='hypothesis')
+        report=self.work/'ideation.md';report.write_text('OFFLINE original discovery result fixture')
+        with patch('official_ideas.validate',return_value=dict(fixture=True)):
+            done=self.call('finish',report=str(report),node_ids=[node['id']])
+        self.assertEqual(done['recommended_node_ids'],[node['id']]);self.assertEqual(done['task_ids'],[])
+        from research_tasks import listing
+        self.assertEqual(listing(self.server.store,self.session['id']),[])

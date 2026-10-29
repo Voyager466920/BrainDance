@@ -47,6 +47,7 @@ print(json.dumps({'decision':'stop' if a.score>=6 and a.verdict in ('ready','alm
 def completed_fixture(job,run_ids,number=1,score=7,verdict='almost',run_id='OFFLINE_original_run'):
     """Simulate actual transport outputs; never claim a live Reviewer participated."""
     work=Path(job['native_workspace']);stage=work/'review-stage';stage.mkdir(exist_ok=True)
+    discovery_fixture(job)
     for n in range(1,number+1):
         folder=Path(job['run_dir'])/'native-reviewer'/('offline-'+str(n));folder.mkdir(parents=True,exist_ok=True)
         result=dict(score=score,verdict=verdict,review='OFFLINE Reviewer transport fixture')
@@ -56,6 +57,18 @@ def completed_fixture(job,run_ids,number=1,score=7,verdict='almost',run_id='OFFL
         review.helper(job,'review_gate.py',['--round-backend','codex','--score',str(score),'--verdict',verdict])
     council.dump(stage/'REVIEW_STATE.json',dict(run_id=run_id,round=number,reviewer_backend='codex',threadId='OFFLINE-original-thread',status='completed',last_score=score,last_verdict=verdict,pending_experiments=[]))
     for name in ['AUTO_REVIEW.md','REVIEWER_MEMORY.md']:(stage/name).write_text('OFFLINE cumulative review fixture')
+
+
+def discovery_fixture(job):
+    from official_workflow import ARTIFACTS
+    work=Path(job['native_workspace'])
+    for name in ARTIFACTS:
+        path=work/name;path.parent.mkdir(parents=True,exist_ok=True)
+        if not path.exists():path.write_text('OFFLINE original workflow transport fixture')
+    logs=Path(job['run_dir'])/'native-helpers/OFFLINE-discovery';logs.mkdir(parents=True,exist_ok=True)
+    council.dump(logs/'request.json',dict(helper='idea_discovery_gate.py',returncode=0,fixture=True))
+    from official_workflow import digests
+    council.dump(work/'native-discovery-gate.json',dict(binding=review.binding(job),raw_logs=str(logs),artifacts=digests(work)))
 
 
 class OfficialReviewTests(unittest.TestCase):

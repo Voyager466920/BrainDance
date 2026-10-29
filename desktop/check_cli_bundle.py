@@ -49,6 +49,13 @@ def main():
                 assert json.loads(gate.stdout)['decision']==decision,gate.stdout
             assert hashlib.sha256(upstream.read_bytes()).hexdigest()==before
             print('PACKAGED_ORIGINAL_ARIS_GATE_OK')
+            discovery=upstream.with_name('idea_discovery_gate.py')
+            if discovery.is_file():
+                blank=Path(folder)/'original-discovery';blank.mkdir()
+                checked=subprocess.run([str(executable),'--run-experiment',str(discovery),str(blank),'OFFLINE-missing-run'],capture_output=True,text=True,timeout=20)
+                assert checked.returncode!=0 and 'BLOCKED' in checked.stdout,checked.stdout+checked.stderr
+                assert 'ModuleNotFoundError' not in checked.stderr,checked.stderr
+                print('PACKAGED_ORIGINAL_DISCOVERY_IMPORTS_OK')
         with socket.socket() as sock:sock.bind(('127.0.0.1',0));port=sock.getsockname()[1]
         address='http://127.0.0.1:'+str(port)
         def get(path):

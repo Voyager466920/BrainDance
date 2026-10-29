@@ -275,6 +275,8 @@ def parser():
     q=sub.add_parser('limits',parents=[common]);q.add_argument('--calls',type=int);q.add_argument('--tokens',type=int)
     q.add_argument('--hours',type=float);q.add_argument('--experiment-minutes',type=float,help='Optional maximum minutes per experiment; 0 selects automatic allocation')
     q=sub.add_parser('auto',parents=[common]);q.add_argument('action',choices=['start','pause','resume','stop','economy','standard']);q.add_argument('--cycles',type=int,default=3);q.add_argument('--calls',type=int,default=40);q.add_argument('--tokens',type=int,default=1500000);q.add_argument('--context',default='');q.add_argument('--mode',choices=['lite','balanced','deep'],default='balanced');q.add_argument('--reuse-research',action='store_true',help='Reuse this project\'s completed Council and verified literature; re-author and review the next experiment')
+    q.add_argument('--research-scope',choices=['full','ideation'],help='Original full research or original idea-discovery only, including diagnostic pilots')
+    q.add_argument('--wait-for-quota',action='store_true',help='On resume, wait without model calls until the allowance baseline is available')
     q.add_argument('--hours',type=float);q.add_argument('--experiment-minutes',type=float,help='Optional maximum minutes per experiment; 0 selects automatic allocation');q.add_argument('--standard',action='store_true',help='Use standard discovery/review models instead of the economy default');q.add_argument('--bounded',action='store_true',help='Legacy count-budget mode instead of deadline-only autonomous research')
     q=sub.add_parser('interests',parents=[common]);q.add_argument('--interest',action='append');q.add_argument('--bridge',action='append');q.add_argument('--clear-bridges',action='store_true');q.add_argument('--style',choices=['focused','scout']);q.add_argument('--days',type=int);q.add_argument('--papers',type=int);q.add_argument('--pilots',type=int);q.add_argument('--seconds',type=int);q.add_argument('--gain',type=float);q.add_argument('--seeds',type=int)
     q.add_argument('--runtime-policy',choices=['auto','fixed'],help='Auto allocates remaining project time; fixed enforces --seconds as a hard cap')
@@ -420,10 +422,16 @@ def dispatch(client,args,project=None):
     if command=='auto':
         if args.action in {'economy','standard'}:return client.request('/api/control/automatic',dict(project_id=project['id'],action='cost_profile',cost_profile=args.action))
         payload=dict(project_id=project['id'],action=args.action)
+        if args.research_scope is not None:
+            if args.action not in {'start','resume'}:raise ClientError('연구 범위는 시작 또는 새 시간으로 이어갈 때 설정하세요.')
+            payload['research_scope']=args.research_scope
+        if args.wait_for_quota:
+            if args.action!='resume':raise ClientError('사용량 대기는 이어가기에서 설정하세요.')
+            payload['wait_for_quota']=True
         if args.action=='start':
             payload.update(**time_options(args),max_cycles=args.cycles,max_model_calls=args.calls,token_budget=args.tokens,context_path=args.context,mode=args.mode)
             if args.reuse_research:payload['reuse_research']=True
-        elif args.action=='resume' and (args.hours is not None or args.quota_drop_percent is not None or args.no_quota_guard):payload.update(continuation_options(client,project,args))
+        elif args.action=='resume' and (args.hours is not None or args.quota_drop_percent is not None or args.no_quota_guard or args.research_scope is not None or args.wait_for_quota):payload.update(continuation_options(client,project,args))
         return client.request('/api/control/automatic',payload)
     if command=='chat':
         text=sys.stdin.read() if args.message=='-' else args.message;reference=None

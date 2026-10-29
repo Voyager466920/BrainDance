@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.19.21
+
+- Separate scientific success from process completion and review readiness. A numerical win against a weak baseline no longer labels a project successful; primary-goal success requires an independent assessment with measured evidence for every criterion.
+- Retain full explanatory study narratives in reading reports, including background, causal hypothesis, controls, uncertainty, reviewer-driven changes and the next decisive experiment. Keep execution history and raw evidence separate from scientific conclusions.
+- Require original discovery/refinement deliverables and a real, artifact-bound upstream idea-discovery evidence gate before accepting completed studies. Preserve the original review loop and stopping rule rather than forcing empty rounds.
+- Allow an explicitly requested continuation to wait without model/GPU calls until account allowance can be read, then capture its real baseline and apply the selected percentage-point stop. Manual pause/stop cancels the pending continuation.
+- Expose the actual read-only target broker argument schema to native research tools.
+- Add an explicit ideation scope using original idea-discovery/idea-creator, preserving diagnostic pilots and recommendations while preventing automatic full-study dispatch.
+
 ## 0.19.20
 
 - Preserve the hypothesis-task checkpoint when resuming a paused project. A stale blocked experiment at project level no longer sends existing studies back through broad discovery; their individual workspaces and execution records remain authoritative.

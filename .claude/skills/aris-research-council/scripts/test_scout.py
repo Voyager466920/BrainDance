@@ -126,6 +126,9 @@ class ScoutPilotTests(unittest.TestCase):
         completed_fixture(self.config,[run['run_id']])
     def test_local_report_save_remains_available_after_model_budget_exhaustion(self):
         run,receipt=self.pilot(False);self.reviewer(run)
+        brief={key:'OFFLINE explanatory fixture' for key in ['problem','approach','findings','background','mechanism','experimental_design','interpretation','review_history','next_experiment']}
+        brief.update(native_cycle=0,research_outcome='not_supported',limitations=[],next_steps=[])
+        (self.work/'RESEARCH_BRIEF.json').write_text(json.dumps(brief))
         trace=Path(self.job['run_dir'])/'native.stdout.jsonl'
         with trace.open('a') as f:
             f.write(json.dumps(dict(type='assistant',message=dict(content=[dict(type='tool_use',id='lit',name='Skill',input=dict(skill='aris-official:research-lit'))])))+'\n')

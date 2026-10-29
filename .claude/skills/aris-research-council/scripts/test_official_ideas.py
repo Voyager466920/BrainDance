@@ -30,6 +30,8 @@ class OriginalIdeaTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'Codex'):validate(self.job)
         p=self.root/'native-reviewer/OFFLINE';p.mkdir(parents=True)
         council.dump(p/'usage.json',dict(fixture=True));(p/'response.txt').write_text('OFFLINE brainstorm fixture')
+        from test_official_review import discovery_fixture
+        discovery_fixture(self.job)
         result=validate(self.job)
         self.assertEqual(len(result['leaf_calls']),1)
         self.assertEqual(result['leaf_notifications']['leaf'],'completed')

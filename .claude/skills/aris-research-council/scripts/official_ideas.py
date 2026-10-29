@@ -30,6 +30,8 @@ def validate(job):
     pending=[key for key in calls if key not in finished and notifications.get(key) not in {'completed','failed','stopped'}]
     if pending:raise ValueError('원본 leaf 작업이 아직 실행 중입니다. 실제 종료와 coverage 기록을 확인하세요.')
     if not reviewer_receipts:raise ValueError('원본 Codex brainstorm/검토의 실제 응답 기록이 필요합니다.')
+    from official_workflow import completed
+    completed(job)
     receipt=dict(report=str(report),leaf_calls=list(calls.values()),leaf_notifications=notifications,reviewer_receipts=reviewer_receipts,source_jobs=sources,original_skill=str(Path(job['aris_repo'])/'skills/idea-creator/SKILL.md'))
     council.dump(Path(job['run_dir'])/'original-idea-creator-receipt.json',receipt)
     return receipt

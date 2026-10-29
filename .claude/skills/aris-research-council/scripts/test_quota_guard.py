@@ -97,7 +97,7 @@ class QuotaControllerTests(unittest.TestCase):
     def test_execution_success_without_a_comparison_is_not_a_claim_of_improvement(self):
         from research_reports import result_status
         data=dict(runs=[dict(state='succeeded',direction='minimize',analysis=dict(status='compared',baseline=100,candidate=80))])
-        self.assertEqual(result_status(data),'성공')
+        self.assertEqual(result_status(data),'탐색중')
         data['runs'][0]['analysis']['candidate']=120;self.assertEqual(result_status(data),'실패')
         data['runs'][0]['analysis']=dict(status='measured',value=80);self.assertEqual(result_status(data),'탐색중')
         data['study_outcome']='rejected';self.assertEqual(result_status(data),'실패')

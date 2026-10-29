@@ -88,7 +88,9 @@ class Autopilot:
         return add(self,**payload)
 
     def control(self,payload):
-        if set(payload)-{'project_id','action','max_cycles','max_model_calls','token_budget','context_path','mode','session_id','reuse_research','research_style','execution_policy','duration_seconds','deadline_epoch','experiment_timeout_seconds','orchestration','cost_profile','quota_drop_percent'}:raise ValueError('지원하지 않는 자동모드 설정입니다.')
+        if set(payload)-{'project_id','action','max_cycles','max_model_calls','token_budget','context_path','mode','session_id','reuse_research','research_style','execution_policy','duration_seconds','deadline_epoch','experiment_timeout_seconds','orchestration','cost_profile','quota_drop_percent','wait_for_quota','research_scope'}:raise ValueError('지원하지 않는 자동모드 설정입니다.')
+        if payload.get('research_scope','full') not in {'full','ideation'}:raise ValueError('연구 범위는 전체 연구 또는 아이디에이션으로 선택하세요.')
+        if 'wait_for_quota' in payload and (type(payload['wait_for_quota']) is not bool or payload['action']!='resume'):raise ValueError('사용량 확인 대기는 이어가기에서만 설정하세요.')
         project_id=payload['project_id'];action=payload['action'];root=self.root(project_id);self.store.get_node(root['id'])
         if 'experiment_timeout_seconds' in payload:
             value=payload['experiment_timeout_seconds']
@@ -98,6 +100,7 @@ class Autopilot:
         if action not in {'start','pause','resume','stop','limits','time_only','deadline','portfolio','cost_profile'}:raise ValueError('자동모드 동작을 확인하세요.')
         with self.lock:
             old=self.sessions(project_id);item=old[0] if old else None
+            if item and action in {'stop','pause'}:item['progress'].pop('pending_continuation',None)
             if action=='resume' and 'quota_drop_percent' in payload and not {'duration_seconds','deadline_epoch'}&set(payload):raise ValueError('사용량 기준을 바꾸려면 이어갈 시간도 지정하세요.')
             if action=='resume' and payload.get('session_id') and (not item or payload['session_id']!=item['id']):raise ValueError('연구 세션이 바뀌었습니다. 이어가기 설정을 다시 여세요.')
             if action=='resume' and ('duration_seconds' in payload or 'deadline_epoch' in payload):
@@ -186,6 +189,8 @@ class Autopilot:
                                 session_budget=str(ledger),native_workspace=str(native_workspace)),progress=dict(phase='prepare',discovery_completed=False,cycles=0,revision=steering.snapshot(self.store,project_id)['revision'],code_hashes=[],failures=0),created_at=now(),updated_at=now())
                 item['config']['execution_policy']=policy
                 item['config']['orchestration']=payload.get('orchestration','single')
+                item['config']['research_scope']=payload.get('research_scope','full')
+                if item['config']['research_scope']=='ideation':item['config']['orchestration']='hypothesis-tasks'
                 item['config']['cost_profile']=payload.get('cost_profile','standard')
                 if quota:item['config']['quota_guard']=quota
                 item['config']['experiment_timeout_seconds']=payload.get('experiment_timeout_seconds')
@@ -509,12 +514,13 @@ class Autopilot:
                 return
         if self.research.active_id is not None or self.busy(item['project_id']):return
         job=self.research.start(dict(node_id=item['node_id'],task='native',confirm=True,mode=item['config']['mode'],context_path=item['config']['context_path']),
-            internal=dict(cost_profile=item['config'].get('cost_profile','standard'),auto_session_id=item['id'],session_budget=item['config']['session_budget'],native_workspace=str(Path(item['config']['native_workspace'])/'discovery'/str(p.get('native_cycle',0))) if portfolio else item['config']['native_workspace'],task_role='discovery' if portfolio else 'single',research_style=item['config'].get('research_style','focused'),scout_preferences=item['config'].get('scout_preferences',{}),execution_policy=item['config'].get('execution_policy','bounded'),deadline_epoch=item['config'].get('deadline_epoch'),native_cycle=p.get('native_cycle',0)))
+            internal=dict(research_scope=item['config'].get('research_scope','full'),cost_profile=item['config'].get('cost_profile','standard'),auto_session_id=item['id'],session_budget=item['config']['session_budget'],native_workspace=str(Path(item['config']['native_workspace'])/'discovery'/str(p.get('native_cycle',0))) if portfolio else item['config']['native_workspace'],task_role='discovery' if portfolio else 'single',research_style=item['config'].get('research_style','focused'),scout_preferences=item['config'].get('scout_preferences',{}),execution_policy=item['config'].get('execution_policy','bounded'),deadline_epoch=item['config'].get('deadline_epoch'),native_cycle=p.get('native_cycle',0)))
         self.save(item,message='메인 자율 연구 세션이 탐색·구현·실험·리뷰를 이어갑니다.',phase='native',job_id=job['id'],recovery_after=0)
 
     def _loop(self):
         while not self.closed.wait(.5):
             with self.lock:
+                self._waiting_continuations()
                 self._conversation_requests()
                 with self.store._connect() as conn:items=[self.decode(r) for r in conn.execute("SELECT * FROM automatic_sessions WHERE status='running'")]
                 awake=any(i['config'].get('execution_policy')=='until_deadline' and i['config']['deadline_epoch']>time.time() for i in items)
@@ -537,6 +543,17 @@ class Autopilot:
                 try:self._restart_requests()
                 except Exception:
                     with (self.research.root/'controller.log').open('a') as log:log.write(now()+'\n'+traceback.format_exc()+'\n')
+
+    def _waiting_continuations(self):
+        with self.store._connect() as conn:items=[self.decode(r) for r in conn.execute("SELECT * FROM automatic_sessions WHERE status='paused'")]
+        for item in items:
+            pending=item['progress'].get('pending_continuation')
+            if not pending or pending.get('next_check',0)>time.time():continue
+            request={k:v for k,v in pending.items() if k!='next_check'}
+            try:self.control({**request,'wait_for_quota':True})
+            except (ValueError,KeyError,OSError) as error:
+                item['progress'].pop('pending_continuation',None)
+                self.save(item,'paused','이어가기 확인 필요 · '+str(error))
 
     def _restart_requests(self):
         if self.research.active_id is not None:return

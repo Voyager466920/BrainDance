@@ -1,5 +1,6 @@
 """Explicit continuation of the same project/session with a new execution window."""
 import json
+import time
 from pathlib import Path
 from experiments import resource_signature
 from research_reports import quiescent
@@ -19,15 +20,25 @@ def continue_session(controller,item,payload):
     if amount is not None:
         from quota_guard import capture
         if controller.quota_status is None:raise ValueError('계정 사용량 조회를 확인하세요.')
-        guard=capture(controller.quota_status(force=True),amount)
+        try:guard=capture(controller.quota_status(force=True),amount)
+        except ValueError as error:
+            if payload.get('wait_for_quota') is not True:raise
+            pending={k:v for k,v in payload.items() if k!='wait_for_quota'}
+            pending.update(next_check=time.time()+60)
+            progress={**item['progress'],'pending_continuation':pending}
+            with controller.store._connect() as c:
+                c.execute('UPDATE automatic_sessions SET status=?,progress=?,message=?,updated_at=? WHERE id=?',('paused',json.dumps(progress),'사용량 기준 확인 대기 · '+str(error),now(),item['id']))
+            return controller.state(item['project_id'])
     config={**old_config,**clock,'execution_policy':'until_deadline','max_cycles':None,'pipeline':'aris-native','continuation_count':old_config.get('continuation_count',0)+1}
+    if 'research_scope' in payload:config['research_scope']=payload['research_scope']
+    if config.get('research_scope')=='ideation':config['orchestration']='hypothesis-tasks'
     config.setdefault('original_started_epoch',old_config.get('started_epoch',clock['started_epoch']))
     if not config.get('native_workspace'):
         from project_session import identity
         config['native_workspace']=str(Path(identity(controller.store,item['project_id'])['path'])/'native')
     if guard:config['quota_guard']=guard
     else:config.pop('quota_guard',None)
-    progress={k:v for k,v in old_progress.items() if k not in {'quota_stop','account_usage','recovery_after','recovery_error'}}
+    progress={k:v for k,v in old_progress.items() if k not in {'quota_stop','account_usage','recovery_after','recovery_error','pending_continuation'}}
     if guard:progress['account_usage']=guard['baseline']
     progress.update(phase='prepare',job_id=None,run_id=None,recovery_after=0)
     from research_tasks import listing

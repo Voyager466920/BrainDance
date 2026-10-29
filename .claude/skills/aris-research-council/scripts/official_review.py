@@ -14,15 +14,21 @@ import council
 
 
 def assessment(job,text,required=True):
+    from research_verdict import extract
+    scientific=extract(text)
     try:
         value=council.parse_object(text)
-        if isinstance(value,dict) and ('score' in value or not required):return value
+        if isinstance(value,dict) and ('score' in value or not required):
+            if scientific:value['research_assessment']=scientific
+            return value
     except ValueError:pass
     try:
         from paper_verification import upstream
         module,_=upstream(Path(job['aris_repo'])/'tools/review_gate.py')
         score,verdict=module._parse_native_assessment(text)
-        return dict(review=text,score=score,verdict=verdict)
+        result=dict(review=text,score=score,verdict=verdict)
+        if scientific:result['research_assessment']=scientific
+        return result
     except Exception:
         if required:raise ValueError('원본 Reviewer 응답의 Score/Verdict를 확인할 수 없습니다. 원문을 유지하고 원본 출력 형식으로 결과 검토하세요.')
         return dict(review=text)
@@ -85,6 +91,9 @@ def helper(job,tool,values):
         council.dump(work/'native-review-gate.json',dict(binding=binding(job),review_receipt=latest['receipt'],raw_logs=str(logs)))
         with (work/'native-review-gates.jsonl').open('a') as output:
             output.write(json.dumps(dict(review=latest,raw_logs=str(logs)))+'\n')
+    if tool=='idea_discovery_gate.py' and result.returncode==0:
+        from official_workflow import digests
+        council.dump(work/'native-discovery-gate.json',dict(binding=binding(job),raw_logs=str(logs),artifacts=digests(work)))
     return dict(returncode=result.returncode,stdout=result.stdout[-24000:],stderr=result.stderr[-8000:],raw_logs=str(logs))
 
 
@@ -136,5 +145,6 @@ def completion(job,run_ids):
         path=work/'review-stage'/name
         if name=='AUTO_REVIEW.md' and not path.is_file():path=work/name
         if not path.is_file() or not path.read_text().strip():raise ValueError('원본 검토 기록이 필요합니다: '+name)
-    return dict(run_id=current['run_id'],round=number,max_rounds=maximum,gate=decision,
+    return dict(run_id=current['run_id'],round=number,max_rounds=maximum,gate=decision,review_scope='report_readiness',
+                research_assessment=latest['review'].get('research_assessment'),
                 outcome='positive' if positive else 'max_rounds_unresolved',review_receipt=latest['receipt'],gate_receipt=str(logs))

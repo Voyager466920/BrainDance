@@ -102,3 +102,24 @@ class ContinuationTests(unittest.TestCase):
         limited=status();limited['providers'][1].update(connection='authenticated',usage_state='rate_limited',windows=[])
         text=provider_line(limited);self.assertIn('Claude 연결됨',text);self.assertIn('조회 일시 제한(429)',text);self.assertNotIn('로그인 필요',text)
         with self.assertRaisesRegex(ValueError,'로그인은 연결'):capture(limited,20)
+
+    def test_pending_continuation_waits_for_real_quota_baseline_and_can_be_cancelled(self):
+        item=self.start();self.server.autopilot.control(dict(project_id=item['project_id'],action='stop'))
+        limited=status();limited['providers'][1].update(connection='authenticated',usage_state='rate_limited',windows=[])
+        self.server.autopilot.quota_status=lambda force=False:limited
+        queued=self.renew(item,quota_drop_percent=20,wait_for_quota=True,research_scope='ideation')
+        self.assertEqual(queued['status'],'paused');self.assertEqual(queued['config'],item['config'])
+        self.assertIn('pending_continuation',queued['progress']);self.assertIsNone(self.server.research.active_id)
+        self.server.autopilot.quota_status=lambda force=False:status(80,60)
+        self.server.autopilot.save(queued,pending_continuation={**queued['progress']['pending_continuation'],'next_check':0})
+        self.server.autopilot._waiting_continuations()
+        running=self.server.autopilot.get(item['id'])
+        self.assertEqual(running['status'],'running');self.assertNotIn('pending_continuation',running['progress'])
+        self.assertEqual(running['config']['quota_guard']['drop_percent'],20)
+        self.assertEqual(running['config']['research_scope'],'ideation')
+        self.assertEqual(running['config']['quota_guard']['baseline']['providers'][0]['windows'][0]['remaining_percent'],80)
+        self.server.autopilot.control(dict(project_id=item['project_id'],action='stop'))
+        self.server.autopilot.quota_status=lambda force=False:limited
+        queued=self.renew(item,quota_drop_percent=20,wait_for_quota=True)
+        self.server.autopilot.control(dict(project_id=item['project_id'],action='pause'))
+        self.assertNotIn('pending_continuation',self.server.autopilot.get(item['id'])['progress'])
