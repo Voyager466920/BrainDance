@@ -218,6 +218,10 @@ def finish(server,job,session,rows,report):
         if not reviewer_path.is_file():raise ValueError('실험 결과에 대한 기존 Reviewer 기록이 필요합니다.')
         reviewer=json.loads(reviewer_path.read_text())
         if set(reviewer['run_ids'])!={r['id'] for r in rows} or not Path(reviewer['receipt']).is_file():raise ValueError('최신 결과를 기존 Reviewer가 검토해야 합니다.')
+    official=None
+    if receipts:
+        from official_review import completion
+        official=completion(config,[r['id'] for r in rows])
     if promising:
         advice=work/'advice-results.json'
         if not advice.is_file():raise ValueError('유망 후보는 결과 Council 검토 후 보고하세요.')
@@ -236,7 +240,7 @@ def finish(server,job,session,rows,report):
     if ideas.is_file() and not ideas.is_symlink():
         content=ideas.read_text();(Path(job['run_dir'])/'scout-ideas.md').write_text(content)
         server.store.add_note(job['node_id'],'idea','탐색 연결 후보와 선별 근거',content[:99000])
-    record=dict(job_id=job['id'],auto_session_id=session['id'],run_ids=[r['id'] for r in rows],completed_experiments=completed,attempt_count=len(rows),report=str(archive),report_sha256=hashlib.sha256(text.encode()).hexdigest(),completed_at=now(),research_style='scout',promising_count=len(promising),triage=evaluations,outcome='promising' if promising else 'no_promising_candidate')
+    record=dict(job_id=job['id'],auto_session_id=session['id'],run_ids=[r['id'] for r in rows],completed_experiments=completed,attempt_count=len(rows),report=str(archive),report_sha256=hashlib.sha256(text.encode()).hexdigest(),completed_at=now(),research_style='scout',official_review=official,promising_count=len(promising),triage=evaluations,outcome='promising' if promising else 'no_promising_candidate')
     (Path(job['run_dir'])/'scout-triage.json').write_text(json.dumps(evaluations,ensure_ascii=False,indent=2))
     if promising:
         server.store.add_note(job['node_id'],'analysis','탐색 보고 · 유망 후보 '+str(len(promising))+'개',text+'\n\n실제 측정 기반 판정\n'+json.dumps(evaluations,ensure_ascii=False,indent=2))

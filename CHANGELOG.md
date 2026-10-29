@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.19.17
+
+- Execute the installed, unmodified research review helpers, including `review_gate.py`, reviewer routing and trace recording, through the existing managed transport. Original Skills and helper source remain unchanged.
+- Require original review state, real per-round Reviewer/helper receipts and cumulative review/memory before accepting measured-study completion. A single negative review can no longer close a study early; the upstream gate and original round limit decide termination. Exhausted negative reviews remain unresolved.
+- Keep experiment checks and advisory Council separate from research-review rounds. Preserve the actual Reviewer thread ID and full raw response for original round continuation and tracing. Interrupted work and existing research records remain intact.
+
 ## 0.19.16
 
 - Connect the external monitor to a durable, guarded repair queue. A read-only Codex adviser diagnoses actual tool errors and returns concrete feedback to the same official research workspace; verify the failed operation succeeds before marking recovery confirmed.

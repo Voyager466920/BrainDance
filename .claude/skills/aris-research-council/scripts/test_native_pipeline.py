@@ -21,7 +21,8 @@ class NativePipelineTests(unittest.TestCase):
         self.aris=Path(self.fixture.temp.name)/'upstream'
         for name in SKILLS:
             p=self.aris/'skills'/name/'SKILL.md';p.parent.mkdir(parents=True);p.write_text('OFFLINE upstream fixture '+name)
-        (self.aris/'tools').mkdir()
+        from test_official_review import fixture_upstream
+        fixture_upstream(self.aris)
         self.server.research.availability=lambda:dict(available=True,missing=[],aris_repo=str(self.aris))
         self.server.research._execute=lambda record:None
         self.session=self.server.autopilot.control(dict(project_id=self.node['project_id'],action='start',max_cycles=1,max_model_calls=80,token_budget=2000000))['session']
@@ -57,6 +58,7 @@ class NativePipelineTests(unittest.TestCase):
         self.assertEqual(self.config['task'],'native')
         for name in SKILLS:self.assertEqual((self.work/'.aris-official/skills'/name/'SKILL.md').read_bytes(),(self.aris/'skills'/name/'SKILL.md').read_bytes())
         self.assertEqual(install(self.config)[0],self.work)
+        self.assertEqual((self.work/'.aris-official/tools/review_gate.py').read_bytes(),(self.aris/'tools/review_gate.py').read_bytes())
         (self.aris/'skills/research-pipeline/SKILL.md').write_text('changed upstream')
         with self.assertRaisesRegex(ValueError,'변경'):install(self.config)
 
@@ -161,10 +163,36 @@ class NativePipelineTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'최신 실험'):self.call('finish',report=str(report))
         council.dump(self.work/'advice-results.json',dict(run_ids=[run['run_id']]))
         with self.assertRaisesRegex(ValueError,'Reviewer'):self.call('finish',report=str(report))
-        reviewer=Path(self.job['run_dir'])/'native-reviewer/offline';reviewer.mkdir(parents=True);(reviewer/'usage.json').write_text('{"fixture":true}');council.dump(self.work/'reviewer-latest.json',dict(receipt=str(reviewer/'usage.json'),run_ids=[run['run_id']]))
+        from test_official_review import completed_fixture
+        completed_fixture(self.config,[run['run_id']])
         receipt=self.call('finish',report=str(report))
         self.assertEqual(receipt['run_ids'],[run['run_id']])
         self.assertEqual(json.loads((self.work/'native-completion.json').read_text())['job_id'],self.job['id'])
+    def test_negative_original_round_must_continue_instead_of_finishing(self):
+        run=self.experiment();self.wait_run(run['run_id'])
+        council.dump(self.work/'advice-results.json',dict(run_ids=[run['run_id']]))
+        from test_official_review import completed_fixture
+        completed_fixture(self.config,[run['run_id']],score=4,verdict='not ready')
+        report=self.work/'NARRATIVE_REPORT.md';report.write_text('OFFLINE incomplete review')
+        with self.assertRaisesRegex(ValueError,'continue.*1/4'):self.call('finish',report=str(report))
+        self.assertFalse((self.work/'native-completion.json').exists())
+        completed_fixture(self.config,[run['run_id']],number=4,score=4,verdict='not ready')
+        self.assertEqual(self.call('finish',report=str(report))['official_review']['outcome'],'max_rounds_unresolved')
+
+    def test_result_review_metadata_is_required_before_spending_and_receipts_are_returned(self):
+        run=self.experiment();self.wait_run(run['run_id'])
+        with patch('native_pipeline.council.codex_call',side_effect=AssertionError('No model call for missing original run/round')):
+            with self.assertRaisesRegex(ValueError,'review_run_id'):self.host.execute('codex',dict(prompt='OFFLINE review'))
+        def model(folder,prompt,*args):
+            folder.mkdir(parents=True);council.dump(folder/'usage.json',dict(fixture=True,thread_id='OFFLINE-original-thread'))
+            value=dict(score=4,verdict='not ready',review='OFFLINE reviewer')
+            council.dump(folder/'response.txt',value);return value
+        with patch('native_pipeline.council.codex_call',side_effect=model):
+            value=self.host.execute('codex',dict(prompt='OFFLINE original review',review_run_id='OFFLINE-round',review_round=1))
+        self.assertEqual(value['threadId'],'OFFLINE-original-thread')
+        value=self.host.execute('helper',dict(name='review_gate.py',args=['--round-backend','codex','--score','4','--verdict','not ready']))
+        self.assertEqual(json.loads(value['stdout'])['decision'],'continue')
+
     def test_successful_skill_receipts_are_reused_only_in_the_same_automatic_session(self):
         from native_pipeline import session_skill_receipts
         resumed={**self.config,'id':'resumed-job'}

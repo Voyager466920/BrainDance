@@ -37,6 +37,18 @@ def main():
         probe.write_text('from pathlib import Path\nfrom paper_verification import upstream\nm,d=upstream(Path('+repr(str(helper))+'))\nassert m.PaperInput("OFFLINE").id=="OFFLINE" and len(d)==64\nprint("PACKAGED_VERIFIER_IMPORT_OK")\n')
         checked=subprocess.run([str(executable),'--run-experiment',str(probe)],capture_output=True,text=True,timeout=20)
         assert checked.returncode==0 and 'PACKAGED_VERIFIER_IMPORT_OK' in checked.stdout,checked.stderr
+        # Exercise the installed ORIGINAL gate in the frozen runtime when available.
+        # This is deterministic CPU validation, not a live model/experiment claim.
+        upstream=Path.home()/'aris_repo/tools/review_gate.py'
+        if upstream.is_file():
+            import hashlib
+            before=hashlib.sha256(upstream.read_bytes()).hexdigest()
+            for score,verdict,decision in [('4','not ready','continue'),('8','not ready','continue'),('6','almost','stop')]:
+                gate=subprocess.run([str(executable),'--run-experiment',str(upstream),'--round-backend','codex','--score',score,'--verdict',verdict],capture_output=True,text=True,timeout=20)
+                assert gate.returncode==0,gate.stderr
+                assert json.loads(gate.stdout)['decision']==decision,gate.stdout
+            assert hashlib.sha256(upstream.read_bytes()).hexdigest()==before
+            print('PACKAGED_ORIGINAL_ARIS_GATE_OK')
         with socket.socket() as sock:sock.bind(('127.0.0.1',0));port=sock.getsockname()[1]
         address='http://127.0.0.1:'+str(port)
         def get(path):

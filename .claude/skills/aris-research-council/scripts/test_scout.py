@@ -122,8 +122,8 @@ class ScoutPilotTests(unittest.TestCase):
         receipt=self.wait_run(run['run_id'])
         return run,receipt
     def reviewer(self,run):
-        p=Path(self.job['run_dir'])/'native-reviewer/fixture/usage.json';p.parent.mkdir(parents=True,exist_ok=True);p.write_text('{"fixture":true}')
-        (self.work/'reviewer-latest.json').write_text(json.dumps(dict(run_ids=[run['run_id']],receipt=str(p))))
+        from test_official_review import completed_fixture
+        completed_fixture(self.config,[run['run_id']])
     def test_local_report_save_remains_available_after_model_budget_exhaustion(self):
         run,receipt=self.pilot(False);self.reviewer(run)
         trace=Path(self.job['run_dir'])/'native.stdout.jsonl'
