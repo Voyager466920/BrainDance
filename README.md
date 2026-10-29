@@ -189,9 +189,37 @@ BrainDance can send completed-study summaries directly to your personal Slack DM
 
 Notifications are sent when each hypothesis study finishes its report, including a documented pre-experiment rejection, rather than waiting for the whole project deadline. The background sender checks every three seconds; a matching Notion report may add up to three minutes, plus any delivery queue or Slack rate-limit delay. Rejection DMs explicitly say no experiment or measurement was performed.
 
-Create a Slack app from [the included manifest](.claude/skills/aris-research-council/assets/slack-app-manifest.json), grant its bot **chat:write** and **im:write**, and install it in your workspace. Copy its **Bot User OAuth Token** and your own **member ID** from your Slack profile. In the terminal, open `/slack` (or Settings → Slack DM), enter your member ID and the token in the hidden field, and save. Saving checks authentication and opens the personal bot DM; it sends no test message. The **테스트 DM** button explicitly sends a test. This local background integration is separate from the Codex chat's Slack connection and keeps its token in a private file on your Mac, never in Git, research prompts or result reports.
+Create a Slack app from [the included manifest](.claude/skills/aris-research-council/assets/slack-app-manifest.json), grant its bot **chat:write** and **im:write**, and install it in your workspace. The included manifest also enables the optional DM-command setup below. Copy its **Bot User OAuth Token** and your own **member ID** from your Slack profile. In the terminal, open `/slack` (or Settings → Slack DM), enter your member ID and the token in the hidden field, and save. Saving checks authentication and opens the personal bot DM; it sends no test message. The **테스트 DM** button explicitly sends a test. This local background integration is separate from the Codex chat's Slack connection and keeps its token in a private file on your Mac, never in Git, research prompts or result reports.
 
 Slack is a **global connection for all projects**, including projects created later. No project needs to exist or be selected for `/slack`, setup, status, test DM or disconnect. Each completed-study DM names its project; archived projects and discovery-only jobs are skipped. One-shot commands are `braindance slack setup --member U…`, `slack status`, `slack test` and `slack disconnect`. Only `slack send --project "My project"`, which manually sends a particular project's retained results, needs a project selector. Token input is hidden; scripts can explicitly use `--token-stdin --member U…`. Automatic notifications begin with results completed after connection; reconnecting or changing the recipient does not replay disconnected-period history. Existing credentials and delivery records survive the upgrade from project subscriptions. Slack settings never resume stopped research.
+
+## Personal Slack DM commands
+
+The local backend can receive your DM through Slack's official Python SDK and Socket Mode. It opens an outbound WebSocket, so no public HTTP event port is required. Keep the Mac and backend running to receive commands. Existing result notifications remain separate from the optional incoming connection.
+
+Configure the **same BrainDance Slack app** used for notifications:
+
+1. In **OAuth & Permissions**, add the bot scope **im:history**, then reinstall the app in the workspace. Keep **chat:write** and **im:write**. If Slack changes the `xoxb-` token, update it in `/slack` first.
+2. Enable **Socket Mode**. Under **Basic Information → App-Level Tokens**, generate an `xapp-` token with **connections:write**.
+3. In **Event Subscriptions**, enable events and subscribe to **message.im**. In **App Home**, enable the Messages tab and allow users to send messages.
+4. Open `/slack → DM 지시` or `/slack remote` in BrainDance. Paste the `xapp-` token in the **hidden** field, enable incoming DMs, and save. The one-shot equivalent is `braindance slack remote-setup`; it also prompts without echoing the token. Never put either token in a chat, command argument, Git or research files.
+5. Send **프로젝트 목록** to the app's personal DM, then **프로젝트 선택 <name or short ID>**. You can also reply directly under a BrainDance result message to use that message's project.
+
+See Slack's [Socket Mode setup](https://docs.slack.dev/apis/events-api/using-socket-mode/), [DM event requirements](https://docs.slack.dev/reference/events/message.im/) and [Python SDK setup](https://docs.slack.dev/tools/python-slack-sdk/socket-mode/). The updated [app manifest](.claude/skills/aris-research-council/assets/slack-app-manifest.json) contains the event, scope and Messages-tab settings; generate the app-level token separately.
+
+| DM text | Behavior |
+| --- | --- |
+| `프로젝트 목록` | List active projects and short IDs. |
+| `프로젝트 선택 My research` | Select a project for new DM conversations. |
+| `상태` / `사용량` | Read the current project state or account allowance. |
+| `중지` / `일시정지` | Stop or pause the selected project. |
+| `재개 2시간 사용량 10%p` | Continue the same research with a fresh two-hour window and ten-percentage-point allowance decrease. |
+| `재개 2시간 보호 끄기` | Explicitly continue using time limits without the allowance guard. |
+| Other natural-language text | Use the existing project conversation and Codex reply worker for questions, direction changes and authorized research actions. |
+
+Only the registered member in the registered bot DM/workspace is accepted; bot, edited and other-user events are ignored. Each Slack conversation thread stays bound to its original project even after you select another project. Instructions and replies share the CLI's project history/session. Control/status commands do not call an LLM; ordinary questions use the existing reply budget and research actions retain their time, device, review and allowance requirements. Duplicate events cannot repeat a continuation. An interrupted control dispatch with an uncertain outcome is held instead of executed again.
+
+Use `braindance slack remote-status` to inspect the connection, `slack remote-off` to disable incoming commands while keeping the app token, or `slack remote-forget` to remove that token. Tokens stay in local private files. Disabling incoming DMs does not undo already accepted research work or disable result notifications.
 
 ## Usage accounting and economy profile
 

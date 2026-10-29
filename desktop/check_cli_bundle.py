@@ -52,6 +52,8 @@ def main():
             # contain the detached server's only copies of GUI/experiment assets.
             assert 'BrainDance' in get('/')
             assert 'code' in json.loads(get('/api/experiment-template'))
+            remote=json.loads(run('slack','remote-status','--json','--db',str(database),'--server',address))
+            assert remote['sdk_available'] and not remote['enabled'] and remote['scope']=='registered_owner_dm_only'
             slack=json.loads(run('slack','status','--json','--db',str(database),'--server',address))
             assert slack['scope']=='all_projects' and not slack['connected']
             notion=json.loads(run('notion','status','--json','--db',str(database),'--server',address))
@@ -62,6 +64,8 @@ def main():
             saved=json.loads(run('interests','--project',project['project_id'],'--json','--db',str(database),'--server',address));assert saved==interests
             status=json.loads(run('status','--project',project['project_id'],'--json','--db',str(database),'--server',address))
             assert status['session'] is None and not status['runs']
+            remote=json.loads(run('slack','remote-status','--json','--db',str(database),'--server',address))
+            assert remote['sdk_available'] and not remote['enabled'] and remote['scope']=='registered_owner_dm_only'
             slack=json.loads(run('slack','status','--json','--db',str(database),'--server',address))
             assert not slack['connected'] and not slack['enabled'] and not slack['deliveries']
             assert json.loads(get('/api/health'))['pid']==pid

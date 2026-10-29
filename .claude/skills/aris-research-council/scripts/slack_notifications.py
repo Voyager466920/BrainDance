@@ -34,7 +34,10 @@ class SlackAPI:
         if method not in {'auth.test','conversations.open','chat.postMessage'}:raise ValueError('지원하지 않는 Slack 기능입니다.')
         req=urllib.request.Request('https://slack.com/api/'+method,data=json.dumps(payload or {},ensure_ascii=False).encode(),headers={'Authorization':'Bearer '+self.token,'Content-Type':'application/json; charset=utf-8'})
         try:
-            with self.opener.open(req,timeout=15) as response:data=json.load(response)
+            with self.opener.open(req,timeout=15) as response:
+                header=response.headers.get('X-OAuth-Scopes')
+                self.last_scopes=set(v.strip() for v in header.split(',')) if header is not None else None
+                data=json.load(response)
         except urllib.error.HTTPError as error:
             if error.code==429:
                 try:delay=min(3600,max(1,float((error.headers or {}).get('Retry-After','30'))))
@@ -107,7 +110,7 @@ class SlackNotifications:
             if auth.get('user_id')==member_id:raise ValueError('봇 ID 대신 본인의 Slack 멤버 ID를 입력하세요.')
             channel=api.request('conversations.open',dict(users=member_id))['channel']['id']
             if not re.fullmatch(r'D[A-Z0-9]{8,24}',channel):raise ValueError('개인 DM 채널을 확인하지 못했습니다.')
-            record=dict(token=token,member_id=member_id,channel=channel,team=auth.get('team'),team_id=auth.get('team_id'))
+            record=dict(token=token,member_id=member_id,channel=channel,team=auth.get('team'),team_id=auth.get('team_id'),bot_user_id=auth.get('user_id'))
             fd,name=tempfile.mkstemp(dir=self.root,prefix='.slack-');os.fchmod(fd,0o600)
             with os.fdopen(fd,'w') as stream:json.dump(record,stream)
             os.replace(name,self.secret)
@@ -162,6 +165,15 @@ class SlackNotifications:
         with self.connect() as c:
             c.execute('INSERT OR IGNORE INTO deliveries VALUES(?,?,?,?,?,?,?,?,?,?,?)',(identity,'' if test else project_id,event_key,'queued',json.dumps(payload,ensure_ascii=False),creds['channel'],now(),now(),0,None,None))
             return dict(c.execute('SELECT id,state FROM deliveries WHERE event_key=?',(event_key,)).fetchone())
+    def enqueue_remote(self,project_id,event_key,text,thread_ts,generation):
+        creds=self.credentials()
+        if not creds:raise ValueError('Slack 봇 연결이 없습니다.')
+        payload=dict(channel=creds['channel'],text=escape(text,6500),thread_ts=thread_ts,unfurl_links=False,unfurl_media=False,_remote_reply=True,_remote_generation=generation)
+        identity=str(uuid.uuid4())
+        with self.connect() as c:
+            c.execute('INSERT OR IGNORE INTO deliveries VALUES(?,?,?,?,?,?,?,?,?,?,?)',(identity,project_id or '',event_key,'queued',json.dumps(payload,ensure_ascii=False),creds['channel'],now(),now(),0,None,None))
+            return dict(c.execute('SELECT id,state FROM deliveries WHERE event_key=?',(event_key,)).fetchone())
+
     def tick(self):
         settings=self.settings()
         if not self.credentials() or not settings['enabled']:return
@@ -192,11 +204,14 @@ class SlackNotifications:
                 with self.connect() as c:c.execute("UPDATE deliveries SET state='cancelled',error='Slack 연결 대상이 변경되었습니다.' WHERE id=?",(row['id'],))
                 return
             payload=json.loads(row['payload'])
-            connection_test=payload.get('_connection_test',False)
-            if not connection_test and not self.settings()['enabled']:
+            connection_test=payload.get('_connection_test',False);remote=payload.get('_remote_reply',False)
+            if remote and not getattr(self,'remote_reply_guard',lambda value:False)(payload.get('_remote_generation')):
+                with self.connect() as c:c.execute("UPDATE deliveries SET state='cancelled',error='DM 지시 연결이 변경되었습니다.' WHERE id=?",(row['id'],))
+                return
+            if not connection_test and not remote and not self.settings()['enabled']:
                 with self.connect() as c:c.execute("UPDATE deliveries SET state='cancelled',error='전체 프로젝트 자동 알림이 꺼졌습니다.' WHERE id=?",(row['id'],))
                 return
-            if not connection_test:
+            if not connection_test and (not remote or row['project_id']):
                 try:project_data(self.store,row['project_id'])
                 except (ValueError,KeyError):
                     with self.connect() as c:c.execute("UPDATE deliveries SET state='cancelled',error='프로젝트 기록을 확인할 수 없어 알림을 중지했습니다.',updated_at=? WHERE id=?",(now(),row['id']))
@@ -215,6 +230,9 @@ class SlackNotifications:
             try:
                 response=SlackAPI(creds['token']).request('chat.postMessage',payload)
                 with self.connect() as c:c.execute("UPDATE deliveries SET state='sent',ts=?,updated_at=?,error=NULL WHERE id=?",(response['ts'],now(),row['id']))
+                if row['project_id'] and getattr(self,'on_sent',None):
+                    try:self.on_sent(response['ts'],row['project_id'])
+                    except Exception:pass # The durable delivery receipt also resolves thread ownership.
             except ValueError as error:
                 if not isinstance(error,SlackError):
                     with self.connect() as c:c.execute("UPDATE deliveries SET state='cancelled',error='프로젝트 기록을 확인할 수 없어 알림을 중지했습니다.',updated_at=? WHERE id=?",(now(),row['id']))

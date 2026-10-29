@@ -14,6 +14,7 @@ from urllib.parse import urlsplit, parse_qs, quote
 
 from tree_store import TreeStore
 from provider_status import ProviderStatus
+from slack_remote import SlackRemote
 from compute import ComputeSettings
 from experiments import ExperimentEngine
 from project_cleanup import ProjectCleanup
@@ -52,8 +53,10 @@ class ViewerServer(ThreadingHTTPServer):
             self.chat.publications=self.publications
             self.notifications=SlackNotifications(store,self.publications)
             self.notifications.quota_snapshot=self.provider_status.report_snapshot
+            self.remote=SlackRemote(store,self.notifications,self.chat,self.autopilot,self.provider_status.report_snapshot)
             self.cleanup=ProjectCleanup(store,self.experiments,self.compute,self.research)
         except Exception:
+            if hasattr(self,'remote'):self.remote.close()
             if hasattr(self,'notifications'):self.notifications.close()
             if hasattr(self,'publications'):self.publications.close()
             if hasattr(self,'chat'):self.chat.close()
@@ -64,6 +67,7 @@ class ViewerServer(ThreadingHTTPServer):
             raise
 
     def server_close(self):
+        if hasattr(self,'remote'):self.remote.close()
         if hasattr(self,'notifications'):self.notifications.close()
         if hasattr(self,'publications'):self.publications.close()
         if hasattr(self,'chat'):self.chat.close()
@@ -119,7 +123,7 @@ class ViewerHandler(BaseHTTPRequestHandler):
             return
         path = urlsplit(self.path).path
         if path == '/api/health':
-            self._reply(200, {'app': 'BrainDance', 'version': '0.19.10', 'pid': os.getpid(),
+            self._reply(200, {'app': 'BrainDance', 'version': '0.19.11', 'pid': os.getpid(),
                              'workspace_id': hashlib.sha256(str(Path(self.server.store.db_path).resolve()).encode()).hexdigest()})
         elif path=='/api/slack':
             self._reply(200,self.server.notifications.state())
@@ -151,6 +155,8 @@ class ViewerHandler(BaseHTTPRequestHandler):
             except (ValueError,OSError) as error:self._reply(400,{'error':str(error)})
         elif path == '/api/tree':
             self._reply(200, self.server.store.export_json())
+        elif path == '/api/slack/remote':
+            self._reply(200,self.server.remote.state())
         elif path == '/api/providers':
             self._reply(200, self.server.provider_status.get())
         elif path == '/api/compute':
@@ -305,9 +311,19 @@ class ViewerHandler(BaseHTTPRequestHandler):
             result=self.server.autopilot.control(payload)
         elif path=='/api/slack/configure':
             if set(payload)-{'project_id','member_id','token','enabled'}:raise ValueError('Slack 연결 항목을 확인하세요.')
+            from slack_remote import target_key
+            old_target=target_key(self.server.notifications.credentials())
             result=self.server.notifications.configure(**payload)
+            if old_target!=target_key(self.server.notifications.credentials()):self.server.remote.disable()
+        elif path=='/api/slack/remote/configure':
+            if set(payload)-{'app_token','enabled'}:raise ValueError('DM 지시 연결 항목을 확인하세요.')
+            result=self.server.remote.configure(**payload)
+        elif path=='/api/slack/remote/disconnect':
+            if payload:raise ValueError('Expected empty object')
+            result=self.server.remote.disable(forget=True)
         elif path=='/api/slack/disconnect':
             if payload:raise ValueError('Expected empty object')
+            self.server.remote.disable()
             result=self.server.notifications.disconnect()
         elif path=='/api/slack/send':
             if set(payload)-{'project_id','request_id','test'} or not isinstance(payload.get('request_id'),str) or len(payload['request_id'])>80:raise ValueError('전송 대상을 확인하세요.')

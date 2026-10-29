@@ -1,14 +1,34 @@
 {
   "display_information": {
     "name": "BrainDance",
-    "description": "Personal research result notifications",
+    "description": "Personal research reports and private DM research control",
     "background_color": "#162125"
   },
   "features": {
-    "bot_user": {"display_name": "BrainDance", "always_online": false}
+    "bot_user": {
+      "display_name": "BrainDance",
+      "always_online": false
+    },
+    "app_home": {
+      "messages_tab_enabled": true,
+      "messages_tab_read_only_enabled": false
+    }
   },
   "oauth_config": {
-    "scopes": {"bot": ["chat:write", "im:write"]}
+    "scopes": {
+      "bot": [
+        "chat:write",
+        "im:write",
+        "im:history"
+      ]
+    }
   },
-  "settings": {"socket_mode_enabled": false}
+  "settings": {
+    "socket_mode_enabled": true,
+    "event_subscriptions": {
+      "bot_events": [
+        "message.im"
+      ]
+    }
+  }
 }

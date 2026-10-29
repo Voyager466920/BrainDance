@@ -279,7 +279,7 @@ def parser():
     q=sub.add_parser('connection',parents=[common]);q.add_argument('alias');q.add_argument('--name')
     q=sub.add_parser('logs',parents=[common]);q.add_argument('kind',choices=['job','run']);q.add_argument('id')
     q=sub.add_parser('report',parents=[common]);q.add_argument('action',choices=['status','build','open'],default='status',nargs='?')
-    q=sub.add_parser('slack',parents=[common]);q.add_argument('action',choices=['status','setup','send','test','disconnect'],default='status',nargs='?');q.add_argument('--member');q.add_argument('--token-stdin',action='store_true');q.add_argument('--request-id')
+    q=sub.add_parser('slack',parents=[common]);q.add_argument('action',choices=['status','setup','send','test','disconnect','remote-status','remote-setup','remote-off','remote-forget'],default='status',nargs='?');q.add_argument('--member');q.add_argument('--token-stdin',action='store_true');q.add_argument('--request-id');q.add_argument('--app-token-stdin',action='store_true')
     q=sub.add_parser('task',parents=[common]);q.add_argument('action',choices=['stop','resume']);q.add_argument('id')
     q=sub.add_parser('notion',parents=[common]);q.add_argument('action',choices=['status','setup','sync','disconnect'],default='status',nargs='?');q.add_argument('--parent');q.add_argument('--auto',action=argparse.BooleanOptionalAction,default=None)
     for name in ['new','auto','scout']:
@@ -322,6 +322,14 @@ def dispatch(client,args,project=None):
     if command=='connection':return client.request('/api/compute/profile',dict(name=args.name or args.alias,kind='ssh',host=args.alias,user='',port=None,identity_file=''))
     if command=='devices':return client.request('/api/compute/probe',dict(profile_id=profile_for(client,args.profile)['id']))
     if command=='slack':
+        if args.action=='remote-status':return client.request('/api/slack/remote')
+        if args.action=='remote-off':return client.request('/api/slack/remote/configure',dict(enabled=False))
+        if args.action=='remote-forget':return client.request('/api/slack/remote/disconnect',{})
+        if args.action=='remote-setup':
+            import getpass
+            if not sys.stdin.isatty() and not args.app_token_stdin:raise ClientError('/slack remote 숨김 입력 또는 --app-token-stdin을 사용하세요.')
+            token=sys.stdin.read().strip() if args.app_token_stdin else getpass.getpass('Slack App-Level Token(xapp-, 숨김): ').strip()
+            return client.request('/api/slack/remote/configure',dict(app_token=token,enabled=True))
         if args.action=='status':return client.request('/api/slack')
         if args.action=='disconnect':return client.request('/api/slack/disconnect',{})
         if args.action in {'send','test'}:
@@ -433,6 +441,10 @@ def output(value,args,project=None):
         return
     if getattr(args,'json',False):print(json.dumps(value,ensure_ascii=False,allow_nan=False));return
     if args.command=='slack':
+        if args.action.startswith('remote-'):
+            print('Slack DM 지시 · '+safe_text(value.get('connection','disabled'))+' · 선택 프로젝트 '+safe_text(value.get('project_title') or '없음'))
+            if value.get('error'):print(safe_text(value['error']))
+            return
         if 'state' in value:print('개인 DM 전송 '+value['state'])
         else:print('Slack 개인 DM '+('연결됨 · '+str(value.get('workspace') or '') if value.get('connected') else '연결 전'));print('전체 프로젝트 자동 결과 알림 '+('ON' if value.get('enabled') else 'OFF'))
         return

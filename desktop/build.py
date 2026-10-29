@@ -23,7 +23,7 @@ def copy_notices(resources):
     for notice in (ROOT/'desktop/licenses').glob('*'):
         shutil.copy2(notice,notices/notice.name)
     shutil.copy2(Path(sys.base_prefix)/'lib'/('python'+str(sys.version_info.major)+'.'+str(sys.version_info.minor))/'LICENSE.txt',notices/'Python-LICENSE.txt')
-    for package in ['certifi','pyinstaller','prompt-toolkit','wcwidth','matplotlib','numpy','pillow','contourpy','cycler','fonttools','kiwisolver','packaging','pyparsing','python-dateutil','six','tzdata','requests','urllib3','idna','charset_normalizer']:
+    for package in ['certifi','pyinstaller','prompt-toolkit','wcwidth','matplotlib','numpy','pillow','contourpy','cycler','fonttools','kiwisolver','packaging','pyparsing','python-dateutil','six','tzdata','requests','urllib3','idna','charset_normalizer','slack-sdk']:
         distribution=metadata.distribution(package)
         selected=[f for f in distribution.files if f.name.upper().startswith(('LICENSE','COPYING','NOTICE')) and f.suffix not in {'.py','.pyc'}]
         if not selected:raise RuntimeError('Missing dependency license: '+package)

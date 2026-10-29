@@ -27,7 +27,7 @@ class TerminalTests(unittest.TestCase):
         self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
         self.db=Path(self.temp.name)/'tree.sqlite3'
         # Disable just the model dispatchers, retaining the real APIs/store/runner.
-        self.patches=[patch('provider_status.ProviderStatus.report_snapshot',return_value={'providers':[]}),patch('research_chat.ResearchChat._loop',return_value=None),patch('autopilot.Autopilot._loop',return_value=None)]
+        self.patches=[patch('slack_remote.SlackRemote.loop',return_value=None),patch('slack_remote.SlackRemote.socket_loop',return_value=None),patch('provider_status.ProviderStatus.report_snapshot',return_value={'providers':[]}),patch('research_chat.ResearchChat._loop',return_value=None),patch('autopilot.Autopilot._loop',return_value=None)]
         for p in self.patches:p.start();self.addCleanup(p.stop)
         self.server=create_server(self.db,0)
         self.thread=threading.Thread(target=self.server.serve_forever,daemon=True);self.thread.start()

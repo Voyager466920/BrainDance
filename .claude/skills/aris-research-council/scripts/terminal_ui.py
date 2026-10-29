@@ -562,7 +562,10 @@ class ResearchTerminal:
         elif command in {'gpt','claude'}:self.provider_dialog('GPT' if command=='gpt' else 'Claude')
         elif command=='ssh':self.ssh_dialog()
         elif command=='gpu':self.resource_dialog()
-        elif command=='slack':await self.slack_dialog()
+        elif command=='slack':
+            if words[1:] in (['remote'],['remote-setup']):await self.slack_remote_dialog()
+            elif len(words)==1:await self.slack_dialog()
+            else:raise ClientError('/slack 또는 /slack remote를 사용하세요.')
         elif command=='notion':
             if len(words)>1 and words[1]=='sync':await self.report_action(True)
             else:await self.notion_dialog()
@@ -843,7 +846,21 @@ class ResearchTerminal:
         async def disconnect():
             await self.call(self.client.request,'/api/slack/disconnect',{});token.text='';self.close_dialog();self.notice='Slack 개인 DM 연결을 해제했습니다.'
         recent='\n'.join(d['state']+(' · '+d['error'] if d.get('error') else '') for d in state.get('deliveries',[])[:3])
-        self.dialog('Slack · 전체 프로젝트 개인 DM 알림',HSplit([Label('연결됨 · '+str(state.get('workspace') or '') if state['connected'] else 'Slack 봇 연결 전'),Label('한 번 연결하면 기존·새 프로젝트의 새 연구 결과를 모두 받습니다.'),Label('본인 멤버 ID · 프로필에서 멤버 ID 복사'),member,Label('Bot User OAuth Token · 숨김 입력 · 기존 토큰 유지 시 비우기'),token,Label('봇 권한: chat:write, im:write · 토큰은 이 Mac에만 저장합니다.'),Label('보고서·그래프 링크 포함 · 추가 LLM 호출 없음'),Label(recent)]),[('연결 저장',lambda:self.spawn(save())),('테스트 DM',lambda:self.spawn(test())),('연결 해제',lambda:self.spawn(disconnect())),('닫기',self.close_dialog)],member)
+        self.dialog('Slack · 전체 프로젝트 개인 DM 알림',HSplit([Label('연결됨 · '+str(state.get('workspace') or '') if state['connected'] else 'Slack 봇 연결 전'),Label('한 번 연결하면 기존·새 프로젝트의 새 연구 결과를 모두 받습니다.'),Label('본인 멤버 ID · 프로필에서 멤버 ID 복사'),member,Label('Bot User OAuth Token · 숨김 입력 · 기존 토큰 유지 시 비우기'),token,Label('봇 권한: chat:write, im:write · 토큰은 이 Mac에만 저장합니다.'),Label('보고서·그래프 링크 포함 · 추가 LLM 호출 없음'),Label(recent)]),[('연결 저장',lambda:self.spawn(save())),('DM 지시',lambda:self.spawn(self.slack_remote_dialog())),('테스트 DM',lambda:self.spawn(test())),('연결 해제',lambda:self.spawn(disconnect())),('닫기',self.close_dialog)],member)
+
+    async def slack_remote_dialog(self):
+        state=await self.call(self.client.request,'/api/slack/remote')
+        token=TextArea(multiline=False,password=True)
+        enabled=self.navigable_list(CheckboxList([('on','본인 개인 DM 지시 수신')],default_values=['on'] if state['enabled'] or not state['configured'] else []))
+        async def save():
+            await self.call(self.client.request,'/api/slack/remote/configure',dict(app_token=token.text.strip(),enabled=bool(enabled.current_values)))
+            token.text='';self.close_dialog();self.notice='Slack DM 지시 수신 설정을 저장했습니다. 연결 상태는 /slack remote에서 확인하세요.'
+        async def forget():
+            await self.call(self.client.request,'/api/slack/remote/disconnect',{});token.text='';self.close_dialog();self.notice='DM 지시 연결을 해제했습니다. 결과 알림 설정은 유지합니다.'
+        def guide():
+            self.text_dialog('Slack DM 연결 안내','기존 BrainDance Slack 앱에서 설정합니다.\n1. OAuth & Permissions: im:history 추가 후 워크스페이스 재설치\n2. Socket Mode: Enable Socket Mode 켜기\n3. Basic Information → App-Level Tokens: connections:write 권한으로 xapp- 토큰 생성\n4. Event Subscriptions: message.im 구독\n5. App Home: Messages Tab 및 메시지 보내기 허용\n6. 이 화면에 xapp- 토큰을 숨김 입력하고 저장\n봇 토큰이 바뀌면 /slack에서 xoxb- 토큰도 갱신하세요.\n연결 후 개인 DM에 프로젝트 목록을 보내세요.')
+        label={'connected':'연결됨','connecting':'연결 중','retrying':'재연결 대기','disabled':'수신 꺼짐'}.get(state['connection'],state['connection'])
+        self.dialog('Slack · 개인 DM 지시',HSplit([Label('Socket Mode · '+label),Label(state.get('error') or '본인 UID·등록된 DM만 허용합니다.'),Label('기존 봇 연결(xoxb-) 외에 App-Level Token이 필요합니다.'),Label('App-Level Token · xapp- · 숨김 입력 · 비우면 기존 값 유지'),token,Box(enabled,height=1,padding=0),Label('선택 프로젝트: '+str(state.get('project_title') or 'DM에서 프로젝트 선택')),Label('토큰은 로컬에만 저장하며 대화·Git에 포함하지 않습니다.')]),[('저장',lambda:self.spawn(save())),('연결 해제',lambda:self.spawn(forget())),('설정 안내',guide),('닫기',self.close_dialog)],token)
 
     async def notion_dialog(self):
         state=await self.call(self.client.request,'/api/notion')

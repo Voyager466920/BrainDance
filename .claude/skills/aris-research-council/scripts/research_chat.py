@@ -115,7 +115,7 @@ class ResearchChat:
         if source['project_id']!=project_id:raise ValueError('다른 프로젝트의 문제에는 답글을 보낼 수 없습니다.')
         return dict(type=kind,id=identity,title=title,message=message[:6000])
 
-    def send(self,payload):
+    def send(self,payload,*,origin=None,direct_reply=None):
         if set(payload)-{'node_id','content','mode','request_id','reply_to'} or not {'node_id','content','mode','request_id'}<=set(payload):raise ValueError('메시지·반영 방식·요청 ID를 확인하세요.')
         node=self.store.get_node(payload['node_id']);content=payload['content'];mode=payload['mode'];request_id=payload['request_id']
         if not isinstance(content,str) or not content.strip() or len(content)>6000:raise ValueError('메시지는 1–6000자로 입력하세요.')
@@ -130,12 +130,14 @@ class ResearchChat:
                 reference=lambda item:(item['type'],item['id']) if item else None
                 if old['node_id']!=node['id'] or previous['content']!=content.strip() or old_meta['mode']!=mode or reference(old_reply)!=reference(reply_to):raise ValueError('같은 요청 ID의 메시지 내용이 바뀌었습니다.')
                 return self.decode(old)
-            if conn.execute("SELECT count(*) FROM research_chat WHERE project_id=? AND state IN ('queued','running')",(node['project_id'],)).fetchone()[0]>=4:raise ValueError('답변 대기 메시지가 많습니다. 진행 중인 답변을 기다려 주세요.')
+            if direct_reply is None and conn.execute("SELECT count(*) FROM research_chat WHERE project_id=? AND state IN ('queued','running')",(node['project_id'],)).fetchone()[0]>=4:raise ValueError('답변 대기 메시지가 많습니다. 진행 중인 답변을 기다려 주세요.')
             revision=steering.snapshot(self.store,node['project_id'])['revision']
             metadata=dict(mode=mode,direction_revision_at_send=revision)
+            if origin is not None:metadata['origin']=origin
+            if direct_reply is not None:metadata.update(reply_model_calls=0,intent=direct_reply.get('intent','question'))
             if reply_to:metadata['reply_to']=reply_to
             timestamp=now();reply_id=str(uuid.uuid4())
-            for role,text,state,msg_id in [('user',content.strip(),'completed',str(uuid.uuid4())),('assistant','','preparing' if mode in {'next','restart'} else 'queued',reply_id)]:
+            for role,text,state,msg_id in [('user',content.strip(),'completed',str(uuid.uuid4())),('assistant',direct_reply['reply'] if direct_reply is not None else '', 'completed' if direct_reply is not None else 'preparing' if mode in {'next','restart'} else 'queued',reply_id)]:
                 conn.execute('INSERT INTO research_chat(id,project_id,node_id,role,content,state,request_id,metadata,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)',
                     (msg_id,node['project_id'],node['id'],role,text,state,request_id,json.dumps(metadata),timestamp,timestamp))
         # Explicit direction controls take effect immediately, without waiting for a reply.

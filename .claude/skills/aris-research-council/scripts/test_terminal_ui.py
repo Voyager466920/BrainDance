@@ -83,6 +83,20 @@ class TerminalUITests(unittest.TestCase):
             ui.close_dialog()
         self.scenario(exercise)
 
+    def test_slack_remote_setup_is_global_and_uses_a_hidden_app_token_field(self):
+        token='xapp-OFFLINE-ui-hidden-app-token'
+        async def exercise(ui,pipe):
+            ui.project=None
+            with patch.object(self.server.remote,'configure',return_value=self.server.remote.state()) as configure:
+                await ui.slash('/slack remote');fields=self.editable_fields(ui);self.assertEqual(len(fields),1)
+                fields[0].text=token;ui.app._redraw()
+                screen=ui.app.renderer._last_screen
+                rendered=''.join(cell.char for line in screen.data_buffer.values() for cell in line.values())
+                self.assertNotIn(token,rendered);ui.modal_buttons[-1][0].handler()
+                await self.wait_until(lambda:not ui.modals)
+                configure.assert_called_once_with(app_token=token,enabled=True)
+        self.scenario(exercise)
+
     def test_notion_dialog_opens_without_a_selected_project(self):
         async def exercise(ui,pipe):
             ui.project=None
