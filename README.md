@@ -20,6 +20,8 @@ A local research workspace that explores papers, develops and reviews hypotheses
 
 Brand icon: [horizontal BD monogram](assets/branding/braindance-cyberpunk-icon-v3.png).
 
+Guides: [Slack setup and DM commands](docs/slack.md) · [Add a small experiment](docs/experiment-requests.md) · [Release notes](CHANGELOG.md).
+
 ## Install the standalone CLI
 
 Download `BrainDance-cli-macOS-arm64.zip` and `SHA256SUMS.txt` from [Releases](https://github.com/Voyager466920/BrainDance/releases/latest). Verify the archive checksum, unzip it, and install independently of the desktop app:
@@ -40,7 +42,9 @@ codex login
 claude auth login
 ```
 
-The main autonomous pipeline, its nested research Skills, and its original independent Reviewer reuse [ARIS](https://github.com/wanshuiyin/Auto-claude-code-research-in-sleep); Council adds advice after idea discovery and after measured results while the official pipeline drives implementation, experiments and review iterations. Follow its official prerequisite instructions and install the checkout at `~/.local/share/BrainDance/research-engine`.
+The research engine reuses the official [ARIS](https://github.com/wanshuiyin/Auto-claude-code-research-in-sleep) pipeline, Skills and independent Reviewer.
+
+Follow the upstream prerequisite instructions and install its checkout at `~/.local/share/BrainDance/research-engine`. Council adds advice around discovery and measured results; the official pipeline drives implementation, experiments and review iterations.
 
 GPU frameworks, models and datasets belong on the selected local/SSH target. Selecting a device does not reserve it against other software. Tasks use the authenticated CLI accounts and their usage. The optional app/browser UI shares the same project settings and backend; building the native app is optional. Build a standalone executable using `python3 desktop/build_cli.py` after installing `desktop/requirements-build.txt`.
 
@@ -58,7 +62,7 @@ The default terminal is a mouse-enabled workspace with seven bottom tabs: **대�
 - Ideas include paper evidence, novelty, feasibility and Council evaluations. Plans include proposed designs, registered execution plans and a read-only code viewer. Experiments include both live runs and retained results. New-project setup selects the target, devices and runtime before saving.
 - Slash commands focus on setup: `/settings`, `/gpt`, `/claude`, `/ssh`, `/gpu`, `/projects`, `/new`, and `/help`. Type `/exit` and press Enter to close the CLI, even while a message is being submitted; `/quit` remains an alias. Typing `/` opens completion suggestions. Account controls invoke the existing official CLI login flow only when you choose Login; credentials are not placed in research messages.
 
-The terminal uses the app's existing local API, conversation stream, project Codex session, target selection, and budgets. GUI and terminal messages and research reports are shared. Model-backed replies consume connected-account usage and the existing session budget. Closing the terminal with Ctrl+Q or `/exit` disconnects the view without cancelling server work. `braindance --plain` retains the earlier line-oriented console and its `/use`, `/ask`, `/history`, `/reply`, `/auto`, and `/limits` commands.
+The terminal uses the app's existing local API, conversation stream, project Codex session, target selection, and budgets. GUI and terminal messages and research reports are shared. Model-backed replies consume connected-account usage under a separate per-reply budget; research actions still use the project’s execution limits. Closing the terminal with Ctrl+Q or `/exit` disconnects the view without cancelling server work. `braindance --plain` retains the earlier line-oriented console and its `/use`, `/ask`, `/history`, `/reply`, `/auto`, and `/limits` commands.
 
 The shared input sits in a fixed green frame at the very bottom, with navigation hints above it. List/detail views use separate blue-toned list panels, darker detail panels, labelled borders, and a highlighted selection; the same boundaries remain visible without color. Scrolling a record never moves the input or edits its draft.
 
@@ -167,7 +171,7 @@ Use natural commands such as **서버와 기존 코드를 탐색해줘** to requ
 
 The new-project wizard keeps your draft while moving backward through research settings, hardware, and launch options. The hardware and launch steps provide a **제목·목표** button and **Ctrl+B** shortcut that return directly to the first title/goal screen without losing the draft. Interest and bridge-field lists have no fixed count cap; individual entries are validated before leaving the first step. Per-search paper counts, parallelism and the research deadline still bound execution work. Put the full interdisciplinary research brief in the research goal, and leave bridge fields blank for automatic selection. The existing-code reference folder is optional: use it when you want the selected target's repository inspected; experiment outputs are stored in separate run workspaces.
 
-The target broker indexes repositories fairly and supports bounded source reads, literal searches, file metadata, and static Python-environment metadata checks. It uses the selected local or SSH target and configured research folder. No model-authored shell commands run during exploration; source files are not imported or modified. Actual execution still requires an immutable generated plan, Claude review, matching resource signature, the selected device environment, and the existing time/concurrency/model limits. Requests, exact source excerpts, errors, and model usage receipts are retained. Genuine missing dependencies/data or exhausted limits stop with a concrete report.
+The target broker indexes repositories fairly and supports bounded source reads, literal searches, file metadata, and static Python-environment metadata checks. It uses the selected local or SSH target and configured research folder. No model-authored shell commands run during exploration; source files are not imported or modified. Actual execution still requires an immutable generated plan, Claude review, matching resource signature, the selected device environment, and the existing time/concurrency/model limits. Requests, exact source excerpts, errors, and model usage receipts are retained. Repair attempts stay within the existing limits. Unresolved prerequisites and exhausted limits are reported with retained diagnostics.
 
 At launch, optionally select **사용량 감소 기준으로 중지·정리** and enter a decrease from 1 to 100 percentage points (for example 10, 20 or 30), or use `braindance auto start --hours 8 --quota-drop-percent 20`. This is a **percentage-point decrease from the fresh launch snapshot**: starting at 50% remaining stops at 30%; starting at 80% stops at 60%. The earliest threshold across the GPT/Claude account windows stops research and experiments, blocks new research model reservations, and preserves partial results for reporting. Account allowance is checked about once a minute, so this is a response to provider-reported usage rather than an exact per-token billing cap. Missing/stale readings stop guarded work instead of assuming allowance remains. The original deadline, usage history and project conversation are retained.
 
@@ -185,44 +189,41 @@ Use **한도** (Limits), `/limits`, or `braindance limits --hours 8 --project "M
 
 ## Personal Slack DM result notifications
 
-BrainDance can send completed-study summaries directly to your personal Slack DM without making any extra model calls. Each message uses the retained study problem, method, actual measurements and limitations; a matching Notion report links the full implementation references and charts. With Notion auto-sync enabled, notifications wait briefly for its matching report. Discovery-only progress and every small retry are not sent. Each study is queued once; ambiguous network responses are held for inspection instead of blindly posting duplicate DMs. Known rate limits retry after Slack's delay.
+Connect once in `/slack` to receive results for all existing and future projects in your personal DM. Register your own member ID and the **Bot User OAuth Token (`xoxb-`)** in the hidden field. Reports lead with **성공 / 실패 / 탐색중**, followed by observed results, limitations, remaining account allowance and the matching Notion report link when available. Rendering reports does not call an LLM.
 
-Notifications are sent when each hypothesis study finishes its report, including a documented pre-experiment rejection, rather than waiting for the whole project deadline. The background sender checks every three seconds; a matching Notion report may add up to three minutes, plus any delivery queue or Slack rate-limit delay. Rejection DMs explicitly say no experiment or measurement was performed.
+Notifications follow each completed study or documented pre-experiment rejection, and project stop/expiry after work settles. Discovery progress and every retry do not generate DMs. The sender checks every three seconds; a matching Notion report may add up to three minutes, plus queue/rate-limit delay. A rejection report states that no experiment was performed. Ambiguous sends are retained for inspection rather than blindly repeated.
 
-Create a Slack app from [the included manifest](.claude/skills/aris-research-council/assets/slack-app-manifest.json), grant its bot **chat:write** and **im:write**, and install it in your workspace. The included manifest also enables the optional DM-command setup below. Copy its **Bot User OAuth Token** and your own **member ID** from your Slack profile. In the terminal, open `/slack` (or Settings → Slack DM), enter your member ID and the token in the hidden field, and save. Saving checks authentication and opens the personal bot DM; it sends no test message. The **테스트 DM** button explicitly sends a test. This local background integration is separate from the Codex chat's Slack connection and keeps its token in a private file on your Mac, never in Git, research prompts or result reports.
-
-Slack is a **global connection for all projects**, including projects created later. No project needs to exist or be selected for `/slack`, setup, status, test DM or disconnect. Each completed-study DM names its project; archived projects and discovery-only jobs are skipped. One-shot commands are `braindance slack setup --member U…`, `slack status`, `slack test` and `slack disconnect`. Only `slack send --project "My project"`, which manually sends a particular project's retained results, needs a project selector. Token input is hidden; scripts can explicitly use `--token-stdin --member U…`. Automatic notifications begin with results completed after connection; reconnecting or changing the recipient does not replay disconnected-period history. Existing credentials and delivery records survive the upgrade from project subscriptions. Slack settings never resume stopped research.
+See the [Slack connection guide](docs/slack.md) for scopes, hidden token registration and troubleshooting. Outgoing result notifications and incoming DM commands have separate connection controls.
 
 ## Personal Slack DM commands
 
-The local backend can receive your DM through Slack's official Python SDK and Socket Mode. It opens an outbound WebSocket, so no public HTTP event port is required. Keep the Mac and backend running to receive commands. Existing result notifications remain separate from the optional incoming connection.
+Enable Socket Mode on the **same Slack app**, add `message.im` / `im:history`, allow Messages-tab input, then register an **App-Level Token (`xapp-`, `connections:write`)** through `/slack remote`. Keep the Mac awake and the local backend running. No public event endpoint is needed. Follow the [complete setup](docs/slack.md#connect-slack).
 
-Configure the **same BrainDance Slack app** used for notifications:
+Send each line as a separate DM:
 
-1. In **OAuth & Permissions**, add the bot scope **im:history**, then reinstall the app in the workspace. Keep **chat:write** and **im:write**. If Slack changes the `xoxb-` token, update it in `/slack` first.
-2. Enable **Socket Mode**. Under **Basic Information → App-Level Tokens**, generate an `xapp-` token with **connections:write**.
-3. In **Event Subscriptions**, enable events and subscribe to **message.im**. In **App Home**, enable the Messages tab and allow users to send messages.
-4. Open `/slack → DM 지시` or `/slack remote` in BrainDance. Paste the `xapp-` token in the **hidden** field, enable incoming DMs, and save. The one-shot equivalent is `braindance slack remote-setup`; it also prompts without echoing the token. Never put either token in a chat, command argument, Git or research files.
-5. Send **프로젝트 목록** to the app's personal DM, then **프로젝트 선택 <name or short ID>**. You can also reply directly under a BrainDance result message to use that message's project.
+```text
+프로젝트 목록
+프로젝트 선택 My research
+상태
+새 실험: Compare a smaller KV cache against the existing baseline for accuracy, latency and peak memory.
+```
 
-See Slack's [Socket Mode setup](https://docs.slack.dev/apis/events-api/using-socket-mode/), [DM event requirements](https://docs.slack.dev/reference/events/message.im/) and [Python SDK setup](https://docs.slack.dev/tools/python-slack-sdk/socket-mode/). The updated [app manifest](.claude/skills/aris-research-council/assets/slack-app-manifest.json) contains the event, scope and Messages-tab settings; generate the app-level token separately.
+**Bot replies appear in the thread beneath your message.** Continue in that thread, or reply under an existing result report. Each thread keeps its original project; new top-level DMs use the latest selected project. CLI and Slack share the project history and Codex conversation. Create new projects in the CLI; project creation through Slack is not supported.
 
 | DM text | Behavior |
 | --- | --- |
-| `프로젝트 목록` | List active projects and short IDs. |
-| `프로젝트 선택 My research` | Select a project for new DM conversations. |
-| `상태` / `사용량` | Read the current project state or account allowance. |
-| `새 실험: Compare method A with baseline B` | Add an independent experiment request to the selected/thread project without a model call. |
-| `중지` / `일시정지` | Stop or pause the selected project. |
-| `재개 2시간 사용량 10%p` | Continue the same research with a fresh two-hour window and ten-percentage-point allowance decrease. |
-| `재개 2시간 보호 끄기` | Explicitly continue using time limits without the allowance guard. |
-| Other natural-language text | Use the existing project conversation and Codex reply worker for questions, direction changes and authorized research actions. |
+| `프로젝트 목록` | List projects and short IDs. |
+| `프로젝트 선택 My research` | Select a project by exact name or unambiguous ID prefix for new DM threads. |
+| `상태` / `사용량` | Read project progress or account allowance without an LLM call. |
+| `새 실험: What to verify` | Save an independent experiment request without an LLM call. |
+| `중지` / `일시정지` | Stop the selected project, or pause new work after current work. |
+| `재개 1시간 사용량 10%p` | Continue the same session for one fresh hour; stop after a 10-percentage-point allowance decrease. |
+| `재개 1시간 보호 끄기` | Explicitly continue for one hour without the allowance guard. |
+| Natural-language questions or directions | Use the existing project conversation and Codex reply worker. |
 
-Only the registered member in the registered bot DM/workspace is accepted; bot, edited and other-user events are ignored. Each Slack conversation thread stays bound to its original project even after you select another project. Instructions and replies share the CLI's project history/session. Control/status commands do not call an LLM; ordinary questions use the existing reply budget and research actions retain their time, device, review and allowance requirements. Duplicate events cannot repeat a continuation. An interrupted control dispatch with an uncertain outcome is held instead of executed again.
+`새 실험:` also works in CLI conversation mode `auto`. Requests enter the original study pipeline within the selected devices, remaining time, review and allowance settings. Running work is preserved; stopped/paused/expired projects only save the request until explicit continuation. A project without a research session waits for CLI setup. See [experiment examples and execution states](docs/experiment-requests.md).
 
-To add a small experiment, send `새 실험: <what to verify>` (also `실험 추가:` or `new experiment:`) in a selected project DM or result thread. The same prefix works in CLI conversation mode `auto`. BrainDance saves an unverified hypothesis and durable task, acknowledges it without an LLM call, and runs it through the original study pipeline after current work, within existing device, deadline, review and allowance settings. It does not interrupt the current study or increase limits. Paused/stopped/expired projects only retain the request until explicit continuation; projects without a research session wait for CLI setup. A request ID is idempotent; sending a new message creates a separate task. Novelty and results must still be verified by the original pipeline.
-
-Use `braindance slack remote-status` to inspect the connection, `slack remote-off` to disable incoming commands while keeping the app token, or `slack remote-forget` to remove that token. Tokens stay in local private files. Disabling incoming DMs does not undo already accepted research work or disable result notifications.
+Only the registered owner, workspace, bot and personal DM are accepted. Duplicate events do not repeat a request or continuation. Tokens remain in private local files. Use `braindance slack remote-status` to inspect incoming commands, `braindance slack remote-off` to disable them while keeping the app token, or `braindance slack remote-forget` to remove it. Outgoing notifications remain enabled independently. See [all Slack commands and troubleshooting](docs/slack.md).
 
 ## Usage accounting and economy profile
 
@@ -238,7 +239,7 @@ Normal timed CLI/UI starts use six independent exploratory agents by default: tr
 
 Each hypothesis records potential, provisional novelty, feasibility and falsifiability on a 0–100 scale with rationale. These are subjective judgments, not measured probabilities; unverified novelty remains explicitly provisional. The original independent Reviewer still checks novelty and actual experiments.
 
-Each selected hypothesis becomes a durable task with a unique ID, workspace, native Claude continuation, source files, logs and report. **Every study invokes the unmodified original research-pipeline and its idea-discovery → experiment-bridge → auto-review-loop → summary workflow.** ARIS authors and debugs the real experiment implementation. BrainDance only supplies discovery advice, task routing, the existing execution broker and shared project conversation. A full extra advisory Council is reserved for promising measured results or when useful; negative preliminary studies still retain the original Reviewer and a report.
+Each selected hypothesis becomes a durable task with a unique ID, workspace, native Claude continuation, source files, logs and report. **Every study invokes the unmodified original research-pipeline and its idea-discovery → experiment-bridge → auto-review-loop → summary workflow.** The original executor authors and debugs the real experiment implementation. BrainDance only supplies discovery advice, task routing, the existing execution broker and shared project conversation. A full extra advisory Council is reserved for promising measured results or when useful; negative preliminary studies still retain the original Reviewer and a report.
 
 Authorized distinct GPUs permit concurrent studies; a single selected GPU stays exclusive and studies run sequentially. CPU studies respect the existing concurrency setting. No unselected GPU is used. Failed tasks resume their own workspace with backoff. Completing a study does not end the project: after the selected studies report, broad discovery explores new questions/fields until the same absolute deadline. The original internal review loop is never restarted by a timer. There is no new experiment-count, token or model-call cap.
 
