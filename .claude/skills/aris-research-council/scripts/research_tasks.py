@@ -46,6 +46,7 @@ def stage(server,job,session,node_ids):
         task_id=str(uuid.uuid4());work=root/task_id;work.mkdir(parents=True,mode=0o700)
         for name in ['LITERATURE.md','source-evidence.json','candidate_papers.json']:
             if (source/name).is_file():shutil.copy2(source/name,work/name)
+        if (source/'idea-stage').is_dir():shutil.copytree(source/'idea-stage',work/'idea-stage')
         (work/'HYPOTHESIS.json').write_text(json.dumps(n,ensure_ascii=False,indent=2))
         with server.store._connect() as c:c.execute('INSERT INTO research_tasks VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)',(task_id,session['id'],job['project_id'],n['id'],job['config'].get('native_cycle',0),'queued',None,str(work),'[]',0,0,now(),now(),'공식 연구 파이프라인 실행 대기'))
         server.store.update_node(n['id'],metadata=dict(research_task_id=task_id))

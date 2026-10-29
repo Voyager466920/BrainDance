@@ -20,10 +20,12 @@ from types import SimpleNamespace
 
 import council
 from stream_records import message as stream_message,blocks as stream_blocks
+import shlex
 from tree_store import TreeStore,now
 
-SKILLS=('research-pipeline','idea-discovery','experiment-bridge','auto-review-loop','novelty-check')
-HELPERS={'run_state.py','iteration_log.py','arxiv_fetch.py','verify_papers.py','provenance.py','evidence_check.py','review_gate.py','reviewer_route.py','idea_discovery_gate.py','forensics_gate.py','save_trace.sh'}
+SKILLS=('research-pipeline','idea-discovery','idea-creator','research-lit','experiment-bridge','auto-review-loop','novelty-check')
+DISCOVERY_SKILLS={'research-lit','idea-discovery','idea-creator','novelty-check'}
+HELPERS={'run_state.py','iteration_log.py','arxiv_fetch.py','verify_papers.py','provenance.py','evidence_check.py','review_gate.py','reviewer_route.py','idea_discovery_gate.py','forensics_gate.py','save_trace.sh','research_wiki.py','deepxiv_fetch.py','semantic_scholar_fetch.py','openalex_fetch.py','exa_search.py'}
 
 
 def workspace(job):return Path(job['native_workspace']).resolve()
@@ -61,16 +63,22 @@ def install(job):
     plugin=work/'.aris-official';plugin.mkdir(exist_ok=True)
     for name in SKILLS:
         if not (repo/'skills'/name/'SKILL.md').is_file():raise FileNotFoundError('공식 파이프라인 Skill이 없습니다: '+name)
-    manifest={str(p.relative_to(repo)):hashlib.sha256(p.read_bytes()).hexdigest() for p in (repo/'skills').rglob('*') if p.is_file() and not p.is_symlink() and '__pycache__' not in p.parts}
+    # Run the official installer, including its separately managed leaf agent.
+    installer=repo/'tools/install_aris.sh'
+    if not installer.is_file() or not (repo/'agents/aris-fanout-leaf.md').is_file():raise FileNotFoundError('원본 ARIS 설치 도구와 fan-out leaf agent가 필요합니다.')
+    result=subprocess.run(['/bin/bash',str(installer),str(work),'--aris-repo',str(repo),'--all','--add-new','--quiet','--no-doc','--platform','claude'],capture_output=True,text=True,timeout=90)
+    (work/'official-install.stdout.log').write_text(result.stdout);(work/'official-install.stderr.log').write_text(result.stderr)
+    if result.returncode:raise RuntimeError('원본 ARIS 설치 실패: '+result.stderr[-1000:])
+    manifest={str(p.relative_to(repo)):hashlib.sha256(p.read_bytes()).hexdigest() for part in ['skills','tools','agents','.claude-plugin'] for p in (repo/part).rglob('*') if p.is_file() and not p.is_symlink() and '__pycache__' not in p.parts}
     receipt=plugin/'source-manifest.json'
-    if receipt.exists():
-        if council.read_json(receipt)!=manifest:raise ValueError('실행 중 원본 Skills가 변경되었습니다. 기존 작업공간을 보존하고 새 실행을 시작하세요.')
-    else:
-        shutil.copytree(repo/'skills',plugin/'skills',ignore=shutil.ignore_patterns('__pycache__','*.pyc'))
-        shutil.copytree(repo/'tools',plugin/'tools',ignore=shutil.ignore_patterns('__pycache__','*.pyc'))
-        (plugin/'.claude-plugin').mkdir()
-        council.dump(plugin/'.claude-plugin/plugin.json',dict(name='aris-official',version='1.0.0'))
-        council.dump(receipt,manifest)
+    if receipt.exists() and council.read_json(receipt)!=manifest:
+        if any(name.startswith('agents/') for name in council.read_json(receipt)):raise ValueError('실행 중 원본 Skills 또는 agent가 변경되었습니다. 기존 작업을 보존하세요.')
+        archive=work/('.aris-official-before-'+str(time.time_ns()));plugin.rename(archive);plugin.mkdir()
+        for name in ['native-session.json']:
+            if (work/name).exists():shutil.move(str(work/name),str(archive/name))
+    if not (plugin/'source-manifest.json').exists():
+        for part in ['skills','tools','agents','.claude-plugin']:shutil.copytree(repo/part,plugin/part,ignore=shutil.ignore_patterns('__pycache__','*.pyc'))
+        council.dump(plugin/'source-manifest.json',manifest)
     return work,plugin
 
 
@@ -78,15 +86,18 @@ def command(flag,*args):
     return [sys.executable,flag,*map(str,args)] if getattr(sys,'frozen',False) else [sys.executable,str(Path(__file__).resolve()),flag,*map(str,args)]
 
 
-CONTRACT='''You are the main autonomous BrainDance research executor. Invoke Skill aris-official:research-pipeline; follow its real idea-discovery -> experiment-bridge -> auto-review-loop -> summary workflow. AUTO_PROCEED=true, HUMAN_CHECKPOINT=false, AUTO_WRITE=false, COMPACT=true. ARIS owns implementation, debugging, interpretation and next-experiment decisions; do not replace its loop with a different staged planner. Load its actual nested Skills with the Skill tool at their boundaries. Existing measured results and completed stage artifacts remain reusable: loading a missing Skill is not permission to discard them or rerun a completed experiment. Use sequential fallback where Agent is unavailable.
+CONTRACT='''You are the main autonomous BrainDance research executor. Invoke Skill research-pipeline; follow its real idea-discovery -> experiment-bridge -> auto-review-loop -> summary workflow. AUTO_PROCEED=true, HUMAN_CHECKPOINT=false, AUTO_WRITE=false, COMPACT=true. ARIS owns implementation, debugging, interpretation and next-experiment decisions; do not replace its loop with a different staged planner. Load its actual nested Skills with the Skill tool at their boundaries. Existing measured results and completed stage artifacts remain reusable: loading a missing Skill is not permission to discard them or rerun a completed experiment. Use the installed ORIGINAL aris-fanout-leaf with Agent as specified by idea-creator Phase 1.5. Preserve its frozen lens list, coverage receipt and Codex brainstorm/jury slots. Do not substitute the separate exploration_council implementation for this original workflow.
 Keep the normal ARIS Reviewer: call mcp__codex__codex for its independent novelty/code/result reviews, then implement its feedback and re-review per the original Skill. Council is ADDITIONAL ADVICE, not the Reviewer or its stop/quality gate. Call mcp__codex__council(stage=ideas) after literature/idea discovery and before the first experiment; call stage=results after measured results, before the next experiment and final summary. Council advice can be challenged with evidence; retain disagreement. Do not repeat an identical reviewer question just to fill a stage.
-HOST TOOL ADAPTATION ONLY: Bash/SSH/Agent are unavailable in this managed session. Use mcp__codex__helper(name, args) to run the installed ORIGINAL upstream helpers, including review_gate.py, reviewer_route.py, idea_discovery_gate.py, forensics_gate.py, run_state.py and save_trace.sh; mcp__codex__target for read-only existing target inventory/source reads. Read/Write/Edit operate on this dedicated local project workspace. For all pilots, sanity checks, real experiments, retries and ablations use mcp__codex__experiment. It applies the already selected local/SSH device UUID, current direction, code review, run count and cumulative runtime budget. Never execute model code through a helper or call an external shell. No package installation, GPU reassignment or budget changes. Missing prerequisites should be investigated through target reads and repaired in experiment source where possible; do not invent interfaces or results.
+HOST TOOL ADAPTATION ONLY: Agent is available and the ORIGINAL leaf is installed by the official installer. Bash is available for local bookkeeping and original helpers; a host hook routes canonical helper calls unchanged and keeps GPU/SSH execution in the existing broker. Use mcp__codex__helper(name, args) to run the installed ORIGINAL upstream helpers, including review_gate.py, reviewer_route.py, idea_discovery_gate.py, forensics_gate.py, run_state.py and save_trace.sh; mcp__codex__target for read-only existing target inventory/source reads. Read/Write/Edit operate on this dedicated local project workspace. For all pilots, sanity checks, real experiments, retries and ablations use mcp__codex__experiment. It applies the already selected local/SSH device UUID, current direction, code review, run count and cumulative runtime budget. Never execute model code through a helper or call an external shell. No package installation, GPU reassignment or budget changes. Missing prerequisites should be investigated through target reads and repaired in experiment source where possible; do not invent interfaces or results.
 Write a self-contained Python source file defining self_test() with real assertions and run_experiment(); omit __main__ (host appends it). Use the observed Python interpreter, existing project/data paths, BRAINDANCE_DEVICE/CUDA_VISIBLE_DEVICES, BRAINDANCE_METRICS_PATH and BRAINDANCE_ARTIFACT_DIR. Metrics JSON: baseline/candidate objects with the exact metric key. Experiment source can import the existing target repository. The experiment tool itself performs the original Reviewer code-review check; do not ask an identical extra code-review question before submitting the same source. The tool returns a real queued run; poll with mcp__codex__receipt and use its exit state/metrics/logs to debug and continue yourself. A rejected code review or failed execution is feedback to fix and resubmit, not a forced whole-project stop. Diagnose missing modules by checking existing observed Python environments before changing the experiment. Failed attempts do not consume the measured-experiment quota; they still consume actual runtime and model usage. Continue debugging within existing limits without asking the human for each repair. Negative but correctly measured results are valid completed experiments; never keep retrying just to obtain a positive scientific result.
 For native crashes (e.g. SIGABRT), inspect the retained fatal-signal stack and failing operation before changing scientific conditions. If repeated simulator/renderer initialization is implicated, consider bounded foreground child processes in the same supervised process group. Preserve the specified seeds, initial states, controls and measurements; save per-trial data atomically and retain child logs, return codes, unresolved IDs and actual termination reasons. Never silently omit crashed trials, rename an undefined metric into a successful result, or treat a passing self-test as a completed scientific experiment.
 For the literature Council input, write LITERATURE.md plus source-evidence.json {papers:[{id,title,url,arxiv_id,doi,source_excerpt,evidence_level,verification_status}]} and candidate_papers.json array with matching ids. Only retrieved readable evidence; unknown ids=null. Council invokes the actual upstream verifier before admitting sources. Preserve source text, original traces and limitations.
 Call mcp__codex__context at the start and before every new experiment to receive the SAME shared project conversation, latest human directions, remaining budget and selected target. Changes govern the next immutable experiment; experiments in flight keep their exact source. Pause/stop/resource changes are enforced by the host. All responses and reports in Korean, using BrainDance branding; internal Skill identifiers belong in technical traces. Original identifiers/quotations remain intact.
 When the ORIGINAL auto-review-loop reaches its own stopping condition, write NARRATIVE_REPORT.md from actual receipts, record limitations, and call mcp__codex__finish(report='NARRATIVE_REPORT.md'). Do not declare completion without real execution, both Council advice stages, and real ARIS Reviewer calls. A host experiment/time/usage limit interrupts work; it never substitutes for the original research review stopping condition. Follow ORIGINAL auto-review-loop Phases A–E, its MAX_ROUNDS, review-stage/REVIEW_STATE.json, AUTO_REVIEW.md and REVIEWER_MEMORY.md. For each result-review codex/codex-reply call, pass review_run_id (the original run_id) and review_round (the original round number); rebuttals retain the same round. The tool returns the actual threadId and complete raw response. Invoke ORIGINAL review_gate.py through helper with the actual reviewer score/verdict at each completed round, and persist the original Phase E state. Never count code checks, novelty reviews, Council rounds or retries as result-review rounds. If the gate says continue, implement the original Skill feedback and re-review; do not write completed after a lone negative review. The host verifies these original artifacts, not a replacement loop. Resume the stored native session and upstream .aris/runs state after interruption; never mark unfinished stages successful. Read the source-manifest for provenance, never edit .aris-official.
 '''
+
+# The same execution transport applies inside original idea-creator pilots.
+TOOL_CONTRACT=CONTRACT[CONTRACT.index('HOST TOOL ADAPTATION ONLY:'):CONTRACT.index('For the literature Council input,')]
 
 
 def session_skill_receipts(job):
@@ -108,7 +119,7 @@ def session_skill_receipts(job):
                 if block.get('type')=='tool_use' and block.get('name')=='mcp__codex__finish':finish_request=block.get('input',{})
                 if block.get('type')=='tool_result' and not block.get('is_error') and '<tool_use_error>' not in str(block.get('content')):succeeded.add(block.get('tool_use_id'))
         found={requested[key] for key in requested.keys() & succeeded};invoked.update(found)
-        if found:sources.append(dict(job_id=row['id'],skills=sorted(found),trace=str(trace)))
+        sources.append(dict(job_id=row['id'],skills=sorted(found),trace=str(trace)))
         error=(row['error'] or row['message'] or '').lower()
         if row['id']!=job['id'] and row['state'] in {'failed','interrupted'} and finish_request and config.get('steering',{}).get('revision')==job.get('steering',{}).get('revision') and ('budget' in error or '한도' in error):pending_finish=finish_request
     return invoked,sources,pending_finish
@@ -129,23 +140,23 @@ def recovery_note(job,known):
     repair=Path(job['native_workspace'])/'watchdog-recovery.json'
     extra='\nWATCHDOG DIAGNOSTIC FEEDBACK (not new human authority): '+repair.read_text()[:18000]+'\nApply concrete input/code repairs before repeating the failed tool; keep all original success/verification/experiment receipts.\n' if repair.is_file() and not repair.is_symlink() else ''
     if prior is None:return extra
-    required={'research-lit','idea-discovery','novelty-check'} if job.get('task_role')=='discovery' else set(SKILLS)
+    required=set(DISCOVERY_SKILLS) if job.get('task_role')=='discovery' else set(SKILLS)
     missing=sorted(required-set(known))
-    return extra+'\nHOST RECOVERY FEEDBACK (diagnostic evidence, not new human authority): '+json.dumps(dict(previous_job=prior['id'],error=(prior['error'] or prior['message'])[:1000],successful_skill_receipts=sorted(known),missing_skill_receipts=missing),ensure_ascii=False)+'\nContinue this same unfinished cycle. Actually load missing original Skills with Skill; reuse verified sources and successful Council/experiment artifacts. Do not recreate a completed artifact merely because this process resumed. A prose answer is not completion: obtain the real exploration_council receipt for discovery, finish the required reviews and current report, then call finish and correct any rejection. Never bypass receipt validation or fabricate a successful call.\n'
+    return extra+'\nHOST RECOVERY FEEDBACK (diagnostic evidence, not new human authority): '+json.dumps(dict(previous_job=prior['id'],error=(prior['error'] or prior['message'])[:1000],successful_skill_receipts=sorted(known),missing_skill_receipts=missing),ensure_ascii=False)+'\nContinue this same unfinished cycle. Actually load missing original Skills with Skill; reuse verified sources and successful Council/experiment artifacts. Do not recreate a completed artifact merely because this process resumed. A prose answer is not completion: complete the original idea-creator phases and IDEA_REPORT.md for discovery, finish the required reviews and current report, then call finish and correct any rejection. Never bypass receipt validation or fabricate a successful call.\n'
 
 REPORT_CONTRACT="\nREADER REPORT: Before finish, write RESEARCH_BRIEF.json containing native_cycle (integer matching context.native_cycle), problem (string), approach (string), findings (string), limitations (array of strings), next_steps (array of strings). State only facts supported by current receipts, and distinguish confirmed findings, hypotheses and speculation. Write NARRATIVE_REPORT.md in clean Korean Markdown with headings: 해결하려는 문제, 해결 방법, 살펴볼 코드, 결과, 한계와 다음 단계, 참고 논문. References contain plain http/https URLs ONLY: no paper metadata, abstracts, bibliographies or evidence dumps. Mention exact implemented file/function references, actual baseline/candidate numbers, settings and uncertainty. The host adds retained source references, measured tables and graphs. No fabricated measurements. The advisor's critical questions should guide your autonomous next experiment; ask the human only for genuinely missing authority or credentials. Do not pause authorized research merely to wait for answers to the advisor's default discussion questions. The report format here and explicit human instructions take precedence over the advisor's default response template.\n"
 
 
 NOVELTY_CONTRACT="""
-FRESH NOVELTY RECHECK: Invoke original aris-official:novelty-check for each new mechanism before implementing. Re-search actual literature instead of re-reading the frozen initial pack. Use novelty_check(hypothesis, queries=[at least 3 distinct targeted searches]); the host searches both installed source clients without date filters, re-verifies paper existence with --no-cache, and obtains the original independent Reviewer novelty comparison. This tool supplies the original Skill's source/verification/reviewer slot; do not repeat an identical Reviewer call. Attach its novelty_receipt when registering scout_candidates. State closest prior work, concrete mechanism-level delta and coverage limits. Never equate an existing ID, a new combination of keywords, better measurements, or no search hits with proven novelty. If sources cannot be checked, say unverified; feasibility pilots may continue with that label. Council separately re-searches its actual generated proposals before anonymous review. Preserve all original receipts and errors.
+FRESH NOVELTY RECHECK: Invoke original novelty-check for each new mechanism before implementing. Re-search actual literature instead of re-reading the frozen initial pack. Use novelty_check(hypothesis, queries=[at least 3 distinct targeted searches]); the host searches both installed source clients without date filters, re-verifies paper existence with --no-cache, and obtains the original independent Reviewer novelty comparison. This tool supplies the original Skill's source/verification/reviewer slot; do not repeat an identical Reviewer call. Attach its novelty_receipt when registering scout_candidates. State closest prior work, concrete mechanism-level delta and coverage limits. Never equate an existing ID, a new combination of keywords, better measurements, or no search hits with proven novelty. If sources cannot be checked, say unverified; feasibility pilots may continue with that label. Council separately re-searches its actual generated proposals before anonymous review. Preserve all original receipts and errors.
 """
 
 
-DISCOVERY_CONTRACT="""You are the BrainDance broad discovery coordinator, before the official per-hypothesis research pipeline. Load the unmodified aris-official:research-lit and idea-discovery Skills. Use paper_search for real 3–5 year trend and cross-field source retrieval, including older foundational prior art; vary the fields between rounds using shared negative results. Write LITERATURE.md/source-evidence.json/candidate_papers.json, then call exploration_council once: it supplies SIX independent isolated exploratory agents by default (trends, problem discovery, cross-field transfer, new principles, adversarial alternatives, falsifiable pilots). Synthesize FIVE diverse concrete hypotheses; do not pad the count if evidence is insufficient. Use the original novelty-check Skill and novelty_check tool to re-search and independently review each shortlisted mechanism. When interests are empty use context.discovery_interest. Register hypotheses with scout_candidates, including novelty_receipt and ratings={potential,novelty_provisional,feasibility,falsifiability} (integers 0–100) and rating_basis. Scores are reasoned provisional judgments, not measured probabilities; unverified novelty remains explicitly provisional. Prefer a new problem, structural insight or mechanism over a simple combination/performance tweak. Shortlist normally TWO, up to five only with evidence and useful execution capacity. Finish with node_ids=[shortlisted IDs], report='NARRATIVE_REPORT.md'. This finishes discovery ONLY, not scientific verification. The host gives EACH hypothesis its own workspace, native session and unmodified official research-pipeline. Do not run experiments here or write experimental code. Original ARIS research-pipeline, experiment-bridge, auto-review-loop, implementation, debugging and reporting run inside those separate studies. Keep project human conversation shared. References in readable reports are URLs only. No human selection checkpoint during authorized automatic mode.
+DISCOVERY_CONTRACT="""Run the ORIGINAL idea-discovery workflow, including its nested idea-creator Skill. Do not replace its Phase 0–6 with a custom six-agent planner. Phase 0 wiki loading is conditional exactly as upstream specifies; Phase 1 is real literature survey; Phase 1.5 uses the installed aris-fanout-leaf in upstream bounded waves; Phase 2 uses the original independent Codex brainstorm; preserve the original novelty checks, reviewer, pilots and idea-stage/IDEA_REPORT.md. The user's broad-exploration prompt is research direction, not a replacement workflow. Council is additional advice after original idea creation. The original Skill decides candidates; the host only retains their tree/task records. Register shortlisted hypotheses with scout_candidates and original evidence/ratings, then finish with node_ids. Original pilots may run through experiment after the idea-creator/run-experiment Skills and a registered candidate; no untracked GPU shell execution. If the broker is sequential, await each pilot before the next. Write LITERATURE.md/source-evidence.json/candidate_papers.json from the original survey for the host's existing source verifier, without redoing completed survey work. Preserve all original idea-stage artifacts and actual pilot receipts for the later per-hypothesis study.
 """
 
 STUDY_CONTRACT="""
-This is ONE independent preliminary study, not the broad discovery coordinator. Read HYPOTHESIS.json. Invoke the unmodified official aris-official:research-pipeline for this selected problem/hypothesis, preserving its idea-discovery, experiment-bridge, original Reviewer, auto-review-loop, debugging and summary. Reuse supplied literature as a starting point, check it, refine the selected hypothesis without switching to unrelated topics. ARIS authors real experiment source itself. Report this study's observations, failures and limitations in its own NARRATIVE_REPORT.md and RESEARCH_BRIEF.json. Other tasks' results are shared context, never this task's measured receipts. Original ARIS Reviewer and its internal loops remain required. Exploratory advice, if supplied, is context rather than validation. If HYPOTHESIS.json marks human_requested, no broad-discovery receipt is implied: verify the requested hypothesis and prior art through the original pipeline before experiment implementation; the extra full Council is optional for ideas and negative preliminary results, required for a promising measured pilot before final reporting. Avoid repeating broad ideation inside this fixed study. The project host starts other hypotheses/new discovery after your completed study; do not force this one hypothesis to run until the global deadline or fabricate a positive outcome.
+This is ONE independent preliminary study, not the broad discovery coordinator. Read HYPOTHESIS.json. Invoke the unmodified official research-pipeline for this selected problem/hypothesis, preserving its idea-discovery, experiment-bridge, original Reviewer, auto-review-loop, debugging and summary. Reuse supplied literature as a starting point, check it, refine the selected hypothesis without switching to unrelated topics. ARIS authors real experiment source itself. Report this study's observations, failures and limitations in its own NARRATIVE_REPORT.md and RESEARCH_BRIEF.json. Other tasks' results are shared context, never this task's measured receipts. Original ARIS Reviewer and its internal loops remain required. Exploratory advice, if supplied, is context rather than validation. If HYPOTHESIS.json marks human_requested, no broad-discovery receipt is implied: verify the requested hypothesis and prior art through the original pipeline before experiment implementation; the extra full Council is optional for ideas and negative preliminary results, required for a promising measured pilot before final reporting. Avoid repeating broad ideation inside this fixed study. The project host starts other hypotheses/new discovery after your completed study; do not force this one hypothesis to run until the global deadline or fabricate a positive outcome.
 """
 STUDY_CONTRACT+='\nPRE-EXPERIMENT REJECTION: If actual prior-art comparison shows duplication, insufficient contribution or a genuinely infeasible premise, load the original novelty-check Skill and ask the existing independent codex Reviewer for an explicit disposition. Do not run a meaningless GPU experiment just to satisfy completion. After its justified reject decision, write a report and call finish(outcome="rejected", rejection_kind="duplicate"|"low_novelty"|"infeasible", reason=<specific reason>, report=<path>). The Reviewer must provide disposition="reject", matching rejection_kind, rationale, evidence_urls (actual compared paper URLs required for duplicate/low_novelty). Missing searches or low scores alone are not proof of duplication; temporary tool/auth/dependency errors are not scientific rejection. This closes only this hypothesis, with no measured-result claim; the project continues other work until its original deadline.\n'
 
@@ -164,7 +175,7 @@ def run(job,root,progress):
     contract=CONTRACT+REPORT_CONTRACT+NOVELTY_CONTRACT
     if job.get('task_role')=='discovery':
         human=(Path(getattr(sys,'_MEIPASS',Path(__file__).resolve().parent.parent))/'assets/broad-exploration.md').read_text().replace('[연구 분야/관심 주제]',job['topic'])
-        contract=human+'\n'+DISCOVERY_CONTRACT+NOVELTY_CONTRACT
+        contract=human+'\n'+DISCOVERY_CONTRACT+TOOL_CONTRACT+NOVELTY_CONTRACT
     elif job.get('hypothesis_task_id'):contract+=STUDY_CONTRACT
     if job.get('research_style')=='scout' and job.get('task_role')!='discovery':
         from scout import CONTRACT as scout_contract
@@ -178,12 +189,15 @@ def run(job,root,progress):
     statefile=work/'native-session.json';state=council.read_json(statefile) if statefile.exists() else {}
     from usage_accounting import prior_baseline,stream_usage,calculate,total as usage_total
     usage_baseline=prior_baseline(TreeStore(job['db']),job,state.get('session_id'))
+    settings=work/'.host-settings.json'
+    hook=command('--native-shell',str(root/'job.json'))
+    council.dump(settings,dict(hooks=dict(PreToolUse=[dict(matcher='Bash',hooks=[dict(type='command',command=shlex.join(hook),timeout=30)])])))
     argv=['claude','-p','--verbose','--output-format','stream-json','--model',job['literature_model'],
-          '--append-system-prompt',advisor_prompt(),'--plugin-dir',str(plugin),'--restricted','--setting-sources','project','--strict-mcp-config','--mcp-config',str(mcp),
+          '--append-system-prompt',advisor_prompt(),'--setting-sources','project','--settings',str(settings),'--add-dir',str(Path(job['aris_repo']).resolve()),'--strict-mcp-config','--mcp-config',str(mcp),
           '--permission-mode','acceptEdits','--permission-prompts','none',
-          '--tools','Skill,Read,Write,Edit,Glob,Grep,WebSearch,WebFetch',
-          '--allowedTools','Skill,Read,Write,Edit,Glob,Grep,WebSearch,WebFetch,mcp__codex__*',
-          '--disallowedTools','Bash,Agent']
+          '--tools','Skill,Read,Write,Edit,Glob,Grep,WebSearch,WebFetch,Agent,Bash,TaskOutput,TaskStop',
+          '--allowedTools','Skill,Read,Write,Edit,Glob,Grep,WebSearch,WebFetch,Agent(aris-fanout-leaf),Bash,TaskOutput,TaskStop,mcp__codex__*']
+    if job.get('project_session',{}).get('path'):argv+=['--add-dir',job['project_session']['path']]
     if not continuous:argv+=['--max-turns',str(job.get('native_max_turns',120)),'--max-budget-usd',str(job.get('native_usd_limit',8))]
     if state.get('session_id'):argv+=['--resume',state['session_id']]
     council.dump(root/'native-argv.json',argv)
@@ -231,6 +245,13 @@ def run(job,root,progress):
                                 saved=work/'native-completion.json'
                                 if saved.is_file():
                                     done=council.read_json(saved);host_finished=done.get('job_id')==job['id'] and done.get('auto_session_id')==job['auto_session_id']
+                            if b.get('type')=='text' and b.get('text','').strip():
+                                text=b['text'].strip()
+                                progress.emit('native-narration',text[:1800])
+                            if b.get('type')=='tool_use' and b.get('name') in {'Agent','WebSearch','Bash'}:
+                                detail=b.get('input') or {};tool=b['name']
+                                label=detail.get('description') or detail.get('query') or detail.get('command') or detail.get('subagent_type') or tool
+                                progress.emit('native-agent' if tool=='Agent' else 'native-tool',tool+' · '+str(label)[:300])
                             if b.get('type')=='tool_use' and b.get('name')=='Skill':
                                 skill=b.get('input',{}).get('skill','');requested[b['id']]=skill
                                 phase={'idea-discovery':'native-discovery','experiment-bridge':'native-implementation','auto-review-loop':'native-review'}.get(skill.split(':')[-1],'native-pipeline')
@@ -259,7 +280,7 @@ def run(job,root,progress):
             skills,sources,_=session_skill_receipts(job)
             council.dump(root/'native-skill-receipts.json',dict(invoked=sorted(skills),current_invoked=sorted(current_skills),source_jobs=sources,requested=requested,succeeded=sorted(succeeded)))
             if not host_finished and (p.returncode or not results or results[-1].get('is_error') or results[-1].get('subtype')!='success'):raise RuntimeError('공식 연구 세션이 완료되지 않았습니다. 원본 세션·오류·사용량을 보존했습니다.')
-            required={'research-lit','idea-discovery','novelty-check'} if job.get('task_role')=='discovery' else set(SKILLS)
+            required=set(DISCOVERY_SKILLS) if job.get('task_role')=='discovery' else set(SKILLS)
             completion_path=work/'native-completion.json'
             if completion_path.is_file() and council.read_json(completion_path).get('job_id')==job['id'] and council.read_json(completion_path).get('outcome')=='rejected':
                 from study_outcomes import REJECTION_SKILLS
@@ -301,7 +322,7 @@ class Host:
         return client.request('/api/native/action',dict(job_id=self.job['id'],action=action,**args))
     def require_skill(self,name):
         invoked,_,_=session_skill_receipts(self.job)
-        if name not in invoked:raise ValueError('먼저 Skill 도구로 aris-official:'+name+'을 실제 호출하고 원래 절차를 따르세요. 문서 읽기만으로 단계를 대체하지 않습니다.')
+        if name not in invoked:raise ValueError('먼저 Skill 도구로 '+name+'을 실제 호출하고 원래 절차를 따르세요. 문서 읽기만으로 단계를 대체하지 않습니다.')
 
     def execute(self,name,args):
         from session_budget import update
@@ -309,10 +330,7 @@ class Host:
         context=self.api('context');self.latest_context=context
         if name=='context':return context
         if name=='exploration_council':
-            self.require_skill('idea-discovery');self.require_skill('research-lit')
-            from exploration import run
-            self.event('verification','탐색 준비 · 논문 존재 검증 후 6개 관점 탐색을 시작합니다.')
-            return run(self.job,self.root,self.work,self.cfg)
+            raise ValueError('원본 idea-creator의 Phase 1.5 aris-fanout-leaf를 사용하세요. 별도 탐색기로 대체하지 않습니다.')
         if name=='paper_search':
             self.require_skill('research-lit')
             from scout import search
@@ -362,17 +380,21 @@ class Host:
             from official_review import helper
             return helper(self.job,tool,values)
         if name in {'codex','codex-reply'}:
-            self.require_skill('auto-review-loop' if context['completed_runs'] else 'idea-discovery')
-            result_scope=any(r['state']=='succeeded' and r.get('result',{}).get('analysis',{}).get('status') in {'measured','compared'} for r in context['completed_runs']) and not context.get('active_runs')
+            self.require_skill('auto-review-loop' if args.get('review_run_id') else 'idea-discovery')
+            result_scope=bool(args.get('review_run_id')) and any(r['state']=='succeeded' and r.get('result',{}).get('analysis',{}).get('status') in {'measured','compared'} for r in context['completed_runs']) and not context.get('active_runs')
             if result_scope:
                 from official_review import validate_round
                 validate_round(args)  # reject missing original run/round before spending a model call
             folder=self.root/'native-reviewer'/str(time.time_ns())
             self.event('native-review','메인 연구의 기존 Reviewer가 독립적으로 검토합니다.')
-            prompt=args.get('prompt','')+'\nReturn ONLY JSON with your full review in review, numeric score, verdict (exactly ready, almost, or not ready), weaknesses, minimum_fixes. Read-only inspection of the native project workspace is allowed; never execute experiments, mutate files or access credentials. This is the normal ARIS Reviewer, separate from advisory Council. Native workspace: '+str(self.work)+'\nCurrent project context:\n'+json.dumps(context,ensure_ascii=False)
+            prompt=args.get('prompt','')+'\nFollow the ORIGINAL Skill slot requested output format, preserving full brainstorm/review text and any Score/Verdict fields verbatim. Read-only inspection of the native project workspace is allowed; never execute experiments, mutate files or access credentials. This is the normal ARIS Reviewer, separate from advisory Council. Native workspace: '+str(self.work)+'\nCurrent project context:\n'+json.dumps(context,ensure_ascii=False)
+            if result_scope:prompt+='\nInclude exactly one anchored Score: X/10 field and exactly one Verdict: ready / almost / not ready field in your full review, for the ORIGINAL gate parser. Do not repeat these fields.'
             if self.job.get('hypothesis_task_id') and not context['completed_runs']:prompt+='\nFor this pre-experiment review also include disposition (continue|reject), rejection_kind (duplicate|low_novelty|infeasible when rejecting), rationale (specific evidence-based reason), evidence_urls (array of actual compared primary-source URLs). A reject decision needs explicit grounds; unknown novelty or a low score alone is insufficient. Temporary authentication, dependency or tool errors are not scientific rejection. Paper URLs are mandatory for duplicate/low_novelty rejection.'
-            cfg={**self.cfg,'output_tokens':6000,'codex_model':args.get('model'),'codex_effort':args.get('config',{}).get('model_reasoning_effort','xhigh')}
+            cfg={**self.cfg,'output_tokens':6000,'codex_model':args.get('model'),'codex_effort':args.get('config',{}).get('model_reasoning_effort','xhigh'),'_native_text':True,'project_session':None,'_project_cwd':str(self.work),'_resume_thread':args.get('threadId') if name=='codex-reply' else None}
             result=council.codex_call(folder,prompt,cfg,council.Budget(cfg,folder/'budget.json'),self.job['aris_repo'])
+            if isinstance(result,dict) and 'text' in result:
+                from official_review import assessment
+                result=assessment(self.job,result['text'],required=result_scope)
             if result_scope:
                 from official_review import record_review
                 record_review(self.job,args,context,folder,result)
@@ -420,9 +442,9 @@ class Host:
             self.store.add_note(self.job['node_id'],'analysis','아이디어 Council 의견' if stage=='ideas' else '결과 Council 의견',report[:99000])
             return dict(report=report,receipt=receipt)
         if name=='experiment':
-            if self.job.get('task_role')=='discovery':raise ValueError('넓은 탐색에서는 가설만 선정합니다. 실험은 독립 공식 연구 작업에서 수행합니다.')
+            if self.job.get('task_role')=='discovery':self.require_skill('idea-creator')
             if self.last_delivered_revision>=0 and context['revision']>self.last_delivered_revision:raise ValueError('새 사용자 지시가 있습니다. context를 읽고 실행 소스에 반영하세요.')
-            self.require_skill('experiment-bridge')
+            self.require_skill('run-experiment' if self.job.get('task_role')=='discovery' else 'experiment-bridge')
             if self.job.get('research_style')!='scout' and not self.job.get('hypothesis_task_id') and (not (self.work/'advice-ideas.json').is_file() or council.read_json(self.work/'advice-ideas.json').get('native_cycle',0)!=self.job.get('native_cycle',0)):raise ValueError('먼저 아이디어 Council 의견을 받아야 합니다.')
             from lab_worker import check_code
             code=check_code(self.path(args.pop('source')).read_text())
@@ -454,7 +476,7 @@ class Host:
         if name=='receipt':return self.api('receipt',run_id=args['run_id'])
         if name=='finish':
             if self.job.get('task_role')=='discovery':
-                for skill in ['research-lit','idea-discovery','novelty-check']:self.require_skill(skill)
+                for skill in DISCOVERY_SKILLS:self.require_skill(skill)
                 return self.api('finish',node_ids=args.get('node_ids',[]),report=str(self.path(args['report'])))
             brief=self.work/'RESEARCH_BRIEF.json'
             if brief.is_file() and not brief.is_symlink():
@@ -477,7 +499,7 @@ class Host:
 
 def serve(jobfile):
     host=Host(council.read_json(jobfile))
-    tools=[('exploration_council','Six independent broad-discovery agents using verified literature',{}),('novelty_check','Fresh multi-source prior-art retrieval, no-cache existence checks and independent Reviewer comparison',{'hypothesis':{'type':'string'},'queries':{'type':'array','items':{'type':'string'}}}),('paper_search','Retrieve real recent or cross-domain papers with project duplicate tracking',{'query':{'type':'string'},'source':{'type':'string','enum':['arxiv','openalex']},'kind':{'type':'string','enum':['recent','cross-domain']},'domain':{'type':'string'},'limit':{'type':'integer'}}),('scout_candidates','Connect retrieved canonical paper IDs to a project interest and small experiment',{'paper_ids':{'type':'array','items':{'type':'string'}},'interest':{'type':'string'},'mechanism':{'type':'string'},'hypothesis':{'type':'string'},'experiment':{'type':'string'},'novelty_receipt':{'type':'string'},'ratings':{'type':'object'},'rating_basis':{'type':'string'}}),('scout_triage','Evaluate actual baseline/candidate and seed receipts against project thresholds',{}),('context','Shared project conversation, directions, limits and resources',{}),('target','Read-only selected target inventory or source query',{'op':{'type':'string'},'path':{'type':'string'},'start':{'type':'integer'},'lines':{'type':'integer'}}),('helper','Execute installed original ARIS helpers, including review_gate.py and save_trace.sh; no replacement policy',{'name':{'type':'string'},'args':{'type':'array','items':{'type':'string'}}}),('codex','Original ARIS independent Reviewer; preserve Skill model/effort overrides',{'prompt':{'type':'string'},'model':{'type':'string'},'config':{'type':'object'},'review_run_id':{'type':'string'},'review_round':{'type':'integer'}}),('codex-reply','Continue original project Reviewer',{'prompt':{'type':'string'},'threadId':{'type':'string'},'review_run_id':{'type':'string'},'review_round':{'type':'integer'}}),('council','Additional advisory Council at ideas/results boundary',{'stage':{'type':'string','enum':['ideas','results']}}),('experiment','Review and submit immutable Python experiment to selected project resources',{'source':{'type':'string'},'title':{'type':'string'},'interpreter':{'type':'string'},'cwd':{'type':'string'},'args':{'type':'array','items':{'type':'string'}},'timeout_seconds':{'type':'integer'},'metric':{'type':'string'},'direction':{'type':'string','enum':['maximize','minimize']}}),('receipt','Poll actual run metrics/logs',{'run_id':{'type':'string'}}),('finish','Persist native final report after real Reviewer, Council and experiments',{'report':{'type':'string'},'node_ids':{'type':'array','items':{'type':'string'}}})]
+    tools=[('novelty_check','Fresh multi-source prior-art retrieval, no-cache existence checks and independent Reviewer comparison',{'hypothesis':{'type':'string'},'queries':{'type':'array','items':{'type':'string'}}}),('paper_search','Retrieve real recent or cross-domain papers with project duplicate tracking',{'query':{'type':'string'},'source':{'type':'string','enum':['arxiv','openalex']},'kind':{'type':'string','enum':['recent','cross-domain']},'domain':{'type':'string'},'limit':{'type':'integer'}}),('scout_candidates','Connect retrieved canonical paper IDs to a project interest and small experiment',{'paper_ids':{'type':'array','items':{'type':'string'}},'interest':{'type':'string'},'mechanism':{'type':'string'},'hypothesis':{'type':'string'},'experiment':{'type':'string'},'novelty_receipt':{'type':'string'},'ratings':{'type':'object'},'rating_basis':{'type':'string'}}),('scout_triage','Evaluate actual baseline/candidate and seed receipts against project thresholds',{}),('context','Shared project conversation, directions, limits and resources',{}),('target','Read-only selected target inventory or source query',{'op':{'type':'string'},'path':{'type':'string'},'start':{'type':'integer'},'lines':{'type':'integer'}}),('helper','Execute installed original ARIS helpers, including review_gate.py and save_trace.sh; no replacement policy',{'name':{'type':'string'},'args':{'type':'array','items':{'type':'string'}}}),('codex','Original ARIS independent Reviewer; preserve Skill model/effort overrides',{'prompt':{'type':'string'},'model':{'type':'string'},'config':{'type':'object'},'review_run_id':{'type':'string'},'review_round':{'type':'integer'}}),('codex-reply','Continue original project Reviewer',{'prompt':{'type':'string'},'threadId':{'type':'string'},'review_run_id':{'type':'string'},'review_round':{'type':'integer'}}),('council','Additional advisory Council at ideas/results boundary',{'stage':{'type':'string','enum':['ideas','results']}}),('experiment','Review and submit immutable Python experiment to selected project resources',{'source':{'type':'string'},'title':{'type':'string'},'interpreter':{'type':'string'},'cwd':{'type':'string'},'args':{'type':'array','items':{'type':'string'}},'timeout_seconds':{'type':'integer'},'metric':{'type':'string'},'direction':{'type':'string','enum':['maximize','minimize']}}),('receipt','Poll actual run metrics/logs',{'run_id':{'type':'string'}}),('finish','Persist native final report after real Reviewer, Council and experiments',{'report':{'type':'string'},'node_ids':{'type':'array','items':{'type':'string'}}})]
     for name,_,properties in tools:
         if name=='finish':properties.update(outcome={'type':'string','enum':['measured','rejected']},rejection_kind={'type':'string','enum':['duplicate','low_novelty','infeasible']},reason={'type':'string'})
     def stop(*_):
@@ -511,6 +533,13 @@ def serve(jobfile):
 
 if __name__=='__main__':
     if sys.argv[1]=='--native-host':serve(sys.argv[2])
+    elif sys.argv[1]=='--native-shell':
+        from native_shell import main
+        main(sys.argv[2])
+    elif sys.argv[1]=='--native-helper':
+        result=Host(council.read_json(sys.argv[2])).execute('helper',council.read_json(sys.argv[3]))
+        print(result['stdout'],end='');print(result['stderr'],end='',file=sys.stderr)
+        raise SystemExit(result['returncode'])
 
 
 def action(server,payload):
@@ -607,10 +636,11 @@ def action(server,payload):
             from research_tasks import stage
             report=Path(payload['report'])
             if report.is_symlink() or not report.resolve().is_relative_to(work) or not report.is_file():raise ValueError('현재 탐색의 보고서가 필요합니다.')
-            if not (Path(job['run_dir'])/'broad-exploration-receipt.json').is_file():raise ValueError('6개 탐색 에이전트의 실제 실행 기록이 필요합니다.')
+            from official_ideas import validate
+            validate(config)
             tasks=stage(server,job,session,payload.get('node_ids',[]))
             (Path(job['run_dir'])/'native-summary.md').write_text(report.read_text())
-            done=dict(job_id=job['id'],auto_session_id=session['id'],task_ids=[t['id'] for t in tasks],run_ids=[],discovery_only=True,completed_at=now())
+            done=dict(job_id=job['id'],auto_session_id=session['id'],task_ids=[t['id'] for t in tasks],run_ids=[r['id'] for r in rows],discovery_only=True,completed_at=now())
             council.dump(work/'native-completion.json',done)
             server.store.add_note(job['node_id'],'analysis','넓은 탐색 · 가설별 연구 선정',report.read_text()[:99000])
             return done

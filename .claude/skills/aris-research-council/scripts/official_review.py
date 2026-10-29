@@ -13,6 +13,21 @@ import time
 import council
 
 
+def assessment(job,text,required=True):
+    try:
+        value=council.parse_object(text)
+        if isinstance(value,dict) and ('score' in value or not required):return value
+    except ValueError:pass
+    try:
+        from paper_verification import upstream
+        module,_=upstream(Path(job['aris_repo'])/'tools/review_gate.py')
+        score,verdict=module._parse_native_assessment(text)
+        return dict(review=text,score=score,verdict=verdict)
+    except Exception:
+        if required:raise ValueError('원본 Reviewer 응답의 Score/Verdict를 확인할 수 없습니다. 원문을 유지하고 원본 출력 형식으로 결과 검토하세요.')
+        return dict(review=text)
+
+
 def state(work):
     work=Path(work)
     path=work/'review-stage/REVIEW_STATE.json'
@@ -91,7 +106,7 @@ def completion(job,run_ids):
     last_per_round={r['round']:r for r in selected}
     if any(r['receipt'] not in gates for r in last_per_round.values()):
         raise ValueError('원본 review_gate.py는 완료된 각 결과 검토 라운드에 필요합니다.')
-    raw=council.parse_object(Path(latest['receipt']).with_name('response.txt').read_text())
+    raw=assessment(job,Path(latest['receipt']).with_name('response.txt').read_text())
     usage=council.read_json(latest['receipt'])
     if current.get('reviewer_backend','codex')!='codex' or not usage.get('thread_id') or current.get('threadId')!=usage['thread_id']:
         raise ValueError('원본 REVIEW_STATE에 실제 Codex Reviewer threadId를 유지하세요.')

@@ -435,7 +435,7 @@ def _codex_call(folder, prompt, config, budget, aris_repo):
         old = read_json(folder / "request.json")["params"]["arguments"]
         if old["prompt"] != prompt:
             raise ValueError("Cannot resume Codex with changed input")
-        return parse_object((folder / "response.txt").read_text())
+        return {"text":(folder / "response.txt").read_text()} if config.get("_native_text") else parse_object((folder / "response.txt").read_text())
     if (folder / "request.json").exists():
         raise RuntimeError("Prior Codex dispatch lacks a completed receipt; no automatic retry")
     server = Path(aris_repo) / "mcp-servers/codex-exec/server.py"
@@ -542,7 +542,7 @@ def _codex_call(folder, prompt, config, budget, aris_repo):
                    usage=usage, total_tokens=tokens(usage))
     budget.record(receipt)
     dump(folder / "usage.json", receipt)
-    return parse_object(text)
+    return {"text":text} if config.get("_native_text") else parse_object(text)
 
 
 def anonymous(proposals, epoch):

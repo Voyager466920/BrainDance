@@ -48,6 +48,7 @@ def build_backend():
         '--add-data', str(SCRIPTS.parent/'assets')+':assets',
         '--add-data', str(metadata)+':assets', '--collect-data', 'certifi',
         '--add-data', str(ROOT/'desktop/BrainDance.itermkeymap')+':assets',
+        '--add-data', str(ROOT/'desktop/BrainDance.ghostty')+':assets',
         '--add-data', str(SCRIPTS/'experiment_worker.py')+':worker',
         '--add-data', str(SCRIPTS/'brain_monitor.py')+':assets',
         '--add-data', str(ROOT/'.claude/agents')+':agents',

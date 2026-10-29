@@ -24,6 +24,24 @@ print(json.dumps({'decision':'stop' if a.score>=6 and a.verdict in ('ready','alm
 ''')
     skill=Path(repo)/'skills/auto-review-loop/SKILL.md'
     skill.parent.mkdir(parents=True,exist_ok=True);skill.write_text('# OFFLINE transport fixture\n- MAX_ROUNDS = 4\n')
+    leaf=Path(repo)/'agents/aris-fanout-leaf.md';leaf.parent.mkdir(parents=True,exist_ok=True);leaf.write_text('OFFLINE original leaf fixture')
+    manifest=Path(repo)/'.claude-plugin/plugin.json';manifest.parent.mkdir();manifest.write_text('{"name":"aris"}')
+    installer=Path(repo)/'tools/install_aris.sh'
+    installer.write_text("""#!/bin/sh
++# OFFLINE installation transport fixture only, no model calls.
++python3 - "$1" "$(dirname "$0")/.." <<'FIXTURE'
++from pathlib import Path
++import sys
++work=Path(sys.argv[1]);repo=Path(sys.argv[2]).resolve()
++for skill in (repo/'skills').iterdir():
++ p=work/'.claude/skills'/skill.name;p.parent.mkdir(parents=True,exist_ok=True)
++ if not p.exists():p.symlink_to(skill)
++p=work/'.claude/agents/aris-fanout-leaf.md';p.parent.mkdir(parents=True,exist_ok=True)
++if not p.exists():p.symlink_to(repo/'agents/aris-fanout-leaf.md')
++p=work/'.aris/tools';p.parent.mkdir(parents=True,exist_ok=True)
++if not p.exists():p.symlink_to(repo/'tools')
++FIXTURE
++""".replace('\n+','\n'))
 
 
 def completed_fixture(job,run_ids,number=1,score=7,verdict='almost',run_id='OFFLINE_original_run'):

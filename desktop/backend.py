@@ -36,6 +36,16 @@ def main():
         from host_repair import run
         run(sys.argv[2],sys.argv[3])
         return
+    if sys.argv[1:2]==['--native-shell']:
+        from native_shell import main as shell_main
+        shell_main(sys.argv[2])
+        return
+    if sys.argv[1:2]==['--native-helper']:
+        from native_pipeline import Host
+        job=json.loads(Path(sys.argv[2]).read_text());request=json.loads(Path(sys.argv[3]).read_text())
+        result=Host(job).execute('helper',request)
+        print(result['stdout'],end='');print(result['stderr'],end='',file=sys.stderr)
+        raise SystemExit(result['returncode'])
     if sys.argv[1:2]==['--native-host']:
         from native_pipeline import serve
         serve(sys.argv[2])

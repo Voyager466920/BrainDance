@@ -179,15 +179,15 @@ class NativePipelineTests(unittest.TestCase):
         completed_fixture(self.config,[run['run_id']],number=4,score=4,verdict='not ready')
         self.assertEqual(self.call('finish',report=str(report))['official_review']['outcome'],'max_rounds_unresolved')
 
-    def test_result_review_metadata_is_required_before_spending_and_receipts_are_returned(self):
+    def test_original_brainstorm_after_pilot_is_not_misclassified_as_a_result_round(self):
         run=self.experiment();self.wait_run(run['run_id'])
-        with patch('native_pipeline.council.codex_call',side_effect=AssertionError('No model call for missing original run/round')):
-            with self.assertRaisesRegex(ValueError,'review_run_id'):self.host.execute('codex',dict(prompt='OFFLINE review'))
         def model(folder,prompt,*args):
             folder.mkdir(parents=True);council.dump(folder/'usage.json',dict(fixture=True,thread_id='OFFLINE-original-thread'))
             value=dict(score=4,verdict='not ready',review='OFFLINE reviewer')
             council.dump(folder/'response.txt',value);return value
         with patch('native_pipeline.council.codex_call',side_effect=model):
+            self.host.execute('codex',dict(prompt='OFFLINE original brainstorm after a pilot'))
+            self.assertFalse((self.work/'native-review-rounds.jsonl').exists())
             value=self.host.execute('codex',dict(prompt='OFFLINE original review',review_run_id='OFFLINE-round',review_round=1))
         self.assertEqual(value['threadId'],'OFFLINE-original-thread')
         value=self.host.execute('helper',dict(name='review_gate.py',args=['--round-backend','codex','--score','4','--verdict','not ready']))

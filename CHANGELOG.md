@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.19.19
+
+- Install the original full project-local Skills and aris-fanout-leaf with the official installer. Remove restricted-mode discovery suppression and the Agent ban. Preserve original source snapshots and archive legacy plugin/session state during migration.
+- Replace the custom mandatory exploration coordinator with the original idea-discovery/idea-creator phases, native lens fan-out, Codex brainstorm and original pilot flow. Council remains additional advice. Show real phase narration, searches and Agent activity in progress records.
+- Preserve raw native Codex slot responses and original fresh-call/reply semantics; brainstorms after a pilot are no longer misclassified as result-review rounds. Original review-gate logic remains unchanged.
+- Keep selected-resource experiment enforcement through the broker while allowing original helper and local bookkeeping shell calls. Add Ghostty keyboard instructions and packaged bindings.
+
 ## 0.19.18
 
 - Handle legitimate string-valued Claude system notifications and mixed stream records without losing actual Skill/tool receipts or breaking task resumption.

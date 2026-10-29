@@ -651,7 +651,7 @@ class ResearchTerminal:
         self.dialog(title,TextArea(text=safe_text(text) if verbatim else readable(text),read_only=True,scrollbar=True,height=Dimension(min=4,preferred=12,max=18)),[('닫기',self.close_dialog)])
 
     def keyboard_dialog(self):
-        keymap=Path(sys.executable).with_name('BrainDance.itermkeymap') if getattr(sys,'frozen',False) else Path(__file__).resolve().parents[4]/'desktop/BrainDance.itermkeymap'
+        keymap=Path(sys.executable).with_name('BrainDance.ghostty') if getattr(sys,'frozen',False) else Path(__file__).resolve().parents[4]/'desktop/BrainDance.itermkeymap'
         self.text_dialog('키보드 조작',
             'Ctrl+P 또는 /projects: 프로젝트 선택·삭제·휴지통\n'
             '↑↓: 목록 이동 · 마지막 항목에서 ↓: 아래 버튼으로\n'
@@ -662,10 +662,8 @@ class ResearchTerminal:
             'Ctrl+L: 입력창 · Enter: 전송 · Alt+Enter: 줄바꿈\n'
             'Cmd+←/→: 공백 단위 이동 · Cmd+Backspace: 이전 공백 단위 삭제\n'
             'Option+←/→, Ctrl+←/→, Option+Backspace, Ctrl+W도 지원합니다.\n\n'
-            'iTerm2의 Command 키는 아래 키맵을 가져오면 앱으로 전달됩니다.\n'
-            'Settings → Profiles → Keys → Key Mappings → Presets → Import\n'
-            '기존 매핑 유지(Keep)를 선택하세요. 의도한 Command 키 3개만 바뀝니다.\n'
-            '다른 터미널·쉘에 영향을 피하려면 BrainDance용 프로필에 적용하세요.\n'
+            'Ghostty 설정 파일에 아래 키맵 내용을 추가하세요.\n'
+            'Cmd+Shift+, 로 설정을 다시 불러옵니다.\n'
             '키맵 파일: '+str(keymap),verbatim=True)
 
     def project_dialog(self):

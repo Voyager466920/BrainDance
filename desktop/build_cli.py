@@ -15,6 +15,7 @@ def main():
     output.mkdir()
     shutil.copy2(build/'server/BrainDanceServer',output/'BrainDanceServer')
     shutil.copy2(ROOT/'desktop/BrainDance.itermkeymap',output/'BrainDance.itermkeymap')
+    shutil.copy2(ROOT/'desktop/BrainDance.ghostty',output/'BrainDance.ghostty')
     copy_notices(output)
     if platform.system()=='Darwin':run('codesign','--verify','--strict',output/'BrainDanceServer')
     name='BrainDance-cli-'+('macOS' if platform.system()=='Darwin' else platform.system().lower())+'-'+architecture
