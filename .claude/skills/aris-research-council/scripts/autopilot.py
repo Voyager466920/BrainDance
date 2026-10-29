@@ -217,6 +217,10 @@ class Autopilot:
                         self.store._event(conn,root['id'],'native_pipeline_resumed',dict(session_id=item['id'],previous_pipeline=item['config']['previous_pipeline'],usage_preserved=True))
                     self.store.add_note(root['id'],'memo','자율 연구 흐름 전환','기존 결과·대화·사용량·장치·예산을 보존하고 공식 자율 파이프라인으로 재개합니다. 이전 진행 기록도 세션 설정에 보존했습니다.')
                 keep_tasks=item['config'].get('orchestration')=='hypothesis-tasks' and p.get('phase')=='tasks'
+                if keep_tasks:
+                    # Each hypothesis owns its job/run checkpoint. A stale project-level
+                    # blocked run must not send a resumed portfolio back to discovery.
+                    p.update(job_id=None,run_id=None)
                 if item['config'].get('pipeline')=='aris-native' and not keep_tasks:
                     current=self.research.get(p['job_id']) if p.get('job_id') else None
                     if current and current['state'] in {'queued','running'}:p['phase']='native'

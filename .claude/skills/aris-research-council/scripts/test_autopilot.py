@@ -79,6 +79,22 @@ class AutomaticTests(unittest.TestCase):
         self.assertEqual(after['session']['status'],'stopped');self.assertEqual(after['session']['config']['cost_profile'],'economy')
         self.assertEqual(before['usage'],after['usage']);self.assertEqual(after['runs'],[]);self.assertIsNone(self.research.active_id)
 
+    def test_resume_keeps_hypothesis_tasks_despite_stale_project_run(self):
+        item=self.start()
+        item['config'].update(pipeline='aris-native',orchestration='hypothesis-tasks')
+        with self.store._connect() as conn:
+            conn.execute('UPDATE automatic_sessions SET config=? WHERE id=?',(json.dumps(item['config']),item['id']))
+        self.automatic.save(item,'paused',phase='tasks',job_id='stale-project-job',run_id='stale-blocked-run')
+        with patch.object(self.research,'get') as get_job,patch.object(self.experiments,'run_info') as get_run:
+            resumed=self.automatic.control(dict(project_id=self.node['project_id'],action='resume'))['session']
+        self.assertEqual(resumed['id'],item['id'])
+        self.assertEqual(resumed['status'],'running')
+        self.assertEqual(resumed['progress']['phase'],'tasks')
+        self.assertIsNone(resumed['progress']['job_id'])
+        self.assertIsNone(resumed['progress']['run_id'])
+        self.assertEqual(resumed['config'],item['config'])
+        get_job.assert_not_called();get_run.assert_not_called()
+
     def drive(self,seconds=10):
         deadline=time.monotonic()+seconds
         while time.monotonic()<deadline:

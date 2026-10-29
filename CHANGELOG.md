@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.19.20
+
+- Preserve the hypothesis-task checkpoint when resuming a paused project. A stale blocked experiment at project level no longer sends existing studies back through broad discovery; their individual workspaces and execution records remain authoritative.
+
 ## 0.19.19
 
 - Install the original full project-local Skills and aris-fanout-leaf with the official installer. Remove restricted-mode discovery suppression and the Agent ban. Preserve original source snapshots and archive legacy plugin/session state during migration.
