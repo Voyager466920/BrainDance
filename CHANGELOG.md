@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.19.15
+
+- Pin frozen CLI and backend images at immutable, content-hashed paths. Updating the installation no longer replaces the archive used by running processes and lazy imports.
+- Freeze Council scientific inputs independently of volatile verification timestamps and attempt paths. Retry unchanged inputs with strict resume checks; retain all prior attempt logs and start a new Council for changed evidence or results.
+- Recover completed Council tree commits and import retained conversation history without another model call. Keep incomplete commits blocked; a failed history import no longer invalidates completed research.
+- Enable Python fatal-signal traces in supervised experiments so native aborts retain their Python stack in the original stderr log.
+
 ## 0.19.14
 
 - Add an independent, standard-library-only macOS monitor that performs one short check per minute.

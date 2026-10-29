@@ -28,6 +28,28 @@ HELPERS={'run_state.py','iteration_log.py','arxiv_fetch.py','verify_papers.py','
 def workspace(job):return Path(job['native_workspace']).resolve()
 
 
+def freeze_advisory(work, stage, literature, evidence, topic, config):
+    """Bind resume to scientific inputs, never volatile verifier receipt metadata.
+
+    Keep the full raw verification receipt at its original path. Council receives
+    the same checked paper content at an immutable path on every retry.
+    """
+    papers=council.read_json(evidence)['papers']
+    content=dict(papers=papers)
+    binding=dict(literature=literature.read_text(),evidence=content,topic=topic,config=config)
+    fingerprint=hashlib.sha256(json.dumps(binding,sort_keys=True,ensure_ascii=False).encode()).hexdigest()
+    folder=Path(work)/('council-'+stage+'-'+fingerprint+'-frozen-v2')
+    inputs=Path(work)/'council-inputs'/fingerprint
+    inputs.mkdir(parents=True,exist_ok=True)
+    for name,text in [('LITERATURE.md',binding['literature']),('evidence.json',json.dumps(content,sort_keys=True,ensure_ascii=False,indent=2)),('topic.txt',topic)]:
+        path=inputs/name
+        if path.exists():
+            if path.read_text()!=text:raise ValueError('Frozen Council input changed: '+name)
+        else:
+            with path.open('x',encoding='utf-8') as output:output.write(text)
+    return folder,inputs,fingerprint
+
+
 def review_directory(root,spec,revision,signature):
     binding=json.dumps(dict(spec=spec,revision=revision,resource_signature=signature),sort_keys=True,ensure_ascii=False)
     return Path(root)/'native-code-review'/hashlib.sha256(spec['code'].encode()).hexdigest()/hashlib.sha256(binding.encode()).hexdigest()[:20]
@@ -59,6 +81,7 @@ CONTRACT='''You are the main autonomous BrainDance research executor. Invoke Ski
 Keep the normal ARIS Reviewer: call mcp__codex__codex for its independent novelty/code/result reviews, then implement its feedback and re-review per the original Skill. Council is ADDITIONAL ADVICE, not the Reviewer or its stop/quality gate. Call mcp__codex__council(stage=ideas) after literature/idea discovery and before the first experiment; call stage=results after measured results, before the next experiment and final summary. Council advice can be challenged with evidence; retain disagreement. Do not repeat an identical reviewer question just to fill a stage.
 HOST TOOL ADAPTATION ONLY: Bash/SSH/Agent are unavailable in this managed session. Use mcp__codex__helper for the real upstream Python bookkeeping helpers; mcp__codex__target for read-only existing target inventory/source reads. Read/Write/Edit operate on this dedicated local project workspace. For all pilots, sanity checks, real experiments, retries and ablations use mcp__codex__experiment. It applies the already selected local/SSH device UUID, current direction, code review, run count and cumulative runtime budget. Never execute model code through a helper or call an external shell. No package installation, GPU reassignment or budget changes. Missing prerequisites should be investigated through target reads and repaired in experiment source where possible; do not invent interfaces or results.
 Write a self-contained Python source file defining self_test() with real assertions and run_experiment(); omit __main__ (host appends it). Use the observed Python interpreter, existing project/data paths, BRAINDANCE_DEVICE/CUDA_VISIBLE_DEVICES, BRAINDANCE_METRICS_PATH and BRAINDANCE_ARTIFACT_DIR. Metrics JSON: baseline/candidate objects with the exact metric key. Experiment source can import the existing target repository. The experiment tool itself performs the original Reviewer code-review check; do not ask an identical extra code-review question before submitting the same source. The tool returns a real queued run; poll with mcp__codex__receipt and use its exit state/metrics/logs to debug and continue yourself. A rejected code review or failed execution is feedback to fix and resubmit, not a forced whole-project stop. Diagnose missing modules by checking existing observed Python environments before changing the experiment. Failed attempts do not consume the measured-experiment quota; they still consume actual runtime and model usage. Continue debugging within existing limits without asking the human for each repair. Negative but correctly measured results are valid completed experiments; never keep retrying just to obtain a positive scientific result.
+For native crashes (e.g. SIGABRT), inspect the retained fatal-signal stack and failing operation before changing scientific conditions. If repeated simulator/renderer initialization is implicated, consider bounded foreground child processes in the same supervised process group. Preserve the specified seeds, initial states, controls and measurements; save per-trial data atomically and retain child logs, return codes, unresolved IDs and actual termination reasons. Never silently omit crashed trials, rename an undefined metric into a successful result, or treat a passing self-test as a completed scientific experiment.
 For the literature Council input, write LITERATURE.md plus source-evidence.json {papers:[{id,title,url,arxiv_id,doi,source_excerpt,evidence_level,verification_status}]} and candidate_papers.json array with matching ids. Only retrieved readable evidence; unknown ids=null. Council invokes the actual upstream verifier before admitting sources. Preserve source text, original traces and limitations.
 Call mcp__codex__context at the start and before every new experiment to receive the SAME shared project conversation, latest human directions, remaining budget and selected target. Changes govern the next immutable experiment; experiments in flight keep their exact source. Pause/stop/resource changes are enforced by the host. All responses and reports in Korean, using BrainDance branding; internal Skill identifiers belong in technical traces. Original identifiers/quotations remain intact.
 When the native review loop reaches its own stopping condition or the allowed experiment count is reached, write NARRATIVE_REPORT.md from actual receipts, record limitations, and call mcp__codex__finish(report='NARRATIVE_REPORT.md'). Do not declare completion without real execution, both Council advice stages, and real ARIS Reviewer calls. Resume the stored native session and upstream .aris/runs state after interruption; never mark unfinished stages successful. Read the source-manifest for provenance, never edit .aris-official.
@@ -365,22 +388,21 @@ class Host:
             fingerprint=hashlib.sha256(json.dumps(dict(runs=context['completed_runs'] if stage=='results' else [],revision=context['revision'],evidence=(source/'source-evidence.json').read_text(),literature=(source/'LITERATURE.md').read_text()),sort_keys=True).encode()).hexdigest()
             verification=self.root/('native-verification-'+stage+'-'+fingerprint[:12]);verification.mkdir(exist_ok=True)
             evidence=verify(self.job,verification,source,Progress())
-            folder=self.work/('council-'+stage+'-'+fingerprint[:12]+'-novelty-v1'+('-economy' if self.job.get('cost_profile')=='economy' else ''))
-            frozen=self.work/('advisory-topic-'+stage+'-'+fingerprint[:12]+'.json')
-            if (folder/'status.json').is_file() and council.read_json(folder/'status.json').get('status')=='completed':
-                council.dump(self.work/('advice-'+stage+'.json'),dict(stage=stage,native_cycle=self.job.get('native_cycle',0),path=str(folder),fingerprint=fingerprint,run_ids=[r['id'] for r in context['completed_runs']]))
-                report=(folder/'round-1/COUNCIL_REPORT.md').read_text();(self.root/('advisory-'+stage+'.md')).write_text(report)
-                return dict(report=report,reused=True)
             cfg={k:v for k,v in self.cfg.items() if k in council.DEFAULTS or k in council.MODES[self.job['mode']] or k=='session_budget'}
             if self.job.get('cost_profile')=='economy':cfg.update(peer_model='haiku',chairman_model='sonnet')
             cfg.update(rounds=1,max_councils=1,result_evidence_ids=[r['id'] for r in context['completed_runs']] if stage=='results' else []);council.dump(self.root/'native-result-evidence.json',context['completed_runs']);config=self.root/('native-council-'+stage+'.json');council.dump(config,cfg)
             advisory_context={k:context.get(k) for k in ['research_style','research_preferences','completed_runs','max_runs']}
             advisory_context['human_directions']=context.get('shared_project',{}).get('directions',[])
             topic=self.job['topic']+'\nADVISORY '+stage+' Council. ARIS remains main executor; retain its independent Reviewer. Review actual pilot receipts and suggest evidence-based improvements. Cite ONLY IDs in the supplied evidence pack; do not treat paper IDs mentioned in historical assistant reports as supplied evidence.\n'+json.dumps(advisory_context,ensure_ascii=False)
-            if frozen.exists():topic=council.read_json(frozen)['topic']
-            else:council.dump(frozen,dict(topic=topic))
+            folder,inputs,fingerprint=freeze_advisory(self.work,stage,source/'LITERATURE.md',evidence,topic,cfg)
+            if (folder/'status.json').is_file() and council.read_json(folder/'status.json').get('status')=='completed':
+                status=council.read_json(folder/'status.json')
+                if status.get('history_import_pending') is not False:council.import_completed_history(self.store,folder,status)
+                council.dump(self.work/('advice-'+stage+'.json'),dict(stage=stage,native_cycle=self.job.get('native_cycle',0),path=str(folder),fingerprint=fingerprint,run_ids=[r['id'] for r in context['completed_runs']]))
+                report=(folder/'round-1/COUNCIL_REPORT.md').read_text();(self.root/('advisory-'+stage+'.md')).write_text(report)
+                return dict(report=report,reused=True)
             self.event('native-council','아이디어 Council이 검토합니다.' if stage=='ideas' else '실제 결과에 대해 Council이 추가 의견을 냅니다.')
-            council.run(SimpleNamespace(mode=self.job['mode'],config=str(config),topic=topic,node_id=self.job['node_id'],db=self.job['db'],literature=str(source/'LITERATURE.md'),evidence=str(evidence),output=str(folder),aris_repo=self.job['aris_repo'],resume=(folder/'config.json').is_file()),lambda phase,message:self.event('native-council',message))
+            council.run(SimpleNamespace(mode=self.job['mode'],config=str(config),topic=topic,node_id=self.job['node_id'],db=self.job['db'],literature=str(inputs/'LITERATURE.md'),evidence=str(inputs/'evidence.json'),output=str(folder),aris_repo=self.job['aris_repo'],resume=(folder/'config.json').is_file()),lambda phase,message:self.event('native-council',message))
             receipt=dict(stage=stage,native_cycle=self.job.get('native_cycle',0),path=str(folder),fingerprint=fingerprint,run_ids=[r['id'] for r in context['completed_runs']])
             council.dump(self.work/('advice-'+stage+'.json'),receipt)
             report=(folder/'round-1/COUNCIL_REPORT.md').read_text();(self.root/('advisory-'+stage+'.md')).write_text(report)

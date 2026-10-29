@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import signal
 import socket
 import subprocess
@@ -45,7 +46,14 @@ def main():
             monitor=json.loads(run('monitor','status','--json','--db',str(database),'--server',address))
             assert not monitor['installed'] and monitor['model_calls']==0
             assert not database.exists(),'Monitor status must not create a workspace or start the backend'
-            assert json.loads(run('projects','--json','--db',str(database),'--port',str(port)))==[]
+            installed=Path(folder)/'installation/BrainDanceServer'
+            installed.parent.mkdir();shutil.copy2(executable,installed)
+            first=subprocess.run([str(installed),'--cli','projects','--json','--db',str(database),'--port',str(port)],capture_output=True,text=True,timeout=40)
+            assert first.returncode==0 and json.loads(first.stdout)==[],first.stderr
+            # Simulate an installer replacing the original archive. All subsequent
+            # backend imports and supervised workers must use the immutable image.
+            replacement=installed.with_suffix('.new');replacement.write_bytes(b'OFFLINE simulated replacement archive')
+            os.replace(replacement,installed)
             # Prove the packaged native host can load and speak real MCP framing.
             native_job=Path(folder)/'native-job.json'
             native_job.write_text(json.dumps(dict(native_workspace=str(Path(folder)/'native'),run_dir=folder,db=str(database),mode='lite',council_overrides={},project_session={},session_budget=str(Path(folder)/'budget.json'))))
@@ -59,6 +67,8 @@ def main():
             health=json.loads(get('/api/health'))
             assert health['workspace_id']==hashlib.sha256(str(database).encode()).hexdigest()
             pid=health['pid']
+            process_image=subprocess.run(['ps','-p',str(pid),'-o','command='],capture_output=True,text=True,check=True).stdout
+            assert '/runtime-binaries/' in process_image,process_image
             # The first one-file CLI process has exited. Its temp directory must not
             # contain the detached server's only copies of GUI/experiment assets.
             assert 'BrainDance' in get('/')
@@ -129,7 +139,7 @@ def main():
             assert not Path(receipt['run_dir']).exists() and external.exists()
             assert json.loads(run('trash',*common))==[]
             assert [p['id'] for p in json.loads(run('projects',*common))]==[other['project_id']]
-            print('PASS: packaged logo, detached assets/CA, shared backend, actual CPU/PNG reporting, Trash/restore/confirmed purge and local space cleanup; no model/GPU/Notion account calls.')
+            print('PASS: immutable backend survives installation archive replacement, packaged logo, detached assets/CA, shared backend, actual CPU/PNG reporting, Trash/restore/confirmed purge and local space cleanup; no model/GPU/Notion account calls.')
         finally:
             if pid:
                 os.kill(pid,signal.SIGTERM)

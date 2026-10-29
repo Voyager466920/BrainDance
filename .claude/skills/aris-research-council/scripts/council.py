@@ -708,6 +708,32 @@ def frozen_parent(folder,parent,resuming):
     return saved
 
 
+def import_completed_history(store, output, status):
+    """History import is replayable; it must not invalidate completed research."""
+    dump(output/'status.json',{**status,'history_import_pending':True})
+    from run_history import import_run
+    count=import_run(store,output)
+    dump(output/'status.json',{**status,'history_import_pending':False,'history_messages':count})
+
+
+def recover_committed_rounds(store, output, rounds):
+    """A durable report + matching committed nodes can finish without new models.
+
+    A partial/ambiguous tree commit still stops instead of creating duplicates.
+    """
+    fields=('id','parent_id','title','kind','depth','evidence','metadata','status','priority','created_at')
+    for iteration in range(1,rounds+1):
+        folder=output/('round-'+str(iteration))
+        if not (folder/'COUNCIL_REPORT.md').is_file() or not (folder/'COUNCIL_REPORT.md').read_text().strip() or not (folder/'tree-nodes.json').is_file():
+            raise RuntimeError('Tree commit is incomplete; inspect persisted tree before another run')
+        nodes=read_json(folder/'tree-nodes.json')
+        if not nodes or len({n['id'] for n in nodes})!=len(nodes):raise ValueError('Invalid committed Council node receipt')
+        for saved in nodes:
+            live=store.get_node(saved['id'])
+            if any(saved.get(key)!=live.get(key) for key in fields):
+                raise ValueError('Committed Council node changed; inspect persisted tree before recovery')
+
+
 def run(args, progress=None):
     progress=progress or (lambda phase,message:None)
     cfg = load_config(args)
@@ -728,6 +754,9 @@ def run(args, progress=None):
     if args.resume and (output / "status.json").exists() and read_json(output / "status.json").get("status") == "completed":
         if read_json(output / "config.json") != cfg:
             raise ValueError("Resume requires the same configuration")
+        status=read_json(output/'status.json')
+        if status.get('history_import_pending') is not False:
+            import_completed_history(TreeStore(db,max_depth=cfg['max_depth']),output,status)
         print(json.dumps(dict(status="completed", reused=True, output=str(output), db=str(db))))
         return
     dump(identity_file, identity)
@@ -753,7 +782,11 @@ def run(args, progress=None):
         statefile = output / "run-state.json"
         state = read_json(statefile) if statefile.exists() else {}
         if state.get("tree_commit_started"):
-            raise RuntimeError("Tree commit already started/completed; inspect persisted tree before another run")
+            recover_committed_rounds(store,output,cfg['rounds'])
+            status=dict(status='completed',topic=args.topic,db=str(db),rounds=cfg['rounds'],source_cache_hit=pack['cache_hit'],scientific_validation=False,recovered_committed_tree=True)
+            import_completed_history(store,output,status)
+            print(json.dumps(dict(status='completed',reused=True,output=str(output),db=str(db))))
+            return
         parent = store.get_node(state["parent_id"]) if state else (store.get_node(args.node_id) if args.node_id else store.add_node(None, args.topic, kind="problem", evidence=pack["summaries"]))
         dump(statefile, dict(parent_id=parent["id"], topic=args.topic))
         if parent["depth"] >= cfg["max_depth"] or parent["status"] in ("held", "discarded"):
@@ -836,12 +869,11 @@ def run(args, progress=None):
                 if not active or active[0]["depth"] >= cfg["max_depth"]:
                     raise ValueError("No eligible active branch for another requested round; completed round retained")
                 parent = active[0]
-        dump(output / "status.json", dict(status="completed", topic=args.topic, db=str(db), rounds=cfg["rounds"], source_cache_hit=pack["cache_hit"], scientific_validation=False))
-        from run_history import import_run
-        import_run(store, output)
+        import_completed_history(store,output,dict(status="completed", topic=args.topic, db=str(db), rounds=cfg["rounds"], source_cache_hit=pack["cache_hit"], scientific_validation=False))
         print(json.dumps(dict(status="completed", output=str(output), db=str(db), usage=str(output / "usage.json")), ensure_ascii=False))
     except BaseException as exc:
-        dump(output / "status.json", dict(status="failed", error=str(exc), topic=args.topic))
+        status=read_json(output/'status.json')
+        if status.get('status')!='completed':dump(output / "status.json", dict(status="failed", error=str(exc), topic=args.topic))
         with (output / "error.log").open("a", encoding="utf-8") as errors:
             errors.write("\n" + dt.datetime.now(dt.timezone.utc).isoformat() + "\n" + __import__("traceback").format_exc())
         raise

@@ -331,3 +331,5 @@ Projects support recoverable Trash and permanent deletion of app-managed local r
 ## License
 
 MIT. Reused Council design attribution and third-party notices remain in the source and app bundle. Claude Code and Codex CLI are separate products with their own terms.
+
+Frozen CLI installations keep versioned executable images in the private data directory (`runtime-binaries/<sha256>/BrainDanceServer`). Keep these files while their processes are running. Updates install a new image and launcher; restart the backend in a controlled pause to apply backend changes. Existing projects, conversations, experiment receipts and allowance ledgers remain in the same data directory.

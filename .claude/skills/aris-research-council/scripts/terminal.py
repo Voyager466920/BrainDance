@@ -55,7 +55,9 @@ def install_launcher(directory=None):
     target=directory/'braindance';marker='# BrainDance CLI launcher'
     if target.exists() or target.is_symlink():
         if target.is_symlink() or marker not in target.read_text():raise ClientError('기존 braindance 명령이 있습니다. '+str(target)+'를 먼저 확인하세요.')
-    if getattr(sys,'frozen',False):command=[sys.executable,'--cli']
+    if getattr(sys,'frozen',False):
+        from runtime_binary import pin
+        command=[str(pin(sys.executable,default_db().parent/'runtime-binaries')),'--cli']
     else:command=[sys.executable,str(Path(__file__).resolve().parents[4]/'braindance.py')]
     body='#!/bin/sh\n'+marker+'\nexec '+shlex.join(command)+' "$@"\n'
     temporary=target.with_name('.braindance-'+uuid.uuid4().hex)
@@ -169,7 +171,9 @@ def connect(args):
         fcntl.flock(lock,fcntl.LOCK_EX)
         try:client.health();return client
         except (urllib.error.URLError,ConnectionError,TimeoutError):pass
-        if getattr(sys,'frozen',False):command=[sys.executable,'--db',str(db),'--port',str(port)]
+        if getattr(sys,'frozen',False):
+            from runtime_binary import pin
+            command=[str(pin(sys.executable,db.parent/'runtime-binaries')),'--db',str(db),'--port',str(port)]
         else:command=[sys.executable,str(Path(__file__).resolve().parents[4]/'braindance.py'),'serve','--db',str(db),'--port',str(port)]
         log_path=db.parent/'cli-backend.log'
         fd=os.open(log_path,os.O_CREAT|os.O_APPEND|os.O_WRONLY,0o600)

@@ -125,6 +125,42 @@ class ForwardTest(unittest.TestCase):
         self.assertEqual(after, before)
         self.assertEqual(pathlib.Path(self.args.db).read_bytes(), db_before)
 
+    def test_history_import_failure_preserves_completed_tree_and_retry_has_no_models(self):
+        with patch('run_history.import_run',side_effect=RuntimeError('OFFLINE history import interrupted')):
+            with self.assertRaisesRegex(RuntimeError,'history import interrupted'):self.execute()
+        output=pathlib.Path(self.args.output)
+        self.assertEqual(c.read_json(output/'status.json')['status'],'completed')
+        before=TreeStore(self.args.db).export_json()['nodes']
+        self.args.resume=True
+        self.execute(phase=lambda *a: self.fail('History retry called a model'))
+        self.assertEqual(TreeStore(self.args.db).export_json()['nodes'],before)
+        self.assertFalse(c.read_json(output/'status.json')['history_import_pending'])
+
+    def test_legacy_failed_import_recovers_matching_commit_without_duplicate_nodes(self):
+        self.execute()
+        output=pathlib.Path(self.args.output)
+        before=TreeStore(self.args.db).export_json()['nodes']
+        c.dump(output/'status.json',dict(status='failed',error='OFFLINE old lazy import failure'))
+        self.args.resume=True
+        self.execute(phase=lambda *a:self.fail('Committed Council must not redispatch'))
+        self.assertEqual(TreeStore(self.args.db).export_json()['nodes'],before)
+        self.assertTrue(c.read_json(output/'status.json')['recovered_committed_tree'])
+        c.dump(output/'status.json',dict(status='failed',error='OFFLINE partial tree'))
+        (output/'round-1/tree-nodes.json').unlink()
+        with self.assertRaisesRegex(RuntimeError,'incomplete'):self.execute()
+
+    def test_lazy_history_module_import_failure_keeps_completion_for_retry(self):
+        import builtins
+        original=builtins.__import__
+        def importing(name,*args,**kwargs):
+            if name=='run_history':raise ImportError('OFFLINE lazy archive import failure')
+            return original(name,*args,**kwargs)
+        with patch('builtins.__import__',side_effect=importing):
+            with self.assertRaisesRegex(ImportError,'lazy archive'):self.execute()
+        self.assertEqual(c.read_json(pathlib.Path(self.args.output)/'status.json')['status'],'completed')
+        self.args.resume=True
+        self.execute(phase=lambda *a:self.fail('Lazy import retry dispatched models'))
+
     def test_anonymization_permutation_all_orders(self):
         proposals={r:copy.deepcopy(self.proposal) for r in (*c.ROLES,'codex')};orders=set()
         for epoch in range(24):

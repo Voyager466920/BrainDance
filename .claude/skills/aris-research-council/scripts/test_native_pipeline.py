@@ -59,6 +59,22 @@ class NativePipelineTests(unittest.TestCase):
         self.assertEqual(install(self.config)[0],self.work)
         (self.aris/'skills/research-pipeline/SKILL.md').write_text('changed upstream')
         with self.assertRaisesRegex(ValueError,'변경'):install(self.config)
+
+    def test_completed_advisory_retries_pending_history_without_model_dispatch(self):
+        for name,content in [('LITERATURE.md','OFFLINE source'),('source-evidence.json','{"papers":[]}'),('candidate_papers.json','[]')]:
+            (self.work/name).write_text(content)
+        folder=self.work/'OFFLINE-completed-council';folder.mkdir()
+        (folder/'round-1').mkdir();(folder/'round-1/COUNCIL_REPORT.md').write_text('OFFLINE retained report')
+        council.dump(folder/'status.json',dict(status='completed',history_import_pending=True))
+        def imported(store,path,status):
+            council.dump(path/'status.json',{**status,'history_import_pending':False})
+        with patch('research_worker.verify',return_value=self.work/'source-evidence.json'), \
+             patch('native_pipeline.freeze_advisory',return_value=(folder,self.work,'OFFLINE-fingerprint')), \
+             patch('council.import_completed_history',side_effect=imported) as history, \
+             patch('council.run',side_effect=AssertionError('Completed advisory must not dispatch')):
+            self.assertTrue(self.host.execute('council',dict(stage='ideas'))['reused'])
+            self.assertTrue(self.host.execute('council',dict(stage='ideas'))['reused'])
+        self.assertEqual(history.call_count,1)
     def test_actual_execution_uses_existing_broker_limits_and_shared_conversation(self):
         steering.record(self.server.store,self.node['id'],'preserve existing baseline','next')
         context=self.host.execute('context',{})

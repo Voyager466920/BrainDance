@@ -27,7 +27,7 @@ def child_environment(devices, root):
                'HF_HOME','XDG_CACHE_HOME'}
     env = {k:v for k,v in os.environ.items() if k in allowed or k.startswith('_PYI_')}
     mode = 'cpu' if devices == ['cpu'] else 'mps' if all(d.startswith('metal:') for d in devices) else 'cuda'
-    env.update(PYTHONUNBUFFERED='1', PYTHONIOENCODING='utf-8',
+    env.update(PYTHONUNBUFFERED='1', PYTHONIOENCODING='utf-8', PYTHONFAULTHANDLER='1',
                CUDA_VISIBLE_DEVICES=','.join(devices) if mode=='cuda' else '',
                HIP_VISIBLE_DEVICES='', BRAINDANCE_DEVICE=mode,
                BRAINDANCE_GPU_IDS=','.join(devices), BRAINDANCE_RUN_DIR=str(root),

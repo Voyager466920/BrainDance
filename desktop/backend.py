@@ -62,6 +62,16 @@ def main():
     database = args.db.expanduser().resolve() if args.db else args.data_dir.expanduser().resolve()/'tree.sqlite3'
     directory = database.parent
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if getattr(sys, 'frozen', False):
+        from runtime_binary import pin
+        executable = pin(sys.executable, directory/'runtime-binaries')
+        if executable != Path(sys.executable).resolve():
+            environment = os.environ.copy()
+            environment['PYINSTALLER_RESET_ENVIRONMENT'] = '1'
+            certificate = environment.get('SSL_CERT_FILE')
+            if certificate and Path(certificate).is_relative_to(Path(sys._MEIPASS)):
+                environment.pop('SSL_CERT_FILE')
+            os.execve(str(executable), [str(executable), *sys.argv[1:]], environment)
     from viewer import create_server
     try:
         server = create_server(database, args.port, max_depth=3)
