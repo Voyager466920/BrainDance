@@ -93,7 +93,8 @@ When no usable papers can be retrieved, write the actual failure to LITERATURE.m
         raise RuntimeError('논문 탐색이 완료되지 않았습니다. 원본 로그를 확인하세요.')
     requested=set();succeeded=set()
     for row in rows:
-        for block in (row.get('message') or {}).get('content',[]) if isinstance((row.get('message') or {}).get('content'),list) else []:
+        from stream_records import blocks
+        for block in blocks(row):
             if block.get('type')=='tool_use' and block.get('name')=='Skill' and 'aris-official:research-lit'==block.get('input',{}).get('skill'):
                 requested.add(block.get('id'))
             if block.get('type')=='tool_result' and not block.get('is_error') and '<tool_use_error>' not in str(block.get('content','')):

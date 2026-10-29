@@ -38,9 +38,15 @@ def build_backend():
     build, dist = ROOT/'build', ROOT/'dist'
     build.mkdir(exist_ok=True); dist.mkdir(exist_ok=True)
     architecture = platform.machine()
+    sys.path.insert(0,str(SCRIPTS))
+    import json
+    from host_repair import build_manifest
+    metadata=build/'host-repair-build.json'
+    metadata.write_text(json.dumps(build_manifest(ROOT,sys.executable)))
     run(sys.executable, '-m', 'PyInstaller', '--noconfirm', '--clean', '--onefile',
         '--name', 'BrainDanceServer', '--paths', SCRIPTS,
-        '--add-data', str(SCRIPTS.parent/'assets')+':assets', '--collect-data', 'certifi',
+        '--add-data', str(SCRIPTS.parent/'assets')+':assets',
+        '--add-data', str(metadata)+':assets', '--collect-data', 'certifi',
         '--add-data', str(ROOT/'desktop/BrainDance.itermkeymap')+':assets',
         '--add-data', str(SCRIPTS/'experiment_worker.py')+':worker',
         '--add-data', str(SCRIPTS/'brain_monitor.py')+':assets',

@@ -201,6 +201,19 @@ class NativePipelineTests(unittest.TestCase):
         unrelated={**resumed,'auto_session_id':'different-authorization'}
         self.assertEqual(session_skill_receipts(unrelated)[0],set())
 
+    def test_real_system_warning_and_scalar_blocks_do_not_break_resume_or_forge_receipts(self):
+        from native_pipeline import session_skill_receipts
+        path=Path(self.job['run_dir'])/'native.stdout.jsonl'
+        before=path.read_text()
+        events=[dict(type='system',message='/data is outside the project workspace'),
+                dict(message=dict(content=['text',None,5])),None,'scalar event',
+                dict(message='Skill aris-official:auto-review-loop succeeded')]
+        path.write_text(before+'\n'.join(json.dumps(e) for e in events)+'\n')
+        invoked,_,_=session_skill_receipts(self.config)
+        self.assertEqual(invoked,set(SKILLS))
+        path.write_text('\n'.join(json.dumps(e) for e in events)+'\n')
+        self.assertEqual(session_skill_receipts(self.config)[0],set())
+
     def test_recovery_feedback_names_real_missing_gates_without_replacing_validation(self):
         from native_pipeline import recovery_note
         with self.server.store._connect() as conn:conn.execute("UPDATE research_jobs SET state='failed',error='OFFLINE missing exploration receipt' WHERE id=?",(self.job['id'],))

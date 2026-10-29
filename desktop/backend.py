@@ -32,6 +32,10 @@ def main():
         from terminal import install_launcher
         print(install_launcher())
         return
+    if sys.argv[1:2]==['--host-repair-worker']:
+        from host_repair import run
+        run(sys.argv[2],sys.argv[3])
+        return
     if sys.argv[1:2]==['--native-host']:
         from native_pipeline import serve
         serve(sys.argv[2])

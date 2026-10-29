@@ -75,6 +75,35 @@ class RecoveryTests(unittest.TestCase):
         self.trace.write_text(original.replace('must be an array','must be an array in 22222222-2222-4222-8222-222222222222'))
         self.assertEqual(self.request()['state'],'cooldown')
 
+    def test_preflight_diagnosis_receives_actual_stack_when_native_trace_is_absent(self):
+        from watchdog_recovery import evidence
+        self.trace.unlink()
+        error='Traceback (most recent call last):\n  File "native_pipeline.py", line 105, in session_skill_receipts\nAttributeError: string has no get'
+        (self.folder/'error.log').write_text(error)
+        proof=evidence(dict(id='OFFLINE-failed',run_dir=str(self.folder),phase='preflight',message='string has no get'))
+        self.assertIsNone(proof['raw_trace']);self.assertEqual(proof['logs']['error.log'],error)
+
+    def test_host_patch_launch_retains_hold_until_detached_worker_finishes(self):
+        r=self.request()
+        def diagnose(*args):
+            value=self.model(*args);value['action']='needs_host_patch';return value
+        with patch('council.codex_call',side_effect=diagnose),patch('host_repair.launch',return_value=dict(pid=12345)) as launched:
+            self.s.recovery.repair(self.row(r['repair_id']))
+        launched.assert_called_once_with(self.s.store.db_path,r['repair_id'])
+        self.assertEqual(self.row(r['repair_id'])['state'],'patching')
+        self.assertEqual(self.s.autopilot.get(self.session['id'])['progress']['watchdog_repair_id'],r['repair_id'])
+
+    def test_worker_repair_is_verified_only_after_a_real_successful_tool_result(self):
+        r=self.request();data=json.loads(self.row(r['repair_id'])['payload']);data['expected_tool']='worker'
+        self.s.recovery.set(r['repair_id'],'awaiting_progress',data)
+        folder=self.folder.parent/'OFFLINE-worker-retry';folder.mkdir()
+        with self.s.store._connect() as c:
+            c.execute('INSERT INTO research_jobs VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)',('OFFLINE-worker-retry',self.f.project['id'],self.f.project['id'],'OFFLINE','running','native-pipeline','retry','lite',json.dumps(self.config),str(folder),now(),now(),None,None))
+        trace=folder/'native.stdout.jsonl';trace.write_text(json.dumps(dict(message='started'))+'\n')
+        self.s.recovery.verify();self.assertEqual(self.row(r['repair_id'])['state'],'awaiting_progress')
+        trace.write_text(json.dumps(dict(message=dict(content=[dict(type='tool_use',id='ctx',name='mcp__codex__context')])))+'\n'+json.dumps(dict(message=dict(content=[dict(type='tool_result',tool_use_id='ctx',content='OFFLINE actual successful context receipt')])))+'\n')
+        self.s.recovery.verify();self.assertEqual(self.row(r['repair_id'])['state'],'verified')
+
 
 class LiteratureInputTests(unittest.TestCase):
     def test_alias_only_sources_join_matching_candidates_and_preserve_raw(self):

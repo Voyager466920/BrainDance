@@ -19,6 +19,7 @@ import time
 from types import SimpleNamespace
 
 import council
+from stream_records import message as stream_message,blocks as stream_blocks
 from tree_store import TreeStore,now
 
 SKILLS=('research-pipeline','idea-discovery','experiment-bridge','auto-review-loop','novelty-check')
@@ -102,9 +103,8 @@ def session_skill_receipts(job):
         for line in trace.read_text().splitlines():
             try:event=json.loads(line)
             except ValueError:continue
-            content=(event.get('message') or {}).get('content',[])
-            for block in content if isinstance(content,list) else []:
-                if block.get('type')=='tool_use' and block.get('name')=='Skill':requested[block['id']]=block.get('input',{}).get('skill','').split(':')[-1]
+            for block in stream_blocks(event):
+                if block.get('type')=='tool_use' and block.get('name')=='Skill':requested[block['id']]=(block.get('input') or {}).get('skill','').split(':')[-1]
                 if block.get('type')=='tool_use' and block.get('name')=='mcp__codex__finish':finish_request=block.get('input',{})
                 if block.get('type')=='tool_result' and not block.get('is_error') and '<tool_use_error>' not in str(block.get('content')):succeeded.add(block.get('tool_use_id'))
         found={requested[key] for key in requested.keys() & succeeded};invoked.update(found)
@@ -214,8 +214,9 @@ def run(job,root,progress):
                         line,pending=pending.split('\n',1);out.write(line+'\n');out.flush()
                         try:row=json.loads(line)
                         except ValueError:continue
+                        if not isinstance(row,dict):continue
                         if row.get('session_id'):council.dump(statefile,dict(session_id=row['session_id'],updated_at=now()))
-                        msg=row.get('message') or {}
+                        msg=stream_message(row)
                         if row.get('type')=='assistant' and msg.get('id'):
                             ident=msg['id']
                             if ident not in messages and len(messages)>=reserved:
@@ -224,7 +225,7 @@ def run(job,root,progress):
                             total=sum(council.tokens(u) for u in messages.values())
                             update(job['session_budget'],'record',key=str(root/'native-usage.json'),tokens=total,breakdown=stream_usage(messages))
                             council.dump(root/'native-usage.json',dict(model=job['literature_model'],messages=len(messages),tokens=total,token_breakdown=stream_usage(messages),accounting_version=2,accounting_source='per_invocation_stream',usage=messages))
-                        for b in msg.get('content',[]) if isinstance(msg.get('content'),list) else []:
+                        for b in stream_blocks(row):
                             if b.get('type')=='tool_use' and b.get('name')=='mcp__codex__finish':finish_ids.add(b['id'])
                             if b.get('type')=='tool_result' and b.get('tool_use_id') in finish_ids and not b.get('is_error'):
                                 saved=work/'native-completion.json'

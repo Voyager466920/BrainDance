@@ -24,6 +24,7 @@ import threading
 import time
 import uuid
 
+from stream_records import message as stream_message,blocks as stream_blocks
 from tree_store import TreeStore
 
 SKILL = Path(sys._MEIPASS) if getattr(sys,'frozen',False) else Path(__file__).resolve().parents[1]
@@ -367,28 +368,28 @@ def claude_call(folder, name, prompt, model, config, budget, agents=None, requir
             # CLI can continue a capped response in a later message while result
             # contains only the final fragment. Reassemble actual text, never invent it.
             parts = [c.get("text", "") for r in rows if r.get("type") == "assistant" and not r.get("parent_tool_use_id")
-                     for c in r.get("message", {}).get("content", []) if c.get("type") == "text"]
+                     for c in stream_blocks(r) if c.get("type") == "text"]
             obj = parse_object("".join(parts), required)
     else:
         calls, replies, observed, leaf_texts, task_status = {}, {}, {}, {}, {}
         for row in rows:
             parent = row.get("parent_tool_use_id")
-            msg = row.get("message", {})
+            msg = stream_message(row)
             if parent and msg.get("model"):
                 observed.setdefault(parent, set()).add(msg["model"])
-                for c in msg.get("content", []):
+                for c in stream_blocks(row):
                     if c.get("type") == "text":
                         leaf_texts.setdefault(parent, []).append(c.get("text", ""))
             if row.get("type") == "system" and row.get("subtype") == "task_notification":
                 task_status[row.get("tool_use_id")] = row.get("status")
             if row.get("type") == "assistant" and not parent:
-                for c in msg.get("content", []):
+                for c in stream_blocks(row):
                     if c.get("type") == "tool_use":
                         if c.get("name") != "Agent":
                             raise ValueError("Coordinator used unexpected tool: " + c.get("name", ""))
                         calls[c["id"]] = c.get("input", {}).get("subagent_type")
             if row.get("type") == "user" and not parent:
-                for c in msg.get("content", []):
+                for c in stream_blocks(row):
                     if isinstance(c, dict) and c.get("type") == "tool_result":
                         if c.get("is_error"):
                             raise RuntimeError("Native Agent failed; raw error retained")

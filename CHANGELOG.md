@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.19.18
+
+- Handle legitimate string-valued Claude system notifications and mixed stream records without losing actual Skill/tool receipts or breaking task resumption.
+- Include actual worker tracebacks in recovery diagnosis, rather than referring to nonexistent native streams after preflight failure.
+- Add a detached host repair worker: generate an exact patch in a registered source snapshot, replay the failure, run unchanged regression tests, build/check a CLI candidate, deploy while research is idle and retain the previous immutable runtime for rollback. Keep original ARIS and resource/allowance/review controls unchanged.
+- Retain the same project/session/tasks and require real resumed tool success before recovery confirmation. Detect detached worker exits and preserve explicit user stops, deadlines and charged usage. Register the local build source automatically on CLI installation; add `monitor repair-source` for separately installed source/build environments.
+
 ## 0.19.17
 
 - Execute the installed, unmodified research review helpers, including `review_gate.py`, reviewer routing and trace recording, through the existing managed transport. Original Skills and helper source remain unchanged.

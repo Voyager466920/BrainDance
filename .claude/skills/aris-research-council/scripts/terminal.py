@@ -64,6 +64,9 @@ def install_launcher(directory=None):
     try:
         temporary.write_text(body);temporary.chmod(0o755);os.replace(temporary,target)
     finally:temporary.unlink(missing_ok=True)
+    if getattr(sys,'frozen',False):
+        from host_repair import register_build
+        register_build(default_db(),target)
     return str(target)
 
 
@@ -258,7 +261,7 @@ def parser():
     p=argparse.ArgumentParser(prog='braindance',description='BrainDance 프로젝트 대화·연구 터미널',parents=[common])
     sub=p.add_subparsers(dest='command')
     sub.add_parser('install-cli',parents=[common])
-    q=sub.add_parser('monitor',parents=[common]);q.add_argument('action',choices=['status','install','check','uninstall','repair-on','repair-off'],nargs='?',default='status');q.add_argument('--no-notify',action='store_true')
+    q=sub.add_parser('monitor',parents=[common]);q.add_argument('action',choices=['status','install','check','uninstall','repair-on','repair-off','repair-source'],nargs='?',default='status');q.add_argument('--no-notify',action='store_true');q.add_argument('--source',type=Path);q.add_argument('--python',type=Path)
     for name in ['delete','trash','restore','purge']:
         q=sub.add_parser(name,parents=[common])
         if name=='purge':
@@ -630,6 +633,14 @@ def main(argv=None):
     args=parser().parse_args(argv)
     if args.command=='monitor':
         try:
+            if args.action=='repair-source':
+                if not args.source or not args.python:raise ValueError('--source 저장소와 --python 빌드 환경을 지정하세요.')
+                from host_repair import build_manifest,register_source
+                from brain_monitor import read
+                db=getattr(args,'db',default_db())
+                current=read(Path(db).parent/'monitor/backend-runtime.json')
+                result=register_source(db,build_manifest(args.source,args.python),current.get('image',''),Path.home()/'.local/bin/braindance')
+                print(json.dumps(result,ensure_ascii=False));return 0 if result['state']=='registered' else 1
             from brain_monitor import command
             result=command(args.action,getattr(args,'db',default_db()),getattr(args,'server',None) or 'http://127.0.0.1:'+str(getattr(args,'port',None) or 8766),not args.no_notify)
             if getattr(args,'json',False):print(json.dumps(result,ensure_ascii=False))
