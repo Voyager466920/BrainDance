@@ -38,13 +38,23 @@ def run(job,root,work,cfg):
     root=Path(root);work=Path(work)
     from research_worker import verify
     class Progress:
-        def emit(self,*args,**kw):pass
+        def emit(self,phase,message,**kw):
+            from tree_store import now
+            council.dump(work/'host-progress.json',dict(phase=phase,message=message,at=now()))
+    progress=Progress()
     source=work/'literature';source.mkdir(exist_ok=True)
     import shutil
     for name in ['LITERATURE.md','source-evidence.json','candidate_papers.json']:shutil.copy2(work/name,source/name)
-    evidence=verify(job,root,source,Progress())
+    evidence=verify(job,root,source,progress)
+    raw=council.read_json(evidence)
+    papers=[p for p in raw['papers'] if p.get('verification_status')=='verified']
+    excluded=[dict(id=p['id'],status=p.get('verification_status','unverified')) for p in raw['papers'] if p.get('verification_status')!='verified']
+    if not papers:raise ValueError('확인된 논문 근거가 없습니다. 보류·오류 원본 기록을 보존했습니다. 다른 출처를 탐색하거나 조회 재시도 시각 이후 확인하세요.')
+    # Stable scientific inputs preserve completed lens receipts across retries.
+    evidence=source/'exploration-evidence.json'
+    council.dump(evidence,dict(papers=papers,excluded_from_exploration=excluded))
     # Version the changed response contract; preserve failed old traces rather than replay them forever.
-    output=work/'broad-exploration'/council.digest(job['topic']+Path(evidence).read_text()+'compact-json-v2'+('economy' if job.get('cost_profile')=='economy' else 'standard'));output.mkdir(parents=True,exist_ok=True)
+    output=work/'broad-exploration'/council.digest(job['topic']+Path(evidence).read_text()+(source/'LITERATURE.md').read_text()+'verified-incremental-v1'+('economy' if job.get('cost_profile')=='economy' else 'standard'));output.mkdir(parents=True,exist_ok=True)
     settings={**cfg,'max_papers':12,'context_chars':18000,'output_tokens':2600}
     if job.get('cost_profile')=='economy':settings.update(context_chars=12000)
     # This is a safety ceiling, not a requested answer length. 1800 killed native leaves
@@ -65,12 +75,15 @@ def run(job,root,work,cfg):
         return council.claude_call(folder,'exploration',dispatch,settings['coordinator_model'],attempt_settings,budget,agents=agents,required=('title','evidence_ids','ratings'))
     proposals={};width=min(3,settings['max_parallel'])
     # Reuse cached participant receipts on a retry. Full Council runs only for shortlisted studies/results.
-    for i in range(0,len(ROLES),width):proposals.update(wave(ROLES[i:i+width]))
+    for i in range(0,len(ROLES),width):
+        progress.emit('broad-exploration',f'탐색 에이전트 {len(proposals)}/6 완료 · 논문 {len(papers)}편 확인 · 보류·미확인 {len(excluded)}편 제외')
+        proposals.update(wave(ROLES[i:i+width]))
+    progress.emit('broad-exploration','탐색 에이전트 6/6 완료 · 가설·점수 검증 중')
     for proposal in proposals.values():
         council.normalize_evidence_ids(proposal,pack)
         if not set(proposal['evidence_ids'])<=set(pack['selected_ids']):raise ValueError('탐색 에이전트가 제공되지 않은 논문을 인용했습니다.')
         for name in ['potential','novelty_provisional','feasibility','falsifiability']:
             if type(proposal['ratings'].get(name)) is not int or not 0<=proposal['ratings'][name]<=100:raise ValueError('탐색 평가 점수는 0–100 정수여야 합니다.')
     council.dump(output/'proposals.json',proposals)
-    council.dump(root/'broad-exploration-receipt.json',dict(path=str(output),agents=6,source_evidence=str(evidence)))
+    council.dump(root/'broad-exploration-receipt.json',dict(path=str(output),agents=6,source_evidence=str(evidence),excluded_papers=excluded))
     return dict(exploration_agents=6,proposals=proposals,selected_paper_ids=pack['selected_ids'],score_semantics='provisional subjective 0–100, not scientific measurements',next='Merge into five distinct ideas, re-search closest work, then select normally two hypotheses for independent official pipelines.')

@@ -120,39 +120,10 @@ def verify(job,root,work,progress):
     if any(not isinstance(pid,str) or not pid for pid in ids) or len(set(ids))!=len(ids):raise ValueError('논문 ID가 중복되거나 비어 있습니다.')
     if set(ids)!={p.get('id') for p in candidates}:raise ValueError('탐색 근거와 검증 후보 목록이 다릅니다.')
     progress.emit('verification','논문 ID·존재를 확인합니다. 논문 주장 검증과는 구분합니다.')
-    # Reuse the upstream fetcher to preserve genuine, unmodified source abstracts.
-    arxiv_ids=[p.get('arxiv_id') for p in papers if isinstance(p.get('arxiv_id'),str) and re.fullmatch(r'\d{4}\.\d{4,5}(v\d+)?',p['arxiv_id'])]
-    if arxiv_ids:
-        command=council.python_command(Path(job['aris_repo'])/'tools/arxiv_fetch.py')+['search','id:'+','.join(arxiv_ids),'--max',str(len(arxiv_ids))]
-        with (work/'arxiv-source.json').open('w') as out,(root/'arxiv-fetch.stderr.log').open('w') as err:
-            p=subprocess.Popen(command,stdout=out,stderr=err,start_new_session=True)
-            with council.PROCESS_LOCK:council.ACTIVE_PROCESSES.add(p)
-            try:p.wait(timeout=150)
-            except subprocess.TimeoutExpired:os.killpg(p.pid,signal.SIGTERM);p.wait(timeout=5)
-            finally:
-                if p.poll() is None:os.killpg(p.pid,signal.SIGTERM);p.wait(timeout=5)
-                with council.PROCESS_LOCK:council.ACTIVE_PROCESSES.discard(p)
-        try:
-            source={re.sub(r'v\d+$','',p['id']):p for p in council.read_json(work/'arxiv-source.json')}
-            for paper in papers:
-                original=source.get(re.sub(r'v\d+$','',paper.get('arxiv_id') or ''))
-                if original and original.get('abstract'):
-                    paper.update(abstract=original['abstract'],title=original['title'],evidence_level='original_arxiv_abstract',url=original['abs_url'])
-        except (ValueError,KeyError,TypeError):
-            progress.emit('verification','arXiv 원문 초록 조회를 완료하지 못했습니다. 도구가 반환한 발췌·요약과 한계를 보존합니다.')
-    output=work/'verification.json';helper=Path(job['aris_repo'])/'tools/verify_papers.py'
-    argv=council.python_command(helper)+['--input',str(work/'candidate_papers.json'),'--output',str(output),'--cache-dir',str(root.parent.parent/'paper-verification-cache')]
-    with (root/'verification.stdout.log').open('w') as out,(root/'verification.stderr.log').open('w') as err:
-        process=subprocess.Popen(argv,stdout=out,stderr=err,cwd=work,start_new_session=True)
-        with council.PROCESS_LOCK:council.ACTIVE_PROCESSES.add(process)
-        try:
-            code=process.wait(timeout=min(240,job['phase_timeout_seconds']))
-        finally:
-            if process.poll() is None:
-                os.killpg(process.pid,signal.SIGTERM);process.wait(timeout=5)
-            with council.PROCESS_LOCK:council.ACTIVE_PROCESSES.discard(process)
-    if not output.is_file():raise RuntimeError('공식 논문 검증 영수증이 없습니다. 종료 코드: '+str(code))
-    receipt=council.read_json(output);checks={p.get('id'):p for p in receipt.get('papers',[])}
+    from paper_verification import enrich,run as verify_incremental
+    enrich(job,root,work,papers,progress)
+    receipt=verify_incremental(job,root,work,candidates,progress)
+    checks={p.get('id'):p for p in receipt.get('papers',[])}
     if set(ids)!=set(checks):raise ValueError('논문 검증 결과의 ID가 일치하지 않습니다.')
     for paper in papers:
         if not isinstance(paper.get('abstract') or paper.get('source_excerpt'),str) or not (paper.get('abstract') or paper.get('source_excerpt')).strip():raise ValueError('읽을 수 있는 논문 근거가 없습니다.')

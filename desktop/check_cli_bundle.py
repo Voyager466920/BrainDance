@@ -28,6 +28,14 @@ def main():
     assert 'BrainDance' in startup and '▉' in startup
     with tempfile.TemporaryDirectory(prefix='braindance-bundle-check-') as folder:
         database=Path(folder).resolve()/'tree.sqlite3'
+        # The packaged host must dynamically load the unmodified external verifier
+        # and its dataclasses, without requiring a second Python installation.
+        helper=Path(folder)/'verifier-import-fixture.py'
+        helper.write_text('from dataclasses import dataclass\n@dataclass\nclass PaperInput:\n id: str\n')
+        probe=Path(folder)/'verifier-import-probe.py'
+        probe.write_text('from pathlib import Path\nfrom paper_verification import upstream\nm,d=upstream(Path('+repr(str(helper))+'))\nassert m.PaperInput("OFFLINE").id=="OFFLINE" and len(d)==64\nprint("PACKAGED_VERIFIER_IMPORT_OK")\n')
+        checked=subprocess.run([str(executable),'--run-experiment',str(probe)],capture_output=True,text=True,timeout=20)
+        assert checked.returncode==0 and 'PACKAGED_VERIFIER_IMPORT_OK' in checked.stdout,checked.stderr
         with socket.socket() as sock:sock.bind(('127.0.0.1',0));port=sock.getsockname()[1]
         address='http://127.0.0.1:'+str(port)
         def get(path):

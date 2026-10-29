@@ -285,7 +285,7 @@ class Host:
         if name=='exploration_council':
             self.require_skill('idea-discovery');self.require_skill('research-lit')
             from exploration import run
-            self.event('broad-exploration','6개 탐색 에이전트가 다른 관점에서 문제와 가설을 발굴합니다.')
+            self.event('verification','탐색 준비 · 논문 존재 검증 후 6개 관점 탐색을 시작합니다.')
             return run(self.job,self.root,self.work,self.cfg)
         if name=='paper_search':
             self.require_skill('research-lit')

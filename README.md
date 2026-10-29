@@ -247,6 +247,8 @@ Authorized distinct GPUs permit concurrent studies; a single selected GPU stays 
 
 ## Fresh prior-art and novelty checks
 
+Literature identity checks run incrementally through the unmodified upstream verifier. Completed paper receipts survive a slow lookup; timeouts remain `verify_pending` and are retried after a cooldown. Exploratory agents receive confirmed papers with readable evidence, while pending/unverified entries and their full raw logs remain in the archive. Progress separates paper-verification counts from completed exploration agents. This does not establish novelty: the fresh prior-art searches and independent review below are still required.
+
 Ideas are checked again after generation: the host searches the installed upstream arXiv and OpenAlex clients with alternative queries and no recency filter, retains raw responses/errors, and runs the original paper-existence verifier with `--no-cache`. Earlier verified flags do not substitute for this operation. The native executor loads the original `novelty-check` Skill and gets the original independent Reviewer comparison before registering a scouting candidate. Council separately re-searches its anonymous generated proposals before peer review and synthesis.
 
 Existence, mechanism overlap and novelty are separate claims. Reviews name the closest verified prior work and the concrete technical difference. Missing or metadata-only evidence, unavailable sources and no-result searches leave novelty unverified; performance improvement alone cannot prove novelty. Nearby work alone does not invalidate an idea. Uncertain ideas can still be tested as exploratory pilots. All source diagnostics and full receipts remain local; reading reports still cite paper URLs only.

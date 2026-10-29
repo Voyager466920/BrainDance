@@ -11,7 +11,7 @@ import exploration
 class ExplorationTests(unittest.TestCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup);self.root=Path(self.tmp.name);self.work=self.root/'work';self.work.mkdir()
-        self.paper=dict(id='OFFLINE-ONLY',title='Synthetic fixture, not a publication',abstract='Controlled evidence fixture. Not a real scientific source.',url='https://example.invalid',verification_status='SYNTHETIC_TEST_ONLY')
+        self.paper=dict(id='OFFLINE-ONLY',title='Synthetic fixture, not a publication',abstract='Controlled evidence fixture. Not a real scientific source.',url='https://example.invalid',verification_status='verified')
         (self.work/'LITERATURE.md').write_text('OFFLINE synthetic fixture');(self.work/'source-evidence.json').write_text(json.dumps(dict(papers=[self.paper])));(self.work/'candidate_papers.json').write_text('[]')
         self.cfg={**council.DEFAULTS,**council.MODES['balanced']}
         self.job=dict(topic='OFFLINE research direction',db=str(self.root/'tree.sqlite3'))
@@ -60,3 +60,17 @@ class ExplorationTests(unittest.TestCase):
         self.assertNotEqual(folder,base);self.assertEqual(attempt,1);self.assertEqual(log.read_bytes(),raw)
         folder.mkdir();(folder/'parsed.json').write_text('{}');(folder/'usage.json').write_text('{}')
         self.assertEqual(exploration.wave_attempt(base),(folder,1))
+
+    def test_pending_sources_are_preserved_but_excluded_from_agent_evidence(self):
+        self.agents={}
+        def verify(job,root,source,progress):
+            p=source/'verified-evidence.json';p.write_text(json.dumps(dict(papers=[self.paper,{**self.paper,'id':'PENDING','verification_status':'verify_pending'}])))
+            progress.emit('verification','OFFLINE checking 2/2');return p
+        with patch('research_worker.verify',side_effect=verify),patch('council.claude_call',side_effect=self.call),patch('council.prepare',wraps=council.prepare) as prepare:exploration.run(self.job,self.root,self.work,self.cfg)
+        evidence=json.loads(Path(prepare.call_args.args[1]).read_text());self.assertEqual(len(evidence['papers']),1)
+        self.assertEqual(evidence['excluded_from_exploration'],[dict(id='PENDING',status='verify_pending')])
+        self.assertIn('6/6',json.loads((self.work/'host-progress.json').read_text())['message'])
+    def test_no_confirmed_papers_cannot_start_exploratory_model_calls(self):
+        self.paper['verification_status']='verify_pending'
+        with patch('research_worker.verify',side_effect=self.verify),patch('council.claude_call',side_effect=AssertionError('No verified evidence')):
+            with self.assertRaisesRegex(ValueError,'확인된 논문'):exploration.run(self.job,self.root,self.work,self.cfg)

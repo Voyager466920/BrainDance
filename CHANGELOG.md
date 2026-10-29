@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.19.13
+
+- Fix paper-verification loops where a slow lookup exceeded the 240-second batch limit before the official verifier saved its results and cache.
+- Reuse the original verifier's valid cache, check uncached papers independently with bounded time, and save each completed receipt. Preserve raw attempts and leave transient failures as `verify_pending` with a retry cooldown.
+- Use confirmed readable sources for the six exploratory agents while retaining excluded sources and diagnostics. Identity confirmation still does not establish novelty; original fresh searches and independent review remain required.
+- Show paper-verification counts separately from exploration-agent completion counts.
+
 ## 0.19.12
 
 - Add an independent experiment with `새 실험:`, `실험 추가:` or `new experiment:` in a selected Slack project/thread or CLI conversation in auto mode.
