@@ -254,6 +254,7 @@ def parser():
     p=argparse.ArgumentParser(prog='braindance',description='BrainDance 프로젝트 대화·연구 터미널',parents=[common])
     sub=p.add_subparsers(dest='command')
     sub.add_parser('install-cli',parents=[common])
+    q=sub.add_parser('monitor',parents=[common]);q.add_argument('action',choices=['status','install','check','uninstall'],nargs='?',default='status');q.add_argument('--no-notify',action='store_true')
     for name in ['delete','trash','restore','purge']:
         q=sub.add_parser(name,parents=[common])
         if name=='purge':
@@ -623,6 +624,17 @@ class Console:
 
 def main(argv=None):
     args=parser().parse_args(argv)
+    if args.command=='monitor':
+        try:
+            from brain_monitor import command
+            result=command(args.action,getattr(args,'db',default_db()),getattr(args,'server',None) or 'http://127.0.0.1:'+str(getattr(args,'port',None) or 8766),not args.no_notify)
+            if getattr(args,'json',False):print(json.dumps(result,ensure_ascii=False))
+            else:
+                print('BrainDance 감시 · '+('설치됨' if result.get('installed') else '해제됨' if 'installed' in result else '확인 완료')+' · LLM 호출 0회')
+                if result.get('last_check'):print('마지막 확인 '+result['last_check']+' · 활성 연구 '+str(result.get('active_sessions',0))+' · 감지 '+str(len(result.get('findings',[]))))
+                for item in result.get('findings',[]):print(safe_text(item['title']+' · '+item['message']))
+            return 0
+        except (OSError,ValueError) as error:print('BrainDance 감시: '+safe_text(error),file=sys.stderr);return 1
     if args.command=='install-cli':
         try:print(install_launcher());return 0
         except (ClientError,OSError) as error:print('BrainDance: '+safe_text(error),file=sys.stderr);return 1

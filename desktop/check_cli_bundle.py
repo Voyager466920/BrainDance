@@ -42,6 +42,9 @@ def main():
             with urllib.request.urlopen(address+path,timeout=8) as response:return response.read().decode()
         pid=None
         try:
+            monitor=json.loads(run('monitor','status','--json','--db',str(database),'--server',address))
+            assert not monitor['installed'] and monitor['model_calls']==0
+            assert not database.exists(),'Monitor status must not create a workspace or start the backend'
             assert json.loads(run('projects','--json','--db',str(database),'--port',str(port)))==[]
             # Prove the packaged native host can load and speak real MCP framing.
             native_job=Path(folder)/'native-job.json'

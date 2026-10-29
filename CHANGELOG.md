@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.19.14
+
+- Add an independent, standard-library-only macOS monitor that performs one short check per minute.
+- Read research state and bounded logs without model calls, SSH polling, research-record changes or automatic restarts. Ignore idle/stopped/expired sessions and valid long experiments.
+- Send deduplicated stall, repeated-error and backend-availability alerts to the existing personal Slack destination; respect muting and hold ambiguous deliveries.
+- Add `braindance monitor install`, `status`, `check --no-notify` and `uninstall`, which work independently of backend startup.
+
 ## 0.19.13
 
 - Fix paper-verification loops where a slow lookup exceeded the 240-second batch limit before the official verifier saved its results and cache.

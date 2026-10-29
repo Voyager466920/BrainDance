@@ -225,6 +225,14 @@ Send each line as a separate DM:
 
 Only the registered owner, workspace, bot and personal DM are accepted. Duplicate events do not repeat a request or continuation. Tokens remain in private local files. Use `braindance slack remote-status` to inspect incoming commands, `braindance slack remote-off` to disable them while keeping the app token, or `braindance slack remote-forget` to remove it. Outgoing notifications remain enabled independently. See [all Slack commands and troubleshooting](docs/slack.md).
 
+## Lightweight independent monitor
+
+On macOS, install a separate user service with `braindance monitor install`. It runs a short check every 60 seconds using standard-library Python, without keeping a model session open. The backend does not need to be running for `braindance monitor status` or `check` to work.
+
+The monitor reads the local research database and bounded new log records. It alerts your existing personal Slack DM after three consecutive backend failures, three similar errors within 30 minutes, or 15 minutes without a meaningful stage/tool-result change. Long experiments inside their reviewed timeout are allowed to run quietly. Paused, stopped and expired sessions do not trigger a restart or stall alert. Known Slack rate limits back off; uncertain deliveries are not replayed.
+
+Use `braindance monitor status` to inspect it, `braindance monitor check --no-notify` for a manual check without a DM, and `braindance monitor uninstall` to remove the service while retaining its records. The monitor is **alert-only**: it makes no LLM/SSH calls, does not modify research records or budgets, and does not restart the backend or experiments. Existing research repair loops remain responsible for recovery. Quiet healthy operation sends no periodic Slack updates. See [monitor details](docs/monitor.md).
+
 ## Usage accounting and economy profile
 
 Claude resume responses may report cumulative per-session `modelUsage`. BrainDance counts the increment for each invocation, retains the original provider aggregate, and displays fresh input/output separately from cache reads and cache creation. Historical corrections preserve original receipts, calls, scientific results and stopped/running state, with an audit trail. These are processing counters, not a subscription-limit percentage or a cash invoice.

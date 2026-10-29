@@ -43,6 +43,7 @@ def build_backend():
         '--add-data', str(SCRIPTS.parent/'assets')+':assets', '--collect-data', 'certifi',
         '--add-data', str(ROOT/'desktop/BrainDance.itermkeymap')+':assets',
         '--add-data', str(SCRIPTS/'experiment_worker.py')+':worker',
+        '--add-data', str(SCRIPTS/'brain_monitor.py')+':assets',
         '--add-data', str(ROOT/'.claude/agents')+':agents',
         '--hidden-import', 'requests', '--hidden-import', 'csv', '--hidden-import', 'statistics', '--hidden-import', 'xml.etree.ElementTree',
         '--hidden-import', 'matplotlib.backends.backend_agg',
