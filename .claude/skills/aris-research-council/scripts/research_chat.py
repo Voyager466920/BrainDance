@@ -130,11 +130,18 @@ class ResearchChat:
                 reference=lambda item:(item['type'],item['id']) if item else None
                 if old['node_id']!=node['id'] or previous['content']!=content.strip() or old_meta['mode']!=mode or reference(old_reply)!=reference(reply_to):raise ValueError('같은 요청 ID의 메시지 내용이 바뀌었습니다.')
                 return self.decode(old)
+            if mode=='auto' and direct_reply is None:
+                from experiment_requests import parse,reply
+                request=parse(content)
+                if request is not None:
+                    result=self.control.add_experiment(dict(project_id=node['project_id'],content=request,request_id=request_id))
+                    direct_reply=dict(reply=reply(result),intent='experiment_request',experiment_request_id=result['id'])
             if direct_reply is None and conn.execute("SELECT count(*) FROM research_chat WHERE project_id=? AND state IN ('queued','running')",(node['project_id'],)).fetchone()[0]>=4:raise ValueError('답변 대기 메시지가 많습니다. 진행 중인 답변을 기다려 주세요.')
             revision=steering.snapshot(self.store,node['project_id'])['revision']
             metadata=dict(mode=mode,direction_revision_at_send=revision)
             if origin is not None:metadata['origin']=origin
             if direct_reply is not None:metadata.update(reply_model_calls=0,intent=direct_reply.get('intent','question'))
+            if direct_reply is not None and direct_reply.get('experiment_request_id'):metadata['experiment_request_id']=direct_reply['experiment_request_id']
             if reply_to:metadata['reply_to']=reply_to
             timestamp=now();reply_id=str(uuid.uuid4())
             for role,text,state,msg_id in [('user',content.strip(),'completed',str(uuid.uuid4())),('assistant',direct_reply['reply'] if direct_reply is not None else '', 'completed' if direct_reply is not None else 'preparing' if mode in {'next','restart'} else 'queued',reply_id)]:

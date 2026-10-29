@@ -24,11 +24,13 @@ def listing(store,session_id):
 
 def stage(server,job,session,node_ids):
     initialize(server.store)
+    from experiment_requests import initialize as requests_initialize
+    requests_initialize(server.store)
     if job['config'].get('task_role')!='discovery':raise ValueError('넓은 탐색 작업에서만 연구 가설을 분리할 수 있습니다.')
     if not isinstance(node_ids,list) or not 0<=len(node_ids)<=5 or len(node_ids)!=len(set(node_ids)):raise ValueError('중복되지 않은 가설을 최대 5개 선택하세요.')
-    with server.store._connect() as c:old=c.execute('SELECT id FROM research_tasks WHERE session_id=? AND round=?',(session['id'],job['config'].get('native_cycle',0))).fetchall()
+    with server.store._connect() as c:old=c.execute('SELECT id FROM research_tasks WHERE session_id=? AND round=? AND id NOT IN (SELECT id FROM experiment_requests)',(session['id'],job['config'].get('native_cycle',0))).fetchall()
     if old:
-        rows=[r for r in listing(server.store,session['id']) if r['round']==job['config'].get('native_cycle',0)]
+        ids={r['id'] for r in old};rows=[r for r in listing(server.store,session['id']) if r['id'] in ids]
         if {r['node_id'] for r in rows}!=set(node_ids):raise ValueError('이미 분리한 가설 목록은 덮어쓰지 않습니다.')
         return rows
     nodes=[server.store.get_node(n) for n in node_ids]
@@ -47,7 +49,7 @@ def stage(server,job,session,node_ids):
         (work/'HYPOTHESIS.json').write_text(json.dumps(n,ensure_ascii=False,indent=2))
         with server.store._connect() as c:c.execute('INSERT INTO research_tasks VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)',(task_id,session['id'],job['project_id'],n['id'],job['config'].get('native_cycle',0),'queued',None,str(work),'[]',0,0,now(),now(),'공식 연구 파이프라인 실행 대기'))
         server.store.update_node(n['id'],metadata=dict(research_task_id=task_id))
-    return [r for r in listing(server.store,session['id']) if r['round']==job['config'].get('native_cycle',0)]
+    return [r for r in listing(server.store,session['id']) if r['node_id'] in node_ids]
 
 
 def update(store,task_id,**values):
@@ -63,7 +65,13 @@ def slots(assignment):
 
 def tick(controller,item):
     server=controller;store=server.store;p=item['progress'];rows=listing(store,item['id'])
-    current=[r for r in rows if r['round']==p.get('native_cycle',0)]
+    from experiment_requests import initialize as requests_initialize
+    requests_initialize(store)
+    with store._connect() as c:requested={r['id']:r['status'] for r in c.execute('SELECT q.id,n.status FROM experiment_requests q JOIN nodes n ON n.id=q.node_id WHERE q.session_id=?',(item['id'],))}
+    def eligible(r):return r['id'] not in requested or r['state']!='queued' or requested[r['id']] in {'active','expanded'}
+    def selected(rows):return sorted([r for r in rows if eligible(r) and (r['round']==p.get('native_cycle',0) or r['id'] in requested and r['state'] in {'queued','running'})],key=lambda r:r['id'] not in requested)
+    current=selected(rows)
+    processed={r['id'] for r in current}
     for task in current:
         if task['state']!='running':continue
         job=server.research.get(task['job_id'])
@@ -76,7 +84,7 @@ def tick(controller,item):
             error=job.get('error') or job['message'];n=task['attempts']+1
             blocked=any(word in error.lower() for word in ['로그인','인증','unauthorized','authentication'])
             update(store,task['id'],state='blocked' if blocked else 'queued',attempts=n,retry_at=time.time()+min(60,2**min(n,6)),message=error[:1500])
-    current=[r for r in listing(store,item['id']) if r['round']==p.get('native_cycle',0)]
+    current=sorted([r for r in listing(store,item['id']) if eligible(r) and (r['round']==p.get('native_cycle',0) or r['id'] in processed)],key=lambda r:r['id'] not in requested)
     if current and all(r['state']=='blocked' for r in current):
         controller.save(item,'blocked','가설 작업의 인증 문제를 확인해야 합니다. 원본 작업과 로그를 보존했습니다.');return
     if current and all(r['state'] in {'completed','rejected','stopped','blocked'} for r in current):

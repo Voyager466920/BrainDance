@@ -64,6 +64,9 @@ def main():
             saved=json.loads(run('interests','--project',project['project_id'],'--json','--db',str(database),'--server',address));assert saved==interests
             status=json.loads(run('status','--project',project['project_id'],'--json','--db',str(database),'--server',address))
             assert status['session'] is None and not status['runs']
+            added=json.loads(run('chat','새 실험: OFFLINE packaged request; do not run research','--project',project['project_id'],'--mode','auto','--no-wait','--request-id','packaged-experiment-request-0001','--json','--db',str(database),'--server',address))
+            assert added['state']=='completed' and added['metadata']['reply_model_calls']==0
+            assert len(json.loads(get('/api/tree'))['experiment_requests'])==1
             remote=json.loads(run('slack','remote-status','--json','--db',str(database),'--server',address))
             assert remote['sdk_available'] and not remote['enabled'] and remote['scope']=='registered_owner_dm_only'
             slack=json.loads(run('slack','status','--json','--db',str(database),'--server',address))

@@ -256,7 +256,7 @@ class TreeStore:
             tables={r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             snapshot['cleanup_pending'] = [dict(r) for r in conn.execute('''SELECT project_id AS id,title,
                 created_at AS deleted_at,1 AS cleanup_pending,error FROM project_cleanup_jobs ORDER BY created_at''')] if 'project_cleanup_jobs' in tables else []
-            for table,fields in [('experiments',('spec',)),('experiment_runs',('result',)),('experiment_approvals',()),('research_jobs',('config',)),('automatic_sessions',('config','progress')),('research_directions',()),('research_chat',('metadata',)),('conversation_actions',('receipt',)),('project_sessions',())]:
+            for table,fields in [('experiments',('spec',)),('experiment_runs',('result',)),('experiment_approvals',()),('research_jobs',('config',)),('automatic_sessions',('config','progress')),('research_directions',()),('research_chat',('metadata',)),('conversation_actions',('receipt',)),('project_sessions',()),('experiment_requests',()),('research_tasks',('devices',))]:
                 snapshot[table]=[]
                 if table in tables:
                     for row in conn.execute('SELECT * FROM '+table+' ORDER BY rowid'):

@@ -876,6 +876,7 @@ class ResearchTerminal:
     def provider_dialog(self,name):
         item=next((p for p in self.providers.get('providers',[]) if p['name']==name),{})
         text=provider_line({'providers':[item]})+'\n'+(item.get('plan_label') or '플랜 확인 중')+'\n\n기존 공식 CLI 로그인과 연결합니다. 인증 정보는 대화에 보내지 않습니다.'
+        if item.get('connection') in {'connected','authenticated'} and item.get('usage_state')=='rate_limited':text+='\n\n로그인은 연결되어 있습니다. 잔여 사용량 조회가 HTTP 429로 제한됐으며, 모델 호출 실패 여부는 별개입니다. 사용량 보호를 켜면 최신 잔여량을 확인할 때까지 연구 시작이 제한됩니다.'
         self.dialog(name+' 연결',Label(text),[('로그인',lambda:self.spawn(self.login(name))),('상태 갱신',lambda:self.spawn(self.refresh_providers(True))),('닫기',self.close_dialog)])
 
     async def login(self,name):

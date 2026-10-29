@@ -82,6 +82,11 @@ class Autopilot:
             conn.execute('UPDATE automatic_sessions SET status=?,message=?,progress=?,updated_at=? WHERE id=?',
                 (item['status'],item['message'],json.dumps(item['progress']),now(),item['id']))
 
+    def add_experiment(self,payload):
+        if set(payload)!={'project_id','content','request_id'}:raise ValueError('프로젝트·실험 내용·요청 ID를 확인하세요.')
+        from experiment_requests import add
+        return add(self,**payload)
+
     def control(self,payload):
         if set(payload)-{'project_id','action','max_cycles','max_model_calls','token_budget','context_path','mode','session_id','reuse_research','research_style','execution_policy','duration_seconds','deadline_epoch','experiment_timeout_seconds','orchestration','cost_profile','quota_drop_percent'}:raise ValueError('지원하지 않는 자동모드 설정입니다.')
         project_id=payload['project_id'];action=payload['action'];root=self.root(project_id);self.store.get_node(root['id'])
@@ -447,10 +452,19 @@ class Autopilot:
 
     def native_tick(self,item):
         p=item['progress']
+        from experiment_requests import activate,pending
+        activate(self,item)
         portfolio=item['config'].get('orchestration')=='hypothesis-tasks'
-        if portfolio and p.get('phase')=='tasks':
+        requested=pending(self.store,item['id'])
+        if p.get('phase')=='tasks' and (portfolio or requested):
             from research_tasks import tick
             return tick(self,item)
+        if requested:
+            current=self.research.get(p['job_id']) if p.get('job_id') else None
+            if not current or current['state'] not in {'queued','running'}:
+                from research_tasks import tick
+                self.save(item,message='추가한 실험을 기존 장치·예산으로 검증합니다.',phase='tasks',job_id=None)
+                return tick(self,item)
         if p.get('recovery_after',0)>time.time():return
         if p.get('job_id'):
             job=self.research.get(p['job_id'])

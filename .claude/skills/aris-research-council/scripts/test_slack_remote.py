@@ -92,6 +92,18 @@ class RemoteTests(unittest.TestCase):
             _,row=self.send('중지');self.assertIn('먼저 프로젝트',row['response'])
             _,row=self.select();self.assertEqual(row['project_id'],self.pid)
         self.assertEqual(self.remote.settings()['project_id'],self.pid)
+    def test_new_experiment_is_saved_once_in_the_thread_project_without_a_model(self):
+        selected,_=self.select();other=self.fixture.fixture.call('new','Other research','--goal','Other')
+        self.select(other['project_id'])
+        with patch('council.codex_call',side_effect=AssertionError('No model for request registration')):
+            payload,row=self.send('새 실험: OFFLINE compare A and B',thread=selected['event']['ts'])
+            self.assertEqual(row['state'],'completed');self.assertEqual(row['project_id'],self.pid)
+            self.assertIn('새 실험을 추가',row['response']);self.remote.receive(payload);self.remote.tick()
+        rows=self.store.export_json()['experiment_requests'];self.assertEqual(len(rows),1);self.assertEqual(rows[0]['project_id'],self.pid)
+        with self.store._connect() as c:
+            reply=c.execute("SELECT metadata,state FROM research_chat WHERE request_id=? AND role='assistant'",(self.remote.request_id(row['id']),)).fetchone()
+        self.assertEqual(reply['state'],'completed');self.assertEqual(json.loads(reply['metadata'])['reply_model_calls'],0)
+
     def test_normal_message_and_reply_share_the_project_conversation_and_send_once(self):
         self.select();payload,row=self.send('기존 결과와 한계를 요약해줘')
         self.assertEqual(row['state'],'waiting_reply');reply=self.server.chat.get(row['chat_id'])

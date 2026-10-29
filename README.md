@@ -212,12 +212,15 @@ See Slack's [Socket Mode setup](https://docs.slack.dev/apis/events-api/using-soc
 | `프로젝트 목록` | List active projects and short IDs. |
 | `프로젝트 선택 My research` | Select a project for new DM conversations. |
 | `상태` / `사용량` | Read the current project state or account allowance. |
+| `새 실험: Compare method A with baseline B` | Add an independent experiment request to the selected/thread project without a model call. |
 | `중지` / `일시정지` | Stop or pause the selected project. |
 | `재개 2시간 사용량 10%p` | Continue the same research with a fresh two-hour window and ten-percentage-point allowance decrease. |
 | `재개 2시간 보호 끄기` | Explicitly continue using time limits without the allowance guard. |
 | Other natural-language text | Use the existing project conversation and Codex reply worker for questions, direction changes and authorized research actions. |
 
 Only the registered member in the registered bot DM/workspace is accepted; bot, edited and other-user events are ignored. Each Slack conversation thread stays bound to its original project even after you select another project. Instructions and replies share the CLI's project history/session. Control/status commands do not call an LLM; ordinary questions use the existing reply budget and research actions retain their time, device, review and allowance requirements. Duplicate events cannot repeat a continuation. An interrupted control dispatch with an uncertain outcome is held instead of executed again.
+
+To add a small experiment, send `새 실험: <what to verify>` (also `실험 추가:` or `new experiment:`) in a selected project DM or result thread. The same prefix works in CLI conversation mode `auto`. BrainDance saves an unverified hypothesis and durable task, acknowledges it without an LLM call, and runs it through the original study pipeline after current work, within existing device, deadline, review and allowance settings. It does not interrupt the current study or increase limits. Paused/stopped/expired projects only retain the request until explicit continuation; projects without a research session wait for CLI setup. A request ID is idempotent; sending a new message creates a separate task. Novelty and results must still be verified by the original pipeline.
 
 Use `braindance slack remote-status` to inspect the connection, `slack remote-off` to disable incoming commands while keeping the app token, or `slack remote-forget` to remove that token. Tokens stay in local private files. Disabling incoming DMs does not undo already accepted research work or disable result notifications.
 

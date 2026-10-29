@@ -172,7 +172,7 @@ class ProjectCleanup:
                                  (project_id, plan['title'], json.dumps(plan['paths']), json.dumps(plan['counts']), now()))
                     if conn.execute("SELECT 1 FROM sqlite_master WHERE name='research_analysis_queue'").fetchone():
                         conn.execute('DELETE FROM research_analysis_queue WHERE run_id IN (SELECT id FROM experiment_runs WHERE project_id=?)',(project_id,))
-                    for table in ['research_tasks','automatic_sessions','research_directions','research_chat','conversation_actions','project_sessions']:
+                    for table in ['experiment_requests','research_tasks','automatic_sessions','research_directions','research_chat','conversation_actions','project_sessions']:
                         if conn.execute("SELECT 1 FROM sqlite_master WHERE name=?",(table,)).fetchone():conn.execute('DELETE FROM '+table+' WHERE project_id=?',(project_id,))
                     conn.execute('DELETE FROM experiment_runs WHERE project_id=?', (project_id,))
                     if conn.execute("SELECT 1 FROM sqlite_master WHERE name='research_jobs'").fetchone():
