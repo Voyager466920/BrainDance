@@ -69,6 +69,12 @@ class RecoveryTests(unittest.TestCase):
         r=self.s.recovery.request(dict(session_id=self.session['id'],kind='stalled'))
         self.assertEqual(r['state'],'within_native_operation_allowance')
 
+    def test_retry_specific_ids_do_not_bypass_diagnosis_cooldown(self):
+        original=self.trace.read_text();self.trace.write_text(original.replace('must be an array','must be an array in 11111111-1111-4111-8111-111111111111'))
+        r=self.request();row=self.row(r['repair_id']);self.s.recovery.set(r['repair_id'],'failed',json.loads(row['payload']))
+        self.trace.write_text(original.replace('must be an array','must be an array in 22222222-2222-4222-8222-222222222222'))
+        self.assertEqual(self.request()['state'],'cooldown')
+
 
 class LiteratureInputTests(unittest.TestCase):
     def test_alias_only_sources_join_matching_candidates_and_preserve_raw(self):

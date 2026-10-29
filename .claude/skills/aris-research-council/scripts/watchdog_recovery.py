@@ -5,6 +5,7 @@ workspace and uses the same reviewed execution broker and project limits.
 """
 import hashlib
 import json
+import re
 from pathlib import Path
 import threading
 import time
@@ -90,7 +91,11 @@ class Recovery:
                 if time.time()-epoch(job['updated_at'])<bound:return dict(state='within_native_operation_allowance',model_calls=0)
             proof=evidence(job);precise=proof['tool_errors'][-1] if proof['tool_errors'] else dict(tool='worker',error=proof['error'])
             if any(t in precise['error'].lower() for t in ('unauthorized','authentication','로그인','인증','rate limit','quota')):return dict(state='waiting_for_auth_or_allowance',model_calls=0)
-            signature=hashlib.sha256(json.dumps(precise,sort_keys=True).encode()).hexdigest()
+            # Retry-specific IDs must not turn the same failure into a fresh
+            # allowance on every attempt. Keep originals in the raw evidence.
+            normalized=re.sub(r'(?i)\b[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\b','<attempt-id>',precise['error'])
+            binding=dict(tool=precise['tool'],error=normalized,workspace=job['config'].get('native_workspace'),cycle=job['config'].get('native_cycle',0))
+            signature=hashlib.sha256(json.dumps(binding,sort_keys=True).encode()).hexdigest()
             with self.store._connect() as c:
                 recent=c.execute('SELECT * FROM watchdog_repairs WHERE session_id=? ORDER BY rowid DESC LIMIT 30',(sid,)).fetchall()
                 if any(r['state'] in {'pending','diagnosing'} for r in recent):return dict(state='already_repairing',model_calls=0)
