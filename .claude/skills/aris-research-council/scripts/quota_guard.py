@@ -25,12 +25,21 @@ def available(provider):
     return provider.get('usage_state')=='available' and bool(provider.get('windows')) and -60<=age<=MAX_AGE
 
 
+def parse_drop(text):
+    try:value=int(text)
+    except (TypeError,ValueError):raise ValueError('사용량 감소폭은 1–100%p의 정수로 입력하세요.')
+    if not 1<=value<=100:raise ValueError('사용량 감소폭은 1–100%p로 입력하세요.')
+    return value
+
+
 def capture(status,drop):
     if type(drop) is not int or not 1<=drop<=100:raise ValueError('사용량 감소 한도는 1–100%p로 입력하세요.')
     baseline=snapshot(status)
     for name in ['GPT','Claude']:
         p=next((p for p in baseline['providers'] if p['name']==name),{})
-        if not available(p):raise ValueError(name+'의 최신 잔여 사용량을 확인할 수 없습니다. 연결 상태를 갱신한 뒤 사용량 보호를 시작하세요.')
+        if not available(p):
+            if p.get('connection') in {'connected','authenticated'} and p.get('usage_state')=='rate_limited':raise ValueError(name+' 로그인은 연결되어 있습니다. 사용량 조회 제한(HTTP 429)으로 감소 기준을 계산할 수 없습니다. 잠시 후 다시 시도하거나 사용량 보호를 끄고 시간 기준으로 실행하세요.')
+            raise ValueError(name+'의 최신 잔여 사용량을 확인할 수 없습니다. 계정 상태를 갱신하거나 사용량 보호를 끄고 시간 기준으로 실행하세요.')
         if any(w['remaining_percent']<=0 for w in p['windows']):raise ValueError(name+'의 계정 사용량 한도를 소진했습니다.')
     return dict(basis='percentage_points_from_start',drop_percent=drop,baseline=baseline)
 

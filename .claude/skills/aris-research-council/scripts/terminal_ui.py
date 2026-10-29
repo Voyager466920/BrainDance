@@ -22,6 +22,8 @@ from prompt_toolkit.filters import Condition,has_focus,has_completions
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.key_binding.bindings.focus import focus_next,focus_previous
 from prompt_toolkit.layout import Layout,HSplit,VSplit,Window,Float,FloatContainer,ConditionalContainer,DynamicContainer
+from prompt_toolkit.layout.containers import to_container
+from prompt_toolkit.layout.layout import walk
 from prompt_toolkit.layout.controls import FormattedTextControl,BufferControl
 from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.layout.menus import CompletionsMenu
@@ -595,7 +597,7 @@ class ResearchTerminal:
         def activate(text,callback):
             if self.modal_task and not self.modal_task.done():self.notice='저장 처리 중입니다.';return
             result=self.invoke(callback)
-            if text in {'저장','등록','자동 시작','삭제','복원','완전 삭제','만들고 자동 시작','만들기만','다음 · 연구 시작'} and isinstance(result,asyncio.Task):self.modal_task=result
+            if text in {'저장','등록','자동 시작','삭제','복원','완전 삭제','만들고 자동 시작','만들기만','다음 · 연구 시작','이어가기','기존대로'} and isinstance(result,asyncio.Task):self.modal_task=result
         actions=[Button(t,handler=lambda text=t,callback=f:activate(text,callback)) for t,f in buttons]
         view=Dialog(title=title,body=body,buttons=actions,with_background=True,width=Dimension(preferred=76,max=90))
         floating=Float(content=view);self.container.floats.append(floating);self.modals.append((view,floating))
@@ -607,10 +609,14 @@ class ResearchTerminal:
         current=next(i for i,b in enumerate(buttons) if self.app.layout.has_focus(b))
         self.app.layout.focus(buttons[(current+direction)%len(buttons)])
 
+    def modal_windows(self):
+        if not self.modals:return []
+        return [w for w in walk(to_container(self.modals[-1][0]),skip_hidden=True) if isinstance(w,Window) and w.content.is_focusable()]
+
     def modal_focus(self,direction):
         # New dialog fields may not be in the previous render's visible cache.
         self.app.layout.update_parents_relations()
-        windows=list(self.app.layout.get_focusable_windows())
+        windows=self.modal_windows()
         if windows:
             current=windows.index(self.app.layout.current_window) if self.app.layout.current_window in windows else 0
             self.app.layout.focus(windows[(current+direction)%len(windows)])
@@ -618,7 +624,7 @@ class ResearchTerminal:
     def focus_modal_body(self,direction):
         self.app.layout.update_parents_relations()
         buttons=self.modal_buttons[-1]
-        windows=[w for w in self.app.layout.get_focusable_windows() if not any(w.content is b.control for b in buttons)]
+        windows=[w for w in self.modal_windows() if not any(w.content is b.control for b in buttons)]
         if windows:self.app.layout.focus(windows[-1] if direction<0 else windows[0])
 
     def navigable_list(self,widget):
@@ -885,15 +891,17 @@ class ResearchTerminal:
         hours=TextArea(text=draft.get('hours',str(default_seconds/3600)),multiline=False);folder=TextArea(text=draft.get('folder',''),multiline=False);experiment_time=dict(seconds=draft.get('experiment_seconds'))
         style=self.navigable_list(RadioList([('focused','집중 연구'),('scout','논문 탐색 · 작은 실험')],default=research_style,select_on_focus=True))
         mode=self.navigable_list(RadioList([('lite','Lite'),('balanced','Balanced'),('deep','Deep')],default=draft.get('mode','lite' if scouting else 'balanced'),select_on_focus=True))
-        quota=self.navigable_list(CheckboxList([(20,'시작보다 잔여 사용량 20%p 감소 시 중지·정리')],default_values=[20] if draft.get('quota_enabled') else []))
+        quota=self.navigable_list(CheckboxList([('enabled','사용량 감소 기준으로 중지·정리')],default_values=['enabled'] if draft.get('quota_enabled') else []))
+        quota_drop=TextArea(text=draft.get('quota_drop','20'),multiline=False)
         async def start():
             nonlocal pid
             duration=time_seconds(hours.text,3600,'총 연구 시간',604800)
             limits=dict(cost_profile='economy',execution_policy='until_deadline',orchestration='hypothesis-tasks',duration_seconds=duration,experiment_timeout_seconds=experiment_time['seconds'])
             if quota.current_values:
-                from quota_guard import capture
-                capture(await self.call(self.client.request,'/api/providers'),20)
-                limits['quota_drop_percent']=20
+                from quota_guard import capture,parse_drop
+                amount=parse_drop(quota_drop.text)
+                capture(await self.call(self.client.request,'/api/providers'),amount)
+                limits['quota_drop_percent']=amount
             if pid is None:
                 from scout import validate
                 create_project['research_preferences']=validate({**create_project['research_preferences'],'style':style.current_value})
@@ -913,9 +921,9 @@ class ResearchTerminal:
         if on_back:actions.append(('제목·목표',on_back))
         actions.append(('취소',on_cancel or self.close_dialog))
         self.resource_form=None
-        self.dialog('새 프로젝트 · 만들고 자동 시작' if create_project else '프로젝트 자동 연구 시작',HSplit([Label(hardware),Box(style,height=2,padding=0),Label('종료 시각까지 탐색·실험·오류 수정·다음 연구를 계속합니다.'),Label('참고할 기존 코드 폴더 · 선택 · 비워도 됨'),folder,Label('총 연구 시간 · 시간 단위'),hours,Label(lambda:'실험별 시간 자동 배분' if experiment_time['seconds'] is None else '실험당 최대 '+str(experiment_time['seconds']/60)+'분'),Label('절약 탐색 · Haiku 중심 · 구현·검증 모델 유지'),Box(mode,height=3,padding=0),Box(quota,height=1,padding=0)]),actions,folder)
+        self.dialog('새 프로젝트 · 만들고 자동 시작' if create_project else '프로젝트 자동 연구 시작',HSplit([Label(hardware),Box(style,height=2,padding=0),Label('종료 시각까지 탐색·실험·오류 수정·다음 연구를 계속합니다.'),Label('참고할 기존 코드 폴더 · 선택 · 비워도 됨'),folder,Label('총 연구 시간 · 시간 단위'),hours,Label(lambda:'실험별 시간 자동 배분' if experiment_time['seconds'] is None else '실험당 최대 '+str(experiment_time['seconds']/60)+'분'),Label('절약 탐색 · Haiku 중심 · 구현·검증 모델 유지'),Box(mode,height=3,padding=0),Box(quota,height=1,padding=0),ConditionalContainer(VSplit([Label('허용 감소폭 · %p'),quota_drop],height=1),Condition(lambda:bool(quota.current_values)))]),actions,folder)
         self.modals[-1][0].back_to_details=on_back
-        self.modals[-1][0].save_draft=lambda:draft.update(folder=folder.text,hours=hours.text,research_style=style.current_value,mode=mode.current_value,experiment_seconds=experiment_time['seconds'],quota_enabled=bool(quota.current_values))
+        self.modals[-1][0].save_draft=lambda:draft.update(folder=folder.text,hours=hours.text,research_style=style.current_value,mode=mode.current_value,experiment_seconds=experiment_time['seconds'],quota_enabled=bool(quota.current_values),quota_drop=quota_drop.text)
 
     async def tasks_dialog(self):
         pid=self.require_project();state=await self.call(self.client.control,self.project);rows=state.get('tasks',[])
@@ -929,8 +937,36 @@ class ResearchTerminal:
             self.idea_list.current_value=task['node_id'];self.close_dialog();self.select_tab(2)
         self.dialog('가설별 공식 연구 작업',Box(choices,height=min(10,len(rows)+1),padding=0),[('가설 보기',view),('작업 중지',lambda:self.spawn(change('stop'))),('작업 재개',lambda:self.spawn(change('resume'))),('닫기',self.close_dialog)],choices)
 
+    def resume_dialog(self):
+        session=self.state.get('session')
+        if not session:raise ClientError('이어갈 연구가 없습니다.')
+        if session['status']=='running':self.notice='이미 연구가 진행 중입니다.';return
+        config=session['config'];old_guard=config.get('quota_guard') or {}
+        hours=TextArea(text=str(config.get('duration_seconds',3600)/3600),multiline=False)
+        quota=self.navigable_list(CheckboxList([('enabled','사용량 감소 기준으로 중지·정리')],default_values=['enabled'] if old_guard else []))
+        drop=TextArea(text=str(old_guard.get('drop_percent',20)),multiline=False)
+        async def resume(renew=True):
+            payload=dict(project_id=self.require_project(),action='resume',session_id=session['id'])
+            if renew:
+                payload.update(duration_seconds=time_seconds(hours.text,3600,'이어갈 시간',604800),quota_drop_percent=None)
+                if quota.current_values:
+                    from quota_guard import parse_drop,capture
+                    amount=parse_drop(drop.text)
+                    capture(await self.call(self.client.request,'/api/providers'),amount)
+                    payload['quota_drop_percent']=amount
+            await self.call(self.client.request,'/api/control/automatic',payload)
+            self.close_dialog();self.select_tab(1);self.notice='기존 연구와 대화를 유지하고 이어갑니다.';self.wakeup.set()
+        actions=[('이어가기',lambda:self.spawn(resume()))]
+        if session['status'] in {'paused','blocked'} and config.get('deadline_epoch',float('inf'))>time.time() and not session['progress'].get('quota_stop'):actions.append(('기존대로',lambda:self.spawn(resume(False))))
+        actions.append(('취소',self.close_dialog))
+        self.dialog('연구 이어가기 · 기록 유지',HSplit([Label('기존 대화·가설·코드·실험 결과·누적 사용량을 유지합니다.'),Label('지금부터 이어갈 시간 · 시간 단위'),hours,Box(quota,height=1,padding=0),ConditionalContainer(VSplit([Label('허용 감소폭 · %p'),drop],height=1),Condition(lambda:bool(quota.current_values))),Label('사용량 기준은 재개 시점의 잔여량에서 새로 계산합니다.')]),actions,hours)
+
     async def automatic(self,action):
-        pid=self.require_project();await self.call(self.client.request,'/api/control/automatic',dict(project_id=pid,action=action));self.notice='자동 연구 '+{'pause':'일시정지','resume':'재개','stop':'중지'}[action]
+        pid=self.require_project()
+        if action=='resume':
+            self.state=await self.call(self.client.request,'/api/control?'+urllib.parse.urlencode(dict(project_id=pid)))
+            self.resume_dialog();return
+        await self.call(self.client.request,'/api/control/automatic',dict(project_id=pid,action=action));self.notice='자동 연구 '+{'pause':'일시정지','resume':'재개','stop':'중지'}[action]
 
     def limits_dialog(self):
         pid=self.require_project();usage=self.state.get('usage');session=self.state.get('session')

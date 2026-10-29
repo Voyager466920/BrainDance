@@ -119,7 +119,7 @@ class ViewerHandler(BaseHTTPRequestHandler):
             return
         path = urlsplit(self.path).path
         if path == '/api/health':
-            self._reply(200, {'app': 'BrainDance', 'version': '0.19.9', 'pid': os.getpid(),
+            self._reply(200, {'app': 'BrainDance', 'version': '0.19.10', 'pid': os.getpid(),
                              'workspace_id': hashlib.sha256(str(Path(self.server.store.db_path).resolve()).encode()).hexdigest()})
         elif path=='/api/slack':
             self._reply(200,self.server.notifications.state())

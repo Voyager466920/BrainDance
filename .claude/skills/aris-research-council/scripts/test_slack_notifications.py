@@ -49,6 +49,12 @@ class SlackNotificationTests(unittest.TestCase):
         text=self.sent[0]['text'];self.assertTrue(text.startswith('*결과: 탐색중*'))
         self.assertIn('GPT: 5시간 잔여 30%',text);self.assertIn('시작 50% → 중지 30%',text)
         self.assertLess(text.index('*상세 결과*'),text.index('*남은 사용량*'))
+        controller.quota_status=lambda force=False:status(60,70)
+        controller.control(dict(project_id=self.pid,session_id=item['id'],action='resume',duration_seconds=3600,quota_drop_percent=10))
+        controller.quota_status=lambda force=False:status(50,70)
+        controller.tick(controller.get(item['id']));self.service.tick();self.service.tick()
+        with self.service.connect() as c:rows=c.execute("SELECT id FROM deliveries WHERE event_key LIKE 'session:%'").fetchall()
+        self.assertEqual(len(rows),2)
 
     def test_personal_dm_setup_keeps_secret_local_and_does_not_send_a_message(self):
         state=self.setup();self.assertTrue(state['connected']);self.assertTrue(state['enabled']);self.assertEqual(self.sent,[])

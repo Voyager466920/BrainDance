@@ -93,6 +93,12 @@ class Autopilot:
         if action not in {'start','pause','resume','stop','limits','time_only','deadline','portfolio','cost_profile'}:raise ValueError('자동모드 동작을 확인하세요.')
         with self.lock:
             old=self.sessions(project_id);item=old[0] if old else None
+            if action=='resume' and 'quota_drop_percent' in payload and not {'duration_seconds','deadline_epoch'}&set(payload):raise ValueError('사용량 기준을 바꾸려면 이어갈 시간도 지정하세요.')
+            if action=='resume' and payload.get('session_id') and (not item or payload['session_id']!=item['id']):raise ValueError('연구 세션이 바뀌었습니다. 이어가기 설정을 다시 여세요.')
+            if action=='resume' and ('duration_seconds' in payload or 'deadline_epoch' in payload):
+                if not item:raise ValueError('이어갈 연구가 없습니다.')
+                from research_continue import continue_session
+                return continue_session(self,item,payload)
             if action=='cost_profile':
                 if not item:raise ValueError('자동 연구 세션을 먼저 선택하세요.')
                 profile=payload.get('cost_profile')
@@ -193,7 +199,7 @@ class Autopilot:
             elif action=='stop':
                 self.save(item,'stopped','자동모드를 중지했습니다.');self.cancel_project(project_id)
             else:
-                if item['status'] not in {'paused','blocked'}:raise ValueError('일시정지 또는 필요한 항목을 해결한 실행을 재개하세요.')
+                if item['status'] not in {'paused','blocked'}:raise ValueError('중지·종료된 연구는 이어가기에서 새 시간과 사용량 기준을 설정하세요.')
                 p=item['progress']
                 if self.default_pipeline=='aris-native' and item['config'].get('pipeline')!='aris-native':
                     if self.busy(project_id):raise ValueError('실행 중인 실험이 끝난 뒤 새 자율 흐름으로 재개하세요.')

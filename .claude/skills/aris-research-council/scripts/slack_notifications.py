@@ -176,10 +176,13 @@ class SlackNotifications:
             except (ValueError,KeyError,OSError):continue
         with self.connect() as c:since=c.execute('SELECT since FROM session_notifications WHERE id=1').fetchone()[0]
         with self.store._connect() as c:
-            sessions=[dict(r) for r in c.execute("SELECT id,project_id,status,updated_at FROM automatic_sessions WHERE status IN ('stopped','completed') AND updated_at>=? ORDER BY updated_at",(max(since,settings['since']),))]
+            sessions=[dict(r) for r in c.execute("SELECT id,project_id,status,updated_at,config FROM automatic_sessions WHERE status IN ('stopped','completed') AND updated_at>=? ORDER BY updated_at",(max(since,settings['since']),))]
         for session in sessions:
             try:
-                if quiescent(self.store,session['project_id']):self.enqueue(session['project_id'],'session:'+session['id']+':'+session['status'])
+                if quiescent(self.store,session['project_id']):
+                    count=json.loads(session['config']).get('continuation_count',0)
+                    key='session:'+session['id']+':'+session['status']+(':continuation:'+str(count) if count else '')
+                    self.enqueue(session['project_id'],key)
             except (ValueError,KeyError,OSError):continue
 
     def process(self,row):

@@ -143,7 +143,7 @@ def provider_line(data,compact=False):
             used=w.get('used_percent');minutes=w.get('minutes')
             window=('주' if compact else '주간') if minutes==10080 else ('5h' if compact else '5시간') if minutes==300 else '한도'
             windows.append(window+' '+(f'{used:g}%' if isinstance(used,(int,float)) else '미확인'))
-        result.append(p.get('name','계정')+' '+(('연결' if compact else '연결됨') if connected else '로그인 필요' if p.get('connection')=='signed_out' else '확인 중')+(' · '+', '.join(windows) if windows else ' · 사용량 미확인'))
+        result.append(p.get('name','계정')+' '+(('연결' if compact else '연결됨') if connected else '로그인 필요' if p.get('connection')=='signed_out' else '확인 중')+(' · '+', '.join(windows) if windows else ' · 사용량 조회 일시 제한(429)' if p.get('usage_state')=='rate_limited' else ' · 사용량 미확인'))
     return '    '.join(result) or 'GPT · Claude 연결 확인 중…'
 
 

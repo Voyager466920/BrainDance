@@ -282,7 +282,10 @@ def parser():
     q=sub.add_parser('slack',parents=[common]);q.add_argument('action',choices=['status','setup','send','test','disconnect'],default='status',nargs='?');q.add_argument('--member');q.add_argument('--token-stdin',action='store_true');q.add_argument('--request-id')
     q=sub.add_parser('task',parents=[common]);q.add_argument('action',choices=['stop','resume']);q.add_argument('id')
     q=sub.add_parser('notion',parents=[common]);q.add_argument('action',choices=['status','setup','sync','disconnect'],default='status',nargs='?');q.add_argument('--parent');q.add_argument('--auto',action=argparse.BooleanOptionalAction,default=None)
-    for name in ['new','auto','scout']:sub.choices[name].add_argument('--quota-drop-percent',type=int,help='Stop after remaining account allowance falls this many percentage points from launch')
+    for name in ['new','auto','scout']:
+        group=sub.choices[name].add_mutually_exclusive_group()
+        group.add_argument('--quota-drop-percent',type=int,help='Stop after remaining allowance falls this many percentage points from launch/continuation')
+        group.add_argument('--no-quota-guard',action='store_true',help='Explicitly disable the account allowance stop policy')
     return p
 
 
@@ -296,7 +299,18 @@ def time_options(args):
     result=dict(execution_policy='bounded' if args.bounded else 'until_deadline',orchestration='single' if args.bounded else 'hypothesis-tasks',cost_profile='standard' if args.standard else 'economy')
     if args.hours is not None:result['duration_seconds']=int(args.hours*3600)
     if getattr(args,'quota_drop_percent',None) is not None:result['quota_drop_percent']=args.quota_drop_percent
+    if getattr(args,'no_quota_guard',False):result['quota_drop_percent']=None
     if args.experiment_minutes is not None:result['experiment_timeout_seconds']=int(args.experiment_minutes*60) if args.experiment_minutes else None
+    return result
+
+
+def continuation_options(client,project,args):
+    if args.hours is None:raise ClientError('중지한 연구를 이어가려면 --hours로 새 시간을 지정하세요.')
+    state=client.request('/api/control?'+urllib.parse.urlencode(dict(project_id=project['id'])))
+    if not state.get('session'):raise ClientError('이어갈 연구가 없습니다.')
+    result=dict(session_id=state['session']['id'],duration_seconds=int(args.hours*3600))
+    if args.quota_drop_percent is not None:result['quota_drop_percent']=args.quota_drop_percent
+    if args.no_quota_guard:result['quota_drop_percent']=None
     return result
 
 
@@ -348,6 +362,7 @@ def dispatch(client,args,project=None):
         if args.action=='status':return client.control(project)
         payload=dict(project_id=project['id'],action=args.action)
         if args.action=='start':payload.update(**time_options(args),research_style='scout',max_model_calls=args.calls,token_budget=args.tokens,context_path=args.context,mode=args.mode)
+        elif args.action=='resume' and (args.hours is not None or args.quota_drop_percent is not None or args.no_quota_guard):payload.update(continuation_options(client,project,args))
         return client.request('/api/control/automatic',payload)
     if command in {'report','notion'}:
         query='?'+urllib.parse.urlencode(dict(project_id=project['id']))
@@ -392,6 +407,7 @@ def dispatch(client,args,project=None):
         if args.action=='start':
             payload.update(**time_options(args),max_cycles=args.cycles,max_model_calls=args.calls,token_budget=args.tokens,context_path=args.context,mode=args.mode)
             if args.reuse_research:payload['reuse_research']=True
+        elif args.action=='resume' and (args.hours is not None or args.quota_drop_percent is not None or args.no_quota_guard):payload.update(continuation_options(client,project,args))
         return client.request('/api/control/automatic',payload)
     if command=='chat':
         text=sys.stdin.read() if args.message=='-' else args.message;reference=None

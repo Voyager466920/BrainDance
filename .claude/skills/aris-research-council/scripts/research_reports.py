@@ -71,7 +71,7 @@ def project_data(store,project_id):
         session=conn.execute('SELECT id,status,config,progress FROM automatic_sessions WHERE project_id=? ORDER BY rowid DESC LIMIT 1',(project_id,)).fetchone() if exists else None
     if session:
         cfg=json.loads(session['config']);progress=json.loads(session['progress'])
-        result['execution_state']=dict(id=session['id'],status=session['status'],stop_reason=(progress.get('quota_stop') or {}).get('reason'))
+        result['execution_state']=dict(id=session['id'],status=session['status'],continuation_count=cfg.get('continuation_count',0),stop_reason=(progress.get('quota_stop') or {}).get('reason'))
         result['quota_guard']=cfg.get('quota_guard')
         result['account_usage']=progress.get('account_usage') or (cfg.get('quota_guard') or {}).get('baseline')
     return clean(result)

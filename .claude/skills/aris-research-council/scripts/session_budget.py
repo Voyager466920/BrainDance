@@ -46,6 +46,12 @@ def update(path,operation,**values):
             before={k:data.get(k) for k in ['policy','max_calls','token_budget','deadline_epoch']}
             data.update(policy='until_deadline',max_calls=None,token_budget=None,deadline_epoch=end,started_epoch=data.get('started_epoch',values.get('started_epoch',time.time())))
             data.setdefault('limit_changes',[]).append(dict(at=datetime.now(timezone.utc).isoformat(),before=before,after=dict(policy='until_deadline',deadline_epoch=end),calls_used=data['calls']))
+        elif operation=='continue':
+            end=values['deadline_epoch']
+            if isinstance(end,bool) or not isinstance(end,(int,float)) or not time.time()<end<=time.time()+604800:raise ValueError('새 종료 시각을 확인하세요.')
+            data.setdefault('continuations',[]).append(dict(at=datetime.now(timezone.utc).isoformat(),before=dict(deadline_epoch=data.get('deadline_epoch'),quota_stop=data.get('quota_stop'),policy=data.get('policy')),previous_config=values['previous_config'],previous_progress=values['previous_progress'],after=dict(deadline_epoch=end,quota_guard=values.get('quota_guard')),calls_used=data['calls'],observed_tokens=sum(data.get('observed',{}).values())))
+            data.update(policy='until_deadline',deadline_epoch=end,window_started_epoch=values['started_epoch'],max_calls=None,token_budget=None)
+            data.pop('quota_stop',None)
         elif operation=='quota_stop':
             data['quota_stop']=values
         elif operation=='limits':

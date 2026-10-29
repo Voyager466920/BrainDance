@@ -117,8 +117,8 @@ class TerminalUITests(unittest.TestCase):
         with create_pipe_input() as pipe:asyncio.run(run(pipe))
 
     def editable_fields(self,ui):
-        ui.app.layout.update_parents_relations()
-        return [w.content.buffer for w in ui.app.layout.get_focusable_windows() if isinstance(w.content,BufferControl) and w.content.buffer is not ui.editor.buffer and not w.content.buffer.read_only()]
+        ui.app.layout.update_parents_relations();ui.app._redraw()
+        return [w.content.buffer for w in ui.modal_windows() if isinstance(w.content,BufferControl) and w.content.buffer is not ui.editor.buffer and not w.content.buffer.read_only()]
 
     def test_dialog_input_render_has_readable_colors_in_color_and_no_color_modes(self):
         async def exercise(ui,pipe):
@@ -335,12 +335,32 @@ class TerminalUITests(unittest.TestCase):
                 windows=ui.app.layout.get_focusable_windows()
                 # Navigate to the one-entry quota checkbox through the real keyboard focus order.
                 from prompt_toolkit.formatted_text import to_formatted_text,fragment_list_to_text
-                checkbox=next(w for w in windows if getattr(w.content,'__class__',None).__name__=='FormattedTextControl' and '20%p' in fragment_list_to_text(to_formatted_text(w.content.text)))
+                checkbox=next(w for w in windows if getattr(w.content,'__class__',None).__name__=='FormattedTextControl' and '사용량 감소 기준' in fragment_list_to_text(to_formatted_text(w.content.text)))
                 ui.app.layout.focus(checkbox);pipe.send_text(' ');await asyncio.sleep(.03)
+                self.editable_fields(ui)[-1].text='30'
                 ui.modal_buttons[-1][0].handler();await self.wait_until(lambda:not ui.modals)
             actual=self.server.autopilot.state(ui.project['id'])['session']
-            guard=actual['config']['quota_guard'];self.assertEqual(guard['basis'],'percentage_points_from_start');self.assertEqual(guard['drop_percent'],20)
+            guard=actual['config']['quota_guard'];self.assertEqual(guard['basis'],'percentage_points_from_start');self.assertEqual(guard['drop_percent'],30)
             self.assertEqual(guard['baseline']['providers'][0]['windows'][0]['remaining_percent'],50)
+        self.scenario(exercise)
+
+    def test_stopped_research_resume_dialog_preserves_session_and_changes_time_and_quota(self):
+        from test_quota_guard import status
+        original=self.server.autopilot.control(dict(project_id=self.project['id'],action='start',execution_policy='until_deadline',duration_seconds=3600))['session']
+        self.server.autopilot.control(dict(project_id=self.project['id'],action='stop'))
+        async def exercise(ui,pipe):
+            self.server.autopilot.quota_status=lambda force=False:status()
+            with patch.object(self.server.provider_status,'get',return_value=status()):
+                await ui.automatic('resume');self.assertIn('기록 유지',ui.modals[-1][0].title)
+                self.editable_fields(ui)[0].text='2'
+                from prompt_toolkit.formatted_text import to_formatted_text,fragment_list_to_text
+                checkbox=next(w for w in ui.app.layout.get_focusable_windows() if getattr(w.content,'__class__',None).__name__=='FormattedTextControl' and '사용량 감소 기준' in fragment_list_to_text(to_formatted_text(w.content.text)))
+                ui.app.layout.focus(checkbox);pipe.send_text(' ');await asyncio.sleep(.03)
+                self.editable_fields(ui)[-1].text='10';ui.modal_buttons[-1][0].handler()
+                await self.wait_until(lambda:not ui.modals)
+            item=self.server.autopilot.state(ui.project['id'])['session']
+            self.assertEqual(item['id'],original['id']);self.assertEqual(item['status'],'running')
+            self.assertEqual(item['config']['duration_seconds'],7200);self.assertEqual(item['config']['quota_guard']['drop_percent'],10)
         self.scenario(exercise)
 
     def test_optional_experiment_cap_is_in_a_separate_advanced_dialog(self):
