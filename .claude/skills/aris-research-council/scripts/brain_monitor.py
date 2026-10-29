@@ -1,6 +1,6 @@
-"""Independent stdlib-only, alert-only BrainDance monitor (Python 3.9+).
+"""Independent stdlib-only BrainDance monitor (Python 3.9+).
 
-Reads research records; never launches/restarts/stops research, models or SSH.
+Normal checks use no models or SSH. Recovery uses the existing guarded backend.
 The LaunchAgent runs one bounded check per minute, rather than an LLM heartbeat.
 """
 import argparse
@@ -165,13 +165,63 @@ def post(target,text,cafile):
     except (OSError,ValueError):return 'uncertain',0
 
 
-def check(db,server,*,notify=True,clock=None,probe=health,sender=post):
+def register_runtime(db,server):
+    db=Path(db).resolve();image=Path(sys.executable).resolve()
+    save(db.parent/'monitor/backend-runtime.json',dict(db=str(db),server=valid_server(server),pid=os.getpid(),image=str(image),sha256=hashlib.sha256(image.read_bytes()).hexdigest(),frozen=bool(getattr(sys,'frozen',False))))
+
+
+def restart_backend(db,server):
+    """Restart only the registered immutable image after checked experiment limits."""
+    entry=read(db.parent/'monitor/backend-runtime.json')
+    if entry.get('db')!=str(db) or entry.get('server')!=server or not entry.get('frozen'):return dict(state='no_registered_runtime')
+    image=Path(entry['image']);base=db.parent/'runtime-binaries'
+    if image.is_symlink() or image.parent.parent!=base or image.name!='BrainDanceServer' or image.parent.name!=entry.get('sha256') or hashlib.sha256(image.read_bytes()).hexdigest()!=entry['sha256']:return dict(state='invalid_runtime')
+    # An unavailable API can coexist with an active SSH worker: do not orphan it.
+    with connect(db) as c:
+        rows=c.execute("SELECT started_at,timeout_seconds FROM experiment_runs WHERE state='running'").fetchall()
+        if any(not r['started_at'] or time.time()<epoch(r['started_at'])+r['timeout_seconds']+120 for r in rows):return dict(state='waiting_for_experiment')
+        configs=[json.loads(r[0]) for r in c.execute("SELECT config FROM automatic_sessions WHERE status='running'")]
+        if not any(v.get('deadline_epoch',time.time()+1)>time.time() and not read(Path(v['session_budget'])).get('quota_stop') for v in configs):return dict(state='no_authorized_research')
+    try:
+        os.kill(entry['pid'],0)
+        command=subprocess.run(['/bin/ps','-p',str(entry['pid']),'-o','command='],capture_output=True,text=True,timeout=2).stdout.strip()
+        if not command.startswith(str(image)+' --db '+str(db)+' --port '):return dict(state='process_identity_mismatch')
+        import signal
+        os.kill(entry['pid'],signal.SIGTERM)  # Graceful shutdown owns worker cleanup.
+        for _ in range(20):
+            try:os.kill(entry['pid'],0)
+            except ProcessLookupError:break
+            time.sleep(.2)
+        else:return dict(state='backend_stopping')
+    except ProcessLookupError:pass
+    import socket
+    u=urllib.parse.urlsplit(server)
+    with socket.socket() as sock:
+        sock.settimeout(.3)
+        if sock.connect_ex((u.hostname,u.port or 80))==0:return dict(state='port_owned_by_other_process')
+    with (db.parent/'cli-backend.log').open('ab') as log:
+        env=os.environ.copy();env['PYINSTALLER_RESET_ENVIRONMENT']='1'
+        p=subprocess.Popen([str(image),'--db',str(db),'--port',str(u.port or 80)],stdin=subprocess.DEVNULL,stdout=log,stderr=log,start_new_session=True,env=env)
+    return dict(state='backend_restart_started',pid=p.pid)
+
+
+def request_repair(db,server,item):
+    opener=urllib.request.build_opener(urllib.request.ProxyHandler({}),NoRedirect())
+    with opener.open(server+'/',timeout=3) as r:page=r.read(2*1024*1024).decode()
+    match=re.search(r"const csrf='([^']+)'",page)
+    if not match:raise ValueError('Backend recovery token unavailable')
+    req=urllib.request.Request(server+'/api/monitor/recover',data=json.dumps(dict(session_id=item['session'],kind=item['kind'])).encode(),headers={'Origin':server,'X-CSRF-Token':match.group(1),'Content-Type':'application/json'})
+    with opener.open(req,timeout=5) as r:return json.load(r)
+
+
+def check(db,server,*,notify=True,clock=None,probe=health,sender=post,repairer=request_repair,starter=restart_backend):
     db=Path(db).expanduser().resolve();server=valid_server(server)
     started=time.monotonic();clock=time.time() if clock is None else clock;folder=db.parent/'monitor';folder.mkdir(mode=0o700,parents=True,exist_ok=True)
     with (folder/'check.lock').open('a') as lease:
         try:fcntl.flock(lease,fcntl.LOCK_EX|fcntl.LOCK_NB)
         except BlockingIOError:return dict(state='already-checking')
         state=read(folder/'state.json',dict(sessions={},incidents={},outbox=[],history=[]))
+        enabled=bool(read(folder/'config.json').get('auto_repair'))
         for item in state['outbox']:
             if item['state']=='sending':item['state']='uncertain'
         inspected=True
@@ -184,8 +234,22 @@ def check(db,server,*,notify=True,clock=None,probe=health,sender=post):
             if state['read_failures']>=3:findings['records-unreadable']=dict(session=None,title='BrainDance',kind='records-unreadable',phase='monitor',message='연구 기록을 3회 연속 읽지 못했습니다. 원본 연구 기록은 변경하지 않았습니다.')
         try:target=slack_target(db)
         except (sqlite3.Error,OSError,ValueError):target={}
+        recovery=[]
+        if enabled and inspected and active:
+            if not healthy and 'backend-down' in findings and clock-state.get('last_restart_attempt',0)>=300:
+                state['last_restart_attempt']=clock
+                try:recovery.append(starter(db,server))
+                except (OSError,ValueError,sqlite3.Error):recovery.append(dict(state='backend_restart_failed'))
+            if healthy:
+                seen=set()
+                for item in findings.values():
+                    sid=item.get('session')
+                    if not sid or sid in seen:continue
+                    seen.add(sid)
+                    try:recovery.append(dict(session=sid,**repairer(db,server,item)))
+                    except (OSError,ValueError):recovery.append(dict(session=sid,state='recovery_request_failed'))
         def enqueue(key,item,recovered=False):
-            text='*BrainDance 감시 · '+('진행 갱신 확인' if recovered else '확인 필요')+'*\n'+html.escape(item['title'],quote=False)[:180]+'\n'+html.escape(item['message'],quote=False)[:500]+'\n단계: '+html.escape(item['phase'],quote=False)+'\n감시자는 알림만 처리합니다. / 자동 모델 호출 0회'
+            text='*BrainDance 감시 · '+('진행 갱신 확인' if recovered else '자동 복구 확인' if enabled else '확인 필요')+'*\n'+html.escape(item['title'],quote=False)[:180]+'\n'+html.escape(item['message'],quote=False)[:500]+'\n단계: '+html.escape(item['phase'],quote=False)+ ('\n자동 수리 요청: '+', '.join(v['state'] for v in recovery)+' · 연구 종료 시각·사용량 기준 유지' if enabled else '\n감시자는 알림만 처리합니다. / 자동 모델 호출 0회')
             identity=key+':'+str(clock)+('recovered' if recovered else 'alert')
             state['outbox'].append(dict(id=identity,key=key,text=text,target=target_id(target),state='pending' if target else 'muted',retry_at=0,recovered=recovered))
             return identity
@@ -202,7 +266,7 @@ def check(db,server,*,notify=True,clock=None,probe=health,sender=post):
                 state['history'].append(dict(at=clock,event='cleared' if item.get('session') in active else 'withdrawn',kind=item['kind'],session=item.get('session')))
         state['history']=state['history'][-100:];state['outbox']=state['outbox'][-200:]
         state['incidents']={k:v for k,v in state['incidents'].items() if v['active'] or v['opened_at']>clock-86400}
-        state.update(last_check=stamp(),checked_epoch=clock,backend_healthy=healthy,active_sessions=len(active),findings=list(findings.values()),slack_ready=bool(target),mode='alert_only',model_calls=0,elapsed_ms=round((time.monotonic()-started)*1000,2))
+        state.update(last_check=stamp(),checked_epoch=clock,backend_healthy=healthy,active_sessions=len(active),findings=list(findings.values()),slack_ready=bool(target),mode='auto_recover' if enabled else 'alert_only',model_calls=0,recovery=recovery,elapsed_ms=round((time.monotonic()-started)*1000,2))
         save(folder/'state.json',state)
         if notify:
             for event in [e for e in state['outbox'] if e['state']=='pending' and e['retry_at']<=clock][:5]:
@@ -227,6 +291,7 @@ def install(db,server):
     fd,tmp=tempfile.mkstemp(dir=str(folder));os.fchmod(fd,0o600)
     with os.fdopen(fd,'wb') as stream:stream.write(data)
     os.replace(tmp,script)
+    save(folder/'config.json',dict(auto_repair=True))
     import certifi
     shutil.copyfile(certifi.where(),folder/'cacert.pem');(folder/'cacert.pem').chmod(0o600)
     python=Path('/usr/bin/python3')
@@ -241,16 +306,19 @@ def install(db,server):
     domain='gui/'+str(os.getuid());subprocess.run(['launchctl','bootout',domain+'/'+label(db)],capture_output=True)
     result=subprocess.run(['launchctl','bootstrap',domain,str(plist)],capture_output=True)
     if result.returncode:raise ValueError('macOS 감시 서비스 등록을 완료하지 못했습니다.')
-    return dict(installed=True,interval_seconds=INTERVAL,stall_minutes=STALL_SECONDS//60,service=label(db),mode='alert_only',model_calls=0)
+    return dict(installed=True,interval_seconds=INTERVAL,stall_minutes=STALL_SECONDS//60,service=label(db),mode='auto_recover',model_calls=0)
 def status(db):
     installed=agent_path(db).is_file();loaded=False
     if installed and sys.platform=='darwin':loaded=subprocess.run(['launchctl','print','gui/'+str(os.getuid())+'/'+label(db)],capture_output=True).returncode==0
-    state=read(db.parent/'monitor/state.json');return dict(installed=installed,service_loaded=loaded,last_check=state.get('last_check'),backend_healthy=state.get('backend_healthy'),active_sessions=state.get('active_sessions',0),findings=state.get('findings',[]),slack_ready=state.get('slack_ready',False),mode='alert_only',model_calls=0,elapsed_ms=state.get('elapsed_ms'))
+    state=read(db.parent/'monitor/state.json');enabled=read(db.parent/'monitor/config.json').get('auto_repair',False)
+    return dict(installed=installed,service_loaded=loaded,last_check=state.get('last_check'),backend_healthy=state.get('backend_healthy'),active_sessions=state.get('active_sessions',0),findings=state.get('findings',[]),slack_ready=state.get('slack_ready',False),mode='auto_recover' if enabled else 'alert_only',model_calls=0,recovery=state.get('recovery',[]),elapsed_ms=state.get('elapsed_ms'))
 def command(action,db,server,notify=True):
     db=Path(db).expanduser().resolve();server=valid_server(server)
     if action=='check':return check(db,server,notify=notify)
     if action=='status':return status(db)
     if action=='install':return install(db,server)
+    if action in {'repair-on','repair-off'}:
+        save(db.parent/'monitor/config.json',dict(auto_repair=action=='repair-on'));return status(db)
     if action=='uninstall':
         if sys.platform!='darwin':raise ValueError('macOS 감시 서비스가 아닙니다.')
         plist=agent_path(db)
@@ -261,7 +329,7 @@ def command(action,db,server,notify=True):
         return dict(installed=False,records_preserved=True)
     raise ValueError('감시 동작을 확인하세요.')
 def main():
-    p=argparse.ArgumentParser();p.add_argument('action',choices=['status','check','install','uninstall'],nargs='?',default='status');p.add_argument('--db',type=Path,default=Path.home()/'Library/Application Support/BrainDance/tree.sqlite3');p.add_argument('--server',default='http://127.0.0.1:8766');p.add_argument('--json',action='store_true');p.add_argument('--no-notify',action='store_true');args=p.parse_args()
+    p=argparse.ArgumentParser();p.add_argument('action',choices=['status','check','install','uninstall','repair-on','repair-off'],nargs='?',default='status');p.add_argument('--db',type=Path,default=Path.home()/'Library/Application Support/BrainDance/tree.sqlite3');p.add_argument('--server',default='http://127.0.0.1:8766');p.add_argument('--json',action='store_true');p.add_argument('--no-notify',action='store_true');args=p.parse_args()
     try:
         result=command(args.action,args.db,args.server,not args.no_notify)
         if args.json or args.action!='check':print(json.dumps(result,ensure_ascii=False))

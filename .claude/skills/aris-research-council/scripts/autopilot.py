@@ -388,6 +388,7 @@ class Autopilot:
         if item['status']!='running':return
         if item['config'].get('execution_policy')=='until_deadline' and time.time()>=item['config']['deadline_epoch']:self.expire(item);return
         if not self.check_quota(item):return
+        if item['progress'].get('watchdog_repair_id') or item['progress'].get('watchdog_wait_until',0)>time.time():return
         node=self.store.get_node(item['node_id'])
         if node['status'] not in {'active','expanded'}:raise ValueError('프로젝트가 보류 또는 폐기되었습니다.')
         profile,assignment=self.experiments._resources(node)
@@ -497,6 +498,8 @@ class Autopilot:
                 with self.store._connect() as conn:budget=self.experiments._budget(item['project_id'],assignment['updated_at'],assignment['time_budget_minutes']*60,conn)
                 if budget['remaining_seconds']<1:raise ValueError('프로젝트 실행 시간 예산을 소진했습니다.')
                 attempt=p.get('recovery_attempts',0)+1;delay=min(60,2**min(attempt,6))
+                from brain_monitor import read
+                if attempt>=3 and read(Path(self.store.db_path).parent/'monitor/config.json').get('auto_repair'):delay=300
                 self.save(item,message='자동 디버깅 '+str(attempt)+'회 · '+str(delay)+'초 뒤 원래 세션을 이어갑니다.',phase='recovery',job_id=None,recovery_attempts=attempt,recovery_after=time.time()+delay,recovery_error=error,recovery_job_id=job['id'])
                 self.store.add_note(item['node_id'],'analysis','자동 복구 진단','이전 작업: '+job['id']+'\n원인: '+error+'\n원본 로그: '+job['run_dir']+'\n기존 대화·장치·시간·모델 예산을 유지해 자동으로 디버깅합니다.')
                 return

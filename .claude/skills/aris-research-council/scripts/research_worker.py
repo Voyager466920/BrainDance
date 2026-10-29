@@ -113,6 +113,9 @@ def verify(job,root,work,progress):
         path=work/name
         if path.is_symlink() or not path.is_file() or path.stat().st_size>2*1024*1024:
             raise ValueError('논문 탐색 출력이 없거나 허용 크기를 넘었습니다: '+name)
+    original_work=work
+    from literature_inputs import normalize
+    work=normalize(work,root)
     papers=council.read_json(work/'source-evidence.json').get('papers',[])
     candidates=council.read_json(work/'candidate_papers.json')
     if not papers or len(papers)>20 or not isinstance(candidates,list) or len(candidates)>20:raise ValueError('논문 근거는 1–20개여야 합니다.')
@@ -129,8 +132,8 @@ def verify(job,root,work,progress):
         if not isinstance(paper.get('abstract') or paper.get('source_excerpt'),str) or not (paper.get('abstract') or paper.get('source_excerpt')).strip():raise ValueError('읽을 수 있는 논문 근거가 없습니다.')
         paper['verification_status']=checks[paper['id']].get('status','unverified')
         paper['verification_method']=checks[paper['id']].get('method')
-    council.dump(work/'verified-evidence.json',dict(papers=papers,verification=receipt))
-    return work/'verified-evidence.json'
+    council.dump(original_work/'verified-evidence.json',dict(papers=papers,verification=receipt))
+    return original_work/'verified-evidence.json'
 
 
 def run(spec_path):

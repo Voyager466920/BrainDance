@@ -46,6 +46,8 @@ class ViewerServer(ThreadingHTTPServer):
             self.research=ResearchEngine(store,self.experiments)
             self.research.api_url="http://127.0.0.1:"+str(actual_port)
             self.autopilot=Autopilot(store,self.research,self.experiments,quota_status=self.provider_status.get)
+            from watchdog_recovery import Recovery
+            self.recovery=Recovery(self)
             self.chat=ResearchChat(store,self.research,self.autopilot)
             # Research expiry stops research workers, while ordinary project replies stay available.
             self.publications=PublicationService(store)
@@ -55,7 +57,10 @@ class ViewerServer(ThreadingHTTPServer):
             self.notifications.quota_snapshot=self.provider_status.report_snapshot
             self.remote=SlackRemote(store,self.notifications,self.chat,self.autopilot,self.provider_status.report_snapshot)
             self.cleanup=ProjectCleanup(store,self.experiments,self.compute,self.research)
+            from brain_monitor import register_runtime
+            register_runtime(Path(store.db_path),self.research.api_url)
         except Exception:
+            if hasattr(self,'recovery'):self.recovery.close()
             if hasattr(self,'remote'):self.remote.close()
             if hasattr(self,'notifications'):self.notifications.close()
             if hasattr(self,'publications'):self.publications.close()
@@ -67,6 +72,7 @@ class ViewerServer(ThreadingHTTPServer):
             raise
 
     def server_close(self):
+        if hasattr(self,'recovery'):self.recovery.close()
         if hasattr(self,'remote'):self.remote.close()
         if hasattr(self,'notifications'):self.notifications.close()
         if hasattr(self,'publications'):self.publications.close()
@@ -123,7 +129,7 @@ class ViewerHandler(BaseHTTPRequestHandler):
             return
         path = urlsplit(self.path).path
         if path == '/api/health':
-            self._reply(200, {'app': 'BrainDance', 'version': '0.19.15', 'pid': os.getpid(),
+            self._reply(200, {'app': 'BrainDance', 'version': '0.19.16', 'pid': os.getpid(),
                              'workspace_id': hashlib.sha256(str(Path(self.server.store.db_path).resolve()).encode()).hexdigest()})
         elif path=='/api/slack':
             self._reply(200,self.server.notifications.state())
@@ -309,6 +315,8 @@ class ViewerHandler(BaseHTTPRequestHandler):
             result=self.server.chat.send(payload)
         elif path=='/api/control/automatic':
             result=self.server.autopilot.control(payload)
+        elif path=='/api/monitor/recover':
+            result=self.server.recovery.request(payload)
         elif path=='/api/slack/configure':
             if set(payload)-{'project_id','member_id','token','enabled'}:raise ValueError('Slack 연결 항목을 확인하세요.')
             from slack_remote import target_key

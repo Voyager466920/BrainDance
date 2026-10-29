@@ -98,7 +98,21 @@ class MonitorTests(unittest.TestCase):
         with patch('brain_monitor.sys.platform','darwin'),patch('brain_monitor.agent_path',return_value=plist),patch('brain_monitor.subprocess.run') as run:
             run.return_value.returncode=0;result=monitor.install(self.db,self.fixture.client.url)
         v=plistlib.loads(plist.read_bytes());self.assertEqual(v['StartInterval'],60);self.assertEqual(v['ProgramArguments'][1],'-I');self.assertIn('check',v['ProgramArguments'])
-        self.assertNotIn('claude',str(v));self.assertNotIn('codex',str(v));self.assertEqual(result['mode'],'alert_only')
+        self.assertNotIn('claude',str(v));self.assertNotIn('codex',str(v));self.assertEqual(result['mode'],'auto_recover')
         self.assertNotIn(TOKEN,plist.read_text());self.assertEqual((self.db.parent/'monitor/brain_monitor.py').stat().st_mode&0o777,0o600)
     def test_only_loopback_server_can_be_monitored(self):
         with self.assertRaises(ValueError):monitor.valid_server('https://example.com')
+
+    def test_enabled_monitor_delegates_repair_without_a_model_in_the_monitor(self):
+        monitor.save(self.db.parent/'monitor/config.json',dict(auto_repair=True));calls=[]
+        self.check();result=self.check(901,repairer=lambda db,server,item:(calls.append(item) or dict(state='repair_queued')))
+        self.assertEqual(len(calls),1);self.assertEqual(calls[0]['session'],self.session['id'])
+        self.assertEqual(result['mode'],'auto_recover');self.assertEqual(result['model_calls'],0)
+        with self.server.store._connect() as c:c.execute("UPDATE automatic_sessions SET status='paused' WHERE id=?",(self.session['id'],))
+        self.check(1000,repairer=lambda *args:self.fail('Paused projects cannot request repair'))
+
+    def test_backend_recovery_is_requested_only_after_three_failed_checks(self):
+        monitor.save(self.db.parent/'monitor/config.json',dict(auto_repair=True));calls=[]
+        opts=dict(probe=lambda *args:False,starter=lambda *args:(calls.append('restart') or dict(state='backend_restart_started')))
+        self.check(0,**opts);self.check(60,**opts);self.assertFalse(calls)
+        self.check(120,**opts);self.check(180,**opts);self.assertEqual(calls,['restart'])

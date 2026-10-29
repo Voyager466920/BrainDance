@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.19.16
+
+- Connect the external monitor to a durable, guarded repair queue. A read-only Codex adviser diagnoses actual tool errors and returns concrete feedback to the same official research workspace; verify the failed operation succeeds before marking recovery confirmed.
+- Keep existing deadlines, allowance guards, devices, histories and reviewed experiment limits. Hold repeated failures for diagnosis, deduplicate repairs and bound diagnosis attempts. Honor pause/stop and preserve ambiguous interrupted calls.
+- Recover unavailable registered immutable backends after three health failures; preserve valid GPU runs and refuse unrelated processes or changed executable images. Add `monitor repair-on` / `repair-off`.
+- Normalize explicit paper identifier aliases and candidate containers without overwriting raw retrieval files or skipping fresh official verification. Fix misleading paper-count errors for `{papers: [...]}` candidates and canonical-ID-only sources.
+
 ## 0.19.15
 
 - Pin frozen CLI and backend images at immutable, content-hashed paths. Updating the installation no longer replaces the archive used by running processes and lazy imports.

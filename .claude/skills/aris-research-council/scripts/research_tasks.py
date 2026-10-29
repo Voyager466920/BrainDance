@@ -83,7 +83,9 @@ def tick(controller,item):
         else:
             error=job.get('error') or job['message'];n=task['attempts']+1
             blocked=any(word in error.lower() for word in ['로그인','인증','unauthorized','authentication'])
-            update(store,task['id'],state='blocked' if blocked else 'queued',attempts=n,retry_at=time.time()+min(60,2**min(n,6)),message=error[:1500])
+            from brain_monitor import read
+            delay=300 if n>=3 and read(Path(store.db_path).parent/'monitor/config.json').get('auto_repair') else min(60,2**min(n,6))
+            update(store,task['id'],state='blocked' if blocked else 'queued',attempts=n,retry_at=time.time()+delay,message=error[:1500])
     current=sorted([r for r in listing(store,item['id']) if eligible(r) and (r['round']==p.get('native_cycle',0) or r['id'] in processed)],key=lambda r:r['id'] not in requested)
     if current and all(r['state']=='blocked' for r in current):
         controller.save(item,'blocked','가설 작업의 인증 문제를 확인해야 합니다. 원본 작업과 로그를 보존했습니다.');return

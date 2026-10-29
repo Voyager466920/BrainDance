@@ -472,12 +472,15 @@ def _codex_call(folder, prompt, config, budget, aris_repo):
         def receive(wanted, deadline):
             nonlocal usage, thread
             while True:
+                guard=config.get('_check_active')
+                if guard:guard()
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise TimeoutError("Codex MCP timeout; dispatched call is not automatically retried")
                 try:
-                    row = inbox.get(timeout=remaining)
+                    row = inbox.get(timeout=min(remaining,.25) if guard else remaining)
                 except __import__("queue").Empty:
+                    if guard:continue
                     raise TimeoutError("Codex MCP timeout; dispatched call is not automatically retried")
                 if row is None:
                     raise RuntimeError("Official MCP server exited without a response")
